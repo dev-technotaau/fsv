@@ -18,6 +18,17 @@ model:
   # Tier-1 bump: 4 → 6 captures more semantic depth from the 32-layer H+.
   multi_block_n: 6
   aggregation_type: "weighted_sum"   # 'sum' | 'concat_proj' | 'weighted_sum'
+  # ViT-Adapter (Chen et al., ICLR 2023) — adds dense-prediction-friendly
+  # multi-scale spatial features to the plain ViT via parallel CNN + bidirectional
+  # cross-attention interactions. Replaces the homemade ViTToFPN entirely.
+  # +30-60M trainable params, +15-20% forward time, +1-3% mIoU expected.
+  use_vit_adapter: true
+  vit_adapter_inplanes: 64           # SPM CNN base channels
+  vit_adapter_n_heads: 8
+  vit_adapter_n_points: 4            # deformable sampling points
+  vit_adapter_n_interactions: 4      # 4 stages, evenly spaced across 32-block H+
+  vit_adapter_init_values: 0.0       # gentle injection at init (LayerScale=0)
+  vit_adapter_ffn_ratio: 0.25
   # Pixel decoder: 'msdeform' = real M2F (deformable encoder, HF impl).
   # Falls back to 'fpn' for the lighter convolutional decoder.
   pixel_decoder_type: "msdeform"
@@ -47,6 +58,11 @@ model:
   # UNet3+ extras inside the refinement head:
   refinement_use_full_scale_ds: true    # FDS side heads off D1..D{N-1}
   refinement_use_cgm: true              # per-image fence/non-fence classifier + inference gate
+  # Boundary signal extras:
+  refinement_use_distance: true                # signed-distance regression head
+  refinement_use_pointrend_module: true        # forward-time PointRend MLP refinement
+  refinement_pointrend_n_uncertain: 4096       # K most-uncertain pixels to MLP-refine
+  refinement_pointrend_hidden: 128
   gradient_checkpointing: true   # critical for H+ backbone — halves activation mem
   torch_compile: false           # turn on if PyTorch 2.4+ + Triton works smoothly
   torch_compile_mode: "default"
@@ -81,6 +97,10 @@ loss:
   # UNet3+ extras:
   refinement_fds_weight: 0.3         # FDS — supervised side heads on D1..D{N-1}
   cgm_weight: 0.5                    # CGM — per-image fence/non-fence classifier BCE
+  # Boundary Distance Regression (sub-pixel boundary signal)
+  boundary_distance_weight: 0.3      # L1 between predicted distance and GT distance map
+  boundary_distance_clip: 50.0       # clip pred + GT to ±50 px
+  boundary_distance_normalize: true  # normalize loss to [0, 1]
 
 optim:
   optimizer: "adamw"

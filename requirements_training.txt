@@ -22,6 +22,9 @@
 #   huggingface-cli login
 #   Then visit https://huggingface.co/facebook/dinov3-vith16plus-pretrain-lvd1689m
 #   and click "Agree and access repository" if you haven't.
+
+# token -> paste the token from https://huggingface.co/settings/tokens
+#         (do NOT commit the actual token — it's a personal credential)
 #
 # ════════════════════════════════════════════════════════════════════════
 

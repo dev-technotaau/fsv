@@ -41,6 +41,19 @@ class ModelConfig:
     multi_block_n: int = 4                 # fuse last N transformer blocks
     aggregation_type: str = "weighted_sum" # 'sum' | 'concat_proj' | 'weighted_sum'
 
+    # ViT-Adapter (Chen et al., ICLR 2023): wraps the ViT backbone with a
+    # parallel CNN (Spatial Prior Module) and bidirectional cross-attention
+    # interactions to recover the multi-scale spatial detail that plain ViTs
+    # lose at patchification. When True, replaces the homemade ViTToFPN.
+    # Adds ~30-60M params, +15-20% forward time, +1-3% mIoU on dense prediction.
+    use_vit_adapter: bool = False
+    vit_adapter_inplanes: int = 64         # SPM CNN base channels
+    vit_adapter_n_heads: int = 8
+    vit_adapter_n_points: int = 4          # deformable sampling points per query
+    vit_adapter_n_interactions: int = 4    # number of inject/extract stages
+    vit_adapter_init_values: float = 0.0   # injector LayerScale init (0 = no-op at init)
+    vit_adapter_ffn_ratio: float = 0.25    # extractor FFN expansion ratio
+
     # Pixel decoder: 'fpn' (lightweight) or 'msdeform' (real M2F via HF impl)
     pixel_decoder_type: str = "msdeform"
     pixel_decoder_layers: int = 6           # M2F default = 6
@@ -102,6 +115,19 @@ class ModelConfig:
     #                     refined logits — negative images collapse to empty masks.
     refinement_use_full_scale_ds: bool = True
     refinement_use_cgm: bool = True
+
+    # Boundary Distance Regression head: predict per-pixel signed distance to
+    # the nearest GT boundary (sub-pixel boundary supervision). Trained with
+    # L1 loss against scipy distance-transform of the GT mask. ~+0.3% bIoU.
+    refinement_use_distance: bool = True
+
+    # Forward-time PointRend (Kirillov et al., 2020): tiny MLP applied to the
+    # top-K most-uncertain pixels at every forward (train + inference) for
+    # sub-pixel boundary refinement. Distinct from the PointRend importance
+    # SAMPLER in losses (which is sampling-based loss). ~+0.5% bIoU.
+    refinement_use_pointrend_module: bool = True
+    refinement_pointrend_n_uncertain: int = 4096    # K — pixels to refine per image
+    refinement_pointrend_hidden: int = 128
 
     # Memory / speed knobs
     gradient_checkpointing: bool = False    # halves backbone activation mem
@@ -188,6 +214,13 @@ class LossConfig:
     # UNet3+ Classification-Guided Module: BCE on the per-image fence/non-fence
     # classifier head. Target = (metadata.class == 'pos'). 0 = disabled.
     cgm_weight: float = 0.5
+
+    # Boundary Distance Regression: L1 loss between the predicted signed
+    # distance and the GT signed-distance map (clipped to ±50 px). Computed
+    # via scipy.ndimage.distance_transform_edt in CombinedLoss. 0 = disabled.
+    boundary_distance_weight: float = 0.3
+    boundary_distance_clip: float = 50.0   # clamp predicted+GT distance to ±this
+    boundary_distance_normalize: bool = True   # normalize by clip so loss is in [0,1]
 
 
 @dataclass

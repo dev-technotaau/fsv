@@ -546,6 +546,7 @@ class CombinedLoss(nn.Module):
                 refined_fds_logits: Optional[list[torch.Tensor]] = None,
                 cgm_logit: Optional[torch.Tensor] = None,
                 is_positive: Optional[torch.Tensor] = None,
+                boundary_distance_logits: Optional[torch.Tensor] = None,
                 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """Returns (total_loss, components).
 
@@ -702,5 +703,69 @@ class CombinedLoss(nn.Module):
             components["cgm"] = cgm_loss.detach()
             total = total + cgm_w * cgm_loss.float()
 
+        # Boundary Distance Regression: L1 between predicted signed distance
+        # and GT signed distance (computed via scipy distance_transform_edt
+        # on CPU, transferred to GPU per-batch). Predictions and targets are
+        # clipped to ±boundary_distance_clip pixels and (optionally) normalized
+        # by the clip so the loss stays in [0, 1] regardless of image size.
+        bdr_w = float(getattr(self.cfg, "boundary_distance_weight", 0.0))
+        if bdr_w > 0 and boundary_distance_logits is not None:
+            bdr_loss = self._boundary_distance_loss(
+                pred_distance=boundary_distance_logits,
+                target_mask=targets,
+                clip=float(getattr(self.cfg, "boundary_distance_clip", 50.0)),
+                normalize=bool(getattr(self.cfg, "boundary_distance_normalize", True)),
+            )
+            components["boundary_distance"] = bdr_loss.detach()
+            total = total + bdr_w * bdr_loss.float()
+
         components["total"] = total.detach()
         return total, components
+
+    @staticmethod
+    @torch.no_grad()
+    def _compute_signed_distance(target_mask: torch.Tensor) -> torch.Tensor:
+        """Compute per-pixel SIGNED distance to the nearest mask boundary.
+        Uses scipy.ndimage.distance_transform_edt on CPU (fast for small
+        batches; ~5 ms per 512x512 image). Negative inside the fence,
+        positive outside, zero on the boundary.
+
+        target_mask: (B, H, W) float/int with values in {0, 1}
+        Returns:     (B, 1, H, W) float32 signed distance in pixels.
+        """
+        import numpy as np
+        try:
+            from scipy.ndimage import distance_transform_edt
+        except ImportError as e:
+            raise ImportError(
+                "Boundary Distance Regression requires scipy: pip install scipy"
+            ) from e
+        device = target_mask.device
+        m_np = target_mask.detach().cpu().numpy().astype(np.uint8)   # (B, H, W)
+        out = np.zeros_like(m_np, dtype=np.float32)
+        for i in range(m_np.shape[0]):
+            mi = m_np[i]
+            if mi.sum() == 0:                       # no fence — distance positive everywhere
+                out[i] = distance_transform_edt(1 - mi)
+            elif mi.sum() == mi.size:               # all fence — distance negative everywhere
+                out[i] = -distance_transform_edt(mi)
+            else:
+                d_outside = distance_transform_edt(1 - mi)   # 0 inside, +d outside
+                d_inside = distance_transform_edt(mi)        # 0 outside, +d inside
+                out[i] = d_outside - d_inside                  # +outside, -inside
+        return torch.from_numpy(out).unsqueeze(1).to(device)
+
+    def _boundary_distance_loss(self, pred_distance: torch.Tensor,
+                                  target_mask: torch.Tensor,
+                                  clip: float = 50.0,
+                                  normalize: bool = True) -> torch.Tensor:
+        """L1 loss between predicted signed distance and GT signed distance.
+        Both clipped to ±clip pixels. Optionally normalized by clip so the
+        loss is in [0, 1] regardless of image resolution."""
+        gt = self._compute_signed_distance(target_mask)              # (B, 1, H, W)
+        gt = gt.clamp(-clip, clip)
+        pred = pred_distance.clamp(-clip, clip)
+        if normalize:
+            pred = pred / clip
+            gt = gt / clip
+        return F.l1_loss(pred, gt)

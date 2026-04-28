@@ -264,6 +264,272 @@ DinoV2Backbone = DinoBackbone
 
 
 # ══════════════════════════════════════════════════════════════════════
+# DINOv3 backbone WITH ViT-Adapter (Chen et al., ICLR 2023)
+# ══════════════════════════════════════════════════════════════════════
+
+class DinoBackboneWithAdapter(nn.Module):
+    """DINOv3 backbone wrapped with the ViT-Adapter recipe — produces a clean
+    multi-scale feature pyramid {res2, res3, res4, res5} suitable for any dense
+    prediction head, replacing the homemade ViTToFPN adapter.
+
+    The DINOv3 ViT processes patch tokens in parallel with a small CNN
+    (SpatialPriorModule). At chosen interaction indexes (default: 4 stages,
+    evenly spaced across ViT depth), the two streams exchange information via
+    deformable cross-attention:
+      - Extractor: ViT tokens refine the multi-scale pyramid
+      - Injector:  multi-scale pyramid refines ViT tokens
+
+    Forward output:
+      dict with:
+        'multi_scale': {res2, res3, res4, res5}  high-quality 4-scale pyramid
+                       at strides (4, 8, 16, 32). Goes directly into the
+                       downstream pixel decoder.
+        'spatial':     (B, C, H/16, W/16)  ViT spatial features (back-compat)
+        'cls':         (B, C)              CLS token  | None if disabled
+        'registers':   (B, R, C)           register tokens  | None if R==0
+
+    Backbone weights are KEPT (still pretrained DINOv3-H+, still fine-tuned).
+    The SPM + interaction modules are NEW (random init, learn from scratch).
+    """
+
+    def __init__(self, name: str = "facebook/dinov3-vith16plus-pretrain-lvd1689m",
+                 freeze_first_n_layers: int = 0,
+                 drop_path_rate: float = 0.1,
+                 multi_block_n: int = 4,
+                 aggregation_type: str = "weighted_sum",
+                 return_global_tokens: bool = True,
+                 # ── ViT-Adapter knobs ──
+                 adapter_inplanes: int = 64,
+                 adapter_n_heads: int = 8,
+                 adapter_n_points: int = 4,
+                 adapter_n_interactions: int = 4,
+                 adapter_init_values: float = 0.0,
+                 adapter_ffn_ratio: float = 0.25) -> None:
+        super().__init__()
+        # Reuse DinoBackbone's construction: backbone weights, multi-block agg
+        # config, register-token bookkeeping. We then bypass its forward and
+        # drive the encoder layer-by-layer ourselves.
+        self.bb = DinoBackbone(
+            name=name,
+            freeze_first_n_layers=freeze_first_n_layers,
+            drop_path_rate=drop_path_rate,
+            multi_block_n=multi_block_n,
+            aggregation_type=aggregation_type,
+            return_global_tokens=return_global_tokens,
+        )
+        self.dim = self.bb.dim
+        self.patch_size = self.bb.patch_size
+        self.num_register_tokens = self.bb.num_register_tokens
+        self.name = name
+        self.return_global_tokens = return_global_tokens
+        self.multi_block_n = self.bb.multi_block_n
+        self.aggregation_type = self.bb.aggregation_type
+
+        # ── ViT-Adapter modules ──
+        # Lazy import to avoid hard dependency for non-adapter code paths.
+        from training.vit_adapter import (
+            SpatialPriorModule, InteractionBlock,
+            flatten_pyramid, unflatten_pyramid,
+            _build_reference_points, _build_vit_reference_points,
+        )
+        self._flatten_pyramid = flatten_pyramid
+        self._unflatten_pyramid = unflatten_pyramid
+        self._build_pyr_ref = _build_reference_points
+        self._build_vit_ref = _build_vit_reference_points
+
+        self.spm = SpatialPriorModule(in_channels=3, embed_dim=self.dim,
+                                        inplanes=adapter_inplanes)
+
+        # Locate the encoder's transformer-block ModuleList. The HF DINOv3 model
+        # stores them under `m.model.layer` (32 blocks for H+).
+        self._n_blocks = len(self._encoder_layers())
+        if adapter_n_interactions < 1 or adapter_n_interactions > self._n_blocks:
+            raise ValueError(
+                f"adapter_n_interactions={adapter_n_interactions} out of range "
+                f"for {self._n_blocks}-block backbone"
+            )
+        # Distribute interactions evenly across depth (last block of each
+        # quartile by default). Indexes here are 0-based block positions AFTER
+        # which the interaction runs.
+        step = self._n_blocks // adapter_n_interactions
+        self.interaction_indexes = [
+            (i + 1) * step - 1 for i in range(adapter_n_interactions)
+        ]
+        self.interactions = nn.ModuleList([
+            InteractionBlock(
+                embed_dim=self.dim, num_heads=adapter_n_heads,
+                n_points=adapter_n_points, init_values=adapter_init_values,
+                ffn_ratio=adapter_ffn_ratio,
+            ) for _ in range(adapter_n_interactions)
+        ])
+
+        # Final projection: ViT spatial features (after norm) at stride 16
+        # are added to the pyramid's c3 (also stride 16) — fuses both streams
+        # at the matched scale. Light norm to keep magnitudes consistent.
+        self.norm_c3_fuse = nn.LayerNorm(self.dim)
+
+    # ── HF backbone access helpers ──────────────────────────────────────
+
+    def _encoder_layers(self):
+        """Locate the transformer-block ModuleList in the HF DINOv3 model.
+        DINOv3 uses `m.model.layer` ; DINOv2 used `m.encoder.layer` ."""
+        m = self.bb.model
+        # DINOv3
+        if hasattr(m, "model") and hasattr(m.model, "layer"):
+            return m.model.layer
+        # Fallback for DINOv2
+        if hasattr(m, "encoder"):
+            for attr in ("layer", "layers"):
+                layers = getattr(m.encoder, attr, None)
+                if layers is not None:
+                    return layers
+        raise AttributeError(
+            "Could not locate transformer-block ModuleList on backbone "
+            f"{type(m).__name__}"
+        )
+
+    def enable_gradient_checkpointing(self) -> bool:
+        """Forward to the inner backbone."""
+        return self.bb.enable_gradient_checkpointing()
+
+    # ── Manual forward with adapter interactions ──────────────────────
+
+    def forward(self, x: torch.Tensor) -> dict:
+        B, _, H, W = x.shape
+        ps = self.patch_size
+        # Pad image to a multiple of patch_size (HF DINOv3 will otherwise crash)
+        Hp = (H + ps - 1) // ps * ps
+        Wp = (W + ps - 1) // ps * ps
+        if (Hp, Wp) != (H, W):
+            x = F.pad(x, (0, Wp - W, 0, Hp - H))
+
+        # 1. Spatial Prior Module (parallel CNN) — strides (4, 8, 16, 32)
+        c1, c2, c3, c4 = self.spm(x)   # all (B, dim, H_l, W_l)
+
+        # 2. Run DINOv3 embeddings + RoPE (matches HF's internal preamble)
+        embed = self.bb.model.embeddings(pixel_values=x)
+        rope_pos = self.bb.model.rope_embeddings(pixel_values=x)
+        skip = 1 + self.num_register_tokens   # CLS + R register tokens
+
+        # ViT spatial grid
+        H_p = Hp // ps
+        W_p = Wp // ps
+
+        # Pre-compute reference points on the right device/dtype (rebuilt per
+        # forward because the spatial shapes depend on the input size).
+        device = x.device
+        ref_dtype = torch.float32
+        # Pyramid-side ref points (extractor queries → 1 ViT level)
+        # When extracting, queries are pyramid tokens (c2/c3/c4). Each query
+        # has 1 reference point that we bias toward its own normalized location
+        # in the ViT grid.
+        pyr_shapes = [(c2.shape[-2], c2.shape[-1]),
+                       (c3.shape[-2], c3.shape[-1]),
+                       (c4.shape[-2], c4.shape[-1])]
+        pyr_ref_for_extract = self._build_pyr_ref(pyr_shapes, device, ref_dtype
+                                                     ).unsqueeze(0).expand(B, -1, -1, -1)
+        # Extractor queries attend to the SINGLE ViT level, so collapse the
+        # n_levels dim from 3 to 1 by taking only the first column (all 3 are
+        # identical for self-position references).
+        pyr_ref_for_extract = pyr_ref_for_extract[..., :1, :]   # (B, N_pyr, 1, 2)
+
+        # ViT-side ref points (injector queries → 3 pyramid levels)
+        vit_ref_for_inject = self._build_vit_ref(H_p, W_p, n_levels=3,
+                                                    device=device, dtype=ref_dtype
+                                                    ).unsqueeze(0).expand(B, -1, -1, -1)
+
+        # Flatten pyramid to a single token sequence for the interactions
+        pyr_tokens, pyr_shapes_kept = self._flatten_pyramid(c2, c3, c4)
+
+        # 3. Iterate ViT blocks, interleaving with InteractionBlocks
+        layers = self._encoder_layers()
+        # For multi-block aggregation we collect intermediate hidden states
+        collect_hidden = self.multi_block_n > 1
+        collected_hidden: list[torch.Tensor] = []
+        ic_idx = 0
+        for li, layer in enumerate(layers):
+            embed = layer(embed, position_embeddings=rope_pos)
+            if collect_hidden:
+                collected_hidden.append(embed)
+            if li in self.interaction_indexes:
+                # Split CLS+register from patch tokens
+                vit_patches = embed[:, skip:]
+                vit_patches, pyr_tokens = self.interactions[ic_idx](
+                    vit_patches=vit_patches,
+                    pyramid_tokens=pyr_tokens,
+                    vit_shape=(H_p, W_p),
+                    pyramid_shapes=pyr_shapes_kept,
+                    vit_reference=vit_ref_for_inject,
+                    pyramid_reference=pyr_ref_for_extract,
+                )
+                # Reassemble full token sequence
+                embed = torch.cat([embed[:, :skip], vit_patches], dim=1)
+                ic_idx += 1
+
+        # 4. Final norm
+        embed = self.bb.model.norm(embed)
+
+        # 5. Multi-block aggregation — re-run the same logic as DinoBackbone
+        # but on our manually-collected hidden states.
+        if collect_hidden and self.multi_block_n > 1:
+            hs = collected_hidden[-self.multi_block_n:]
+            patches_per_layer = [h[:, skip:, :] for h in hs]
+            if self.aggregation_type == "sum":
+                fused = sum(patches_per_layer)
+            elif self.aggregation_type == "weighted_sum":
+                w = torch.softmax(self.bb._aggregate_weights, dim=0)
+                fused = sum(p * w[i] for i, p in enumerate(patches_per_layer))
+            elif self.aggregation_type == "concat_proj":
+                cat = torch.cat(patches_per_layer, dim=-1)
+                fused = self.bb._aggregate_proj(cat)
+            else:
+                raise ValueError(f"Unknown aggregation: {self.aggregation_type}")
+            patch_seq = fused
+        else:
+            patch_seq = embed[:, skip:, :]
+
+        # CLS + register tokens come from the FINAL layer's output (after norm)
+        cls_token = embed[:, 0, :] if self.return_global_tokens else None
+        register_tokens = (embed[:, 1:1 + self.num_register_tokens, :]
+                            if (self.return_global_tokens
+                                and self.num_register_tokens > 0) else None)
+
+        # 6. Reshape ViT patch tokens to spatial grid (B, C, H_p, W_p)
+        spatial = (patch_seq.transpose(1, 2).contiguous()
+                    .view(B, self.dim, H_p, W_p))
+
+        # 7. Unflatten the (now-refined) pyramid back to per-scale tensors
+        c2_ref, c3_ref, c4_ref = self._unflatten_pyramid(pyr_tokens,
+                                                            pyr_shapes_kept)
+
+        # 8. Fuse ViT spatial (stride 16) into c3 (also stride 16) via add.
+        #    This brings together the global-reasoning ViT features and the
+        #    local-detail-rich pyramid at the same scale.
+        # Norm + residual to keep magnitudes balanced.
+        spatial_norm = (self.norm_c3_fuse(spatial.flatten(2).transpose(1, 2))
+                        ).transpose(1, 2).view_as(spatial)
+        if c3_ref.shape[-2:] != spatial_norm.shape[-2:]:
+            spatial_norm = F.interpolate(spatial_norm, size=c3_ref.shape[-2:],
+                                          mode="bilinear", align_corners=False)
+        c3_fused = c3_ref + spatial_norm
+
+        return {
+            # Multi-scale pyramid output for the downstream pixel decoder.
+            # Channels: all `self.dim` (1280 for H+).
+            "multi_scale": {
+                "res2": c1,         # stride 4
+                "res3": c2_ref,     # stride 8
+                "res4": c3_fused,   # stride 16  (ViT + pyramid)
+                "res5": c4_ref,     # stride 32
+            },
+            # Back-compat fields — current pipeline may consume these too
+            "spatial": spatial,
+            "cls": cls_token,
+            "registers": register_tokens,
+        }
+
+
+# ══════════════════════════════════════════════════════════════════════
 # ViT-to-FPN adapter — turn single-scale ViT features into 4-scale pyramid
 # ══════════════════════════════════════════════════════════════════════
 
@@ -843,7 +1109,11 @@ class RefinementHead(nn.Module):
     def __init__(self, base_channels: int = 64, num_blocks: int = 4,
                  extra_in_channels: int = 0, predict_edge: bool = False,
                  use_full_scale_ds: bool = True,
-                 use_cgm: bool = True) -> None:
+                 use_cgm: bool = True,
+                 predict_distance: bool = True,
+                 use_pointrend_module: bool = True,
+                 pointrend_n_uncertain: int = 4096,
+                 pointrend_hidden: int = 128) -> None:
         super().__init__()
         c = base_channels
         N = int(num_blocks)
@@ -852,6 +1122,9 @@ class RefinementHead(nn.Module):
         self.N = N
         self.use_full_scale_ds = bool(use_full_scale_ds)
         self.use_cgm = bool(use_cgm)
+        self.predict_distance = bool(predict_distance)
+        self.use_pointrend_module = bool(use_pointrend_module)
+        self.pointrend_n_uncertain = int(pointrend_n_uncertain)
 
         # ── Encoder (same shape as plain UNet — kept for compatibility with
         #     existing checkpoint loading + the same DINOv3-fed input contract).
@@ -918,25 +1191,49 @@ class RefinementHead(nn.Module):
                 nn.Linear(encoder_channels[N] // 4, 1),
             )
 
+        # ── Boundary Distance Regression head (off D0).
+        # Predicts a per-pixel signed distance to the nearest GT boundary
+        # (negative inside fence, positive outside, zero at boundary, all
+        # clipped to ±50 px during loss). Sub-pixel boundary localization
+        # signal that complements the BCE/Dice mask losses.
+        self.distance_head: Optional[nn.Conv2d] = (
+            nn.Conv2d(c, 1, 1) if self.predict_distance else None
+        )
+
+        # ── Forward-time PointRend MLP module (Kirillov et al., 2020).
+        # At each forward (train + inference), we identify the top-K most
+        # uncertain pixels (|sigmoid(refined_logit) - 0.5| smallest), then
+        # pass [feature_at_pixel, coarse_logit_at_pixel] through a small MLP
+        # to predict a refined logit at THAT pixel. Sub-pixel boundary
+        # refinement on top of UNet3+'s output.
+        self.pointrend_mlp: Optional[nn.Module] = None
+        if self.use_pointrend_module:
+            self.pointrend_mlp = nn.Sequential(
+                nn.Linear(c + 1, pointrend_hidden),
+                nn.GELU(),
+                nn.Linear(pointrend_hidden, pointrend_hidden),
+                nn.GELU(),
+                nn.Linear(pointrend_hidden, 1),
+            )
+
     def forward(self, image: torch.Tensor, coarse_mask: torch.Tensor,
                 extras: Optional[torch.Tensor] = None,
                 ) -> tuple[torch.Tensor,
                            Optional[torch.Tensor],
                            Optional[list[torch.Tensor]],
+                           Optional[torch.Tensor],
                            Optional[torch.Tensor]]:
         """image: (B, 3, H, W). coarse_mask: (B, 1, H, W) sigmoid-space.
         extras: Optional (B, K, H, W) extra channels.
-        Returns:
-          refined_logits   — (B, 1, H, W) main refined mask
-          edge_logits      — (B, 1, H, W) edge-head output  | None if disabled
-          fds_aux_logits   — list[(B, 1, H, W)] one per FDS side head, already
-                             upsampled to image resolution                        | None
-          cgm_logit        — (B, 1) per-image fence/non-fence classifier logit    | None
-
-        At inference (`self.training is False`) the CGM gate is APPLIED to
-        `refined_logits`: a strongly-negative cgm_logit pushes refined_logits
-        toward -inf so negative images produce empty masks. During training the
-        gate is NOT applied — CGM is supervised independently via BCE.
+        Returns 5-tuple:
+          refined_logits         — (B, 1, H, W) main refined mask (with PointRend
+                                    sub-pixel refinement at uncertain pixels +
+                                    CGM gate at inference)
+          edge_logits            — (B, 1, H, W) edge-head output | None
+          fds_aux_logits         — list[(B, 1, H, W)] FDS side heads | None
+          cgm_logit              — (B, 1) per-image classifier logit | None
+          boundary_distance_logits — (B, 1, H, W) signed-distance prediction
+                                      to nearest fence boundary | None
         """
         if extras is not None:
             x = torch.cat([image, coarse_mask, extras], dim=1)
@@ -998,6 +1295,21 @@ class RefinementHead(nn.Module):
         coarse_logit = torch.logit(coarse_mask.clamp(1e-6, 1 - 1e-6))
         refined_logits = coarse_logit + residual
 
+        # Boundary Distance Regression head — off the same D0 features.
+        # Trained against the GT signed-distance map (computed in the loss).
+        boundary_distance_logits: Optional[torch.Tensor] = None
+        if self.distance_head is not None:
+            boundary_distance_logits = self.distance_head(out0)
+
+        # Forward-time PointRend refinement on the most-uncertain pixels.
+        # Find top-K uncertain pixels (sigmoid output closest to 0.5), gather
+        # their D0 features + current refined logits, pass through MLP for a
+        # sub-pixel-accurate refined logit, scatter back. Operates in train
+        # AND inference modes — during training the MLP gets gradient via the
+        # downstream BCE/Dice loss on `refined_logits`.
+        if self.pointrend_mlp is not None:
+            refined_logits = self._apply_pointrend(refined_logits, out0)
+
         # CGM gating at INFERENCE: bias the logits by log(p_cgm) per image.
         # This way sigmoid(refined_logits + log(p_cgm)) ≈ p_seg * p_cgm,
         # i.e. negative images get their predictions multiplicatively suppressed.
@@ -1008,7 +1320,54 @@ class RefinementHead(nn.Module):
             log_gate = torch.log(p_cgm).view(-1, 1, 1, 1)        # broadcast
             refined_logits = refined_logits + log_gate
 
-        return refined_logits, edge_logits, fds_aux_logits, cgm_logit
+        return (refined_logits, edge_logits, fds_aux_logits, cgm_logit,
+                boundary_distance_logits)
+
+    def _apply_pointrend(self, refined_logits: torch.Tensor,
+                          d0_features: torch.Tensor) -> torch.Tensor:
+        """Sub-pixel PointRend refinement on the top-K most-uncertain pixels.
+
+        Identifies pixels where |sigmoid(refined_logit) - 0.5| is smallest
+        (= max ambiguity), gathers their D0 features + current logit, runs
+        them through self.pointrend_mlp, and scatters the output back into
+        refined_logits at those positions.
+
+        K is min(self.pointrend_n_uncertain, H*W). At low resolution every
+        pixel may be touched; at high res only the boundary band is touched.
+        """
+        assert self.pointrend_mlp is not None
+        B, _, H, W = refined_logits.shape
+        K = min(self.pointrend_n_uncertain, H * W)
+
+        # Uncertainty score (no grad) — flatten and pick top-K per image
+        with torch.no_grad():
+            uncertainty = -(torch.sigmoid(refined_logits.detach()) - 0.5).abs()
+            u_flat = uncertainty.view(B, -1)
+            _, idx_flat = torch.topk(u_flat, k=K, dim=1)            # (B, K)
+
+        # Gather D0 features at those points: (B, c, H*W) → gather → (B, c, K)
+        c = d0_features.shape[1]
+        feat_flat = d0_features.view(B, c, -1)
+        gather_idx = idx_flat.unsqueeze(1).expand(-1, c, -1)         # (B, c, K)
+        feat_at_pts = torch.gather(feat_flat, 2, gather_idx)         # (B, c, K)
+
+        # Current logit at those points: (B, 1, H*W) → gather → (B, 1, K)
+        logit_flat = refined_logits.view(B, 1, -1)
+        logit_at_pts = torch.gather(logit_flat, 2, idx_flat.unsqueeze(1))  # (B,1,K)
+
+        # MLP input: concat features + current logit → (B, K, c+1)
+        mlp_in = torch.cat([feat_at_pts, logit_at_pts], dim=1).transpose(1, 2)
+        new_logits = self.pointrend_mlp(mlp_in)                      # (B, K, 1)
+
+        # Scatter the refined logits back into the spatial map.
+        # Under bf16 autocast, the MLP output can be fp32 while the destination
+        # is bf16 — scatter requires matching dtypes, so cast the source.
+        # Gradient at scattered positions flows through the MLP only; gradient
+        # at un-scattered positions flows through the original refined_logits.
+        out_flat = refined_logits.view(B, 1, -1).clone()
+        new_logits_t = new_logits.transpose(1, 2).to(dtype=out_flat.dtype)
+        out_flat.scatter_(2, idx_flat.unsqueeze(1), new_logits_t)
+        return out_flat.view_as(refined_logits)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1036,6 +1395,11 @@ class ModelOutputs:
     # logit. (B, 1). Used for BCE supervision against `class == pos` and to
     # gate the refined output at inference (negative images → empty mask).
     cgm_logit: Optional[torch.Tensor] = None
+    # Boundary Distance Regression head: per-pixel signed distance to the
+    # nearest fence boundary (negative inside fence, positive outside, 0 on
+    # boundary). Trained with L1 loss against the GT signed-distance map
+    # computed in CombinedLoss via scipy distance transform.
+    boundary_distance_logits: Optional[torch.Tensor] = None
 
 
 class FenceSegmentationModel(nn.Module):
@@ -1045,16 +1409,43 @@ class FenceSegmentationModel(nn.Module):
     def __init__(self, model_cfg) -> None:
         super().__init__()
         self.cfg = model_cfg
-        # Backbone with multi-block aggregation + global tokens
-        self.backbone = DinoBackbone(
-            name=model_cfg.backbone_name,
-            freeze_first_n_layers=model_cfg.backbone_freeze_first_n_layers,
-            drop_path_rate=model_cfg.backbone_drop_path_rate,
-            multi_block_n=getattr(model_cfg, "multi_block_n", 1),
-            aggregation_type=getattr(model_cfg, "aggregation_type", "weighted_sum"),
-            return_global_tokens=getattr(model_cfg, "use_global_tokens", True),
-        )
-        self.adapter = ViTToFPN(self.backbone.dim, out_dim=model_cfg.decoder_dim)
+        # Backbone — DinoBackbone OR DinoBackboneWithAdapter depending on config.
+        # When use_vit_adapter=True, the backbone produces a ready multi-scale
+        # pyramid {res2, res3, res4, res5} via ViT-Adapter and we BYPASS ViTToFPN.
+        self.use_vit_adapter = bool(getattr(model_cfg, "use_vit_adapter", False))
+        if self.use_vit_adapter:
+            self.backbone = DinoBackboneWithAdapter(
+                name=model_cfg.backbone_name,
+                freeze_first_n_layers=model_cfg.backbone_freeze_first_n_layers,
+                drop_path_rate=model_cfg.backbone_drop_path_rate,
+                multi_block_n=getattr(model_cfg, "multi_block_n", 1),
+                aggregation_type=getattr(model_cfg, "aggregation_type", "weighted_sum"),
+                return_global_tokens=getattr(model_cfg, "use_global_tokens", True),
+                adapter_inplanes=int(getattr(model_cfg, "vit_adapter_inplanes", 64)),
+                adapter_n_heads=int(getattr(model_cfg, "vit_adapter_n_heads", 8)),
+                adapter_n_points=int(getattr(model_cfg, "vit_adapter_n_points", 4)),
+                adapter_n_interactions=int(getattr(model_cfg, "vit_adapter_n_interactions", 4)),
+                adapter_init_values=float(getattr(model_cfg, "vit_adapter_init_values", 0.0)),
+                adapter_ffn_ratio=float(getattr(model_cfg, "vit_adapter_ffn_ratio", 0.25)),
+            )
+            # Project the adapter's 4 scales (each at backbone dim) down to
+            # decoder_dim with cheap 1x1 convs — replaces ViTToFPN entirely.
+            self.adapter = None
+            self.adapter_proj = nn.ModuleDict({
+                k: nn.Conv2d(self.backbone.dim, model_cfg.decoder_dim, 1)
+                for k in ("res2", "res3", "res4", "res5")
+            })
+        else:
+            self.backbone = DinoBackbone(
+                name=model_cfg.backbone_name,
+                freeze_first_n_layers=model_cfg.backbone_freeze_first_n_layers,
+                drop_path_rate=model_cfg.backbone_drop_path_rate,
+                multi_block_n=getattr(model_cfg, "multi_block_n", 1),
+                aggregation_type=getattr(model_cfg, "aggregation_type", "weighted_sum"),
+                return_global_tokens=getattr(model_cfg, "use_global_tokens", True),
+            )
+            self.adapter = ViTToFPN(self.backbone.dim, out_dim=model_cfg.decoder_dim)
+            self.adapter_proj = None
 
         # Pixel decoder: simple FPN OR real Mask2Former MSDeformAttn encoder
         pd_type = getattr(model_cfg, "pixel_decoder_type", "fpn")
@@ -1142,6 +1533,14 @@ class FenceSegmentationModel(nn.Module):
                     model_cfg, "refinement_use_full_scale_ds", True)),
                 use_cgm=bool(getattr(
                     model_cfg, "refinement_use_cgm", True)),
+                predict_distance=bool(getattr(
+                    model_cfg, "refinement_use_distance", True)),
+                use_pointrend_module=bool(getattr(
+                    model_cfg, "refinement_use_pointrend_module", True)),
+                pointrend_n_uncertain=int(getattr(
+                    model_cfg, "refinement_pointrend_n_uncertain", 4096)),
+                pointrend_hidden=int(getattr(
+                    model_cfg, "refinement_pointrend_hidden", 128)),
             )
             # 1x1 projection: pixel decoder features (decoder_dim) -> compact K
             # so we don't blow up the refinement input by 512+ channels.
@@ -1232,8 +1631,7 @@ class FenceSegmentationModel(nn.Module):
 
     def forward(self, image: torch.Tensor) -> ModelOutputs:
         B, _, H, W = image.shape
-        # 1. Backbone — returns dict {spatial, cls, registers} when global
-        #    tokens or multi-block aggregation is enabled, else a tensor.
+        # 1. Backbone forward
         bb_out = self.backbone(image)
         if isinstance(bb_out, dict):
             vit_feats = bb_out["spatial"]
@@ -1244,8 +1642,15 @@ class FenceSegmentationModel(nn.Module):
             cls_tok = None
             reg_tok = None
 
-        # 2. Adapter -> FPN
-        fpn = self.adapter(vit_feats)
+        # 2. Build the FPN (4-scale dict).
+        #    - With ViT-Adapter: backbone already returned a multi-scale pyramid.
+        #      Just project each scale (backbone_dim → decoder_dim).
+        #    - Without: run our homemade ViTToFPN on the single-scale ViT output.
+        if self.use_vit_adapter:
+            ms = bb_out["multi_scale"]      # {res2, res3, res4, res5} at backbone dim
+            fpn = {k: self.adapter_proj[k](v) for k, v in ms.items()}
+        else:
+            fpn = self.adapter(vit_feats)
         # 3. Pixel decoder
         #    - "fpn":      returns a single (B, C, H/4, W/4) high-res tensor
         #    - "msdeform": returns dict with enhanced res2/res3/res4/res5
@@ -1320,14 +1725,17 @@ class FenceSegmentationModel(nn.Module):
             edge_last: Optional[torch.Tensor] = None
             fds_last: Optional[list[torch.Tensor]] = None
             cgm_last: Optional[torch.Tensor] = None
+            dist_last: Optional[torch.Tensor] = None
             for it in range(self.refinement_iterations):
-                refined_logits, edge_logits, fds_aux, cgm_logit = self.refinement(
+                (refined_logits, edge_logits, fds_aux,
+                 cgm_logit, dist_logits) = self.refinement(
                     image, current, extras=extras,
                 )
                 iter_logits.append(refined_logits)
                 edge_last = edge_logits
                 fds_last = fds_aux       # only the LAST iter's FDS heads supervise
                 cgm_last = cgm_logit     # CGM is per-image, last iter is fine
+                dist_last = dist_logits  # last iter's distance prediction
                 # Detach between iterations so gradient depth stays bounded
                 # (each iteration's gradients only flow through ITS own UNet
                 # pass, not back through earlier ones — keeps memory + stable).
@@ -1339,6 +1747,7 @@ class FenceSegmentationModel(nn.Module):
             outputs.refined_iter_logits = iter_logits if len(iter_logits) > 1 else None
             outputs.refined_fds_logits = fds_last
             outputs.cgm_logit = cgm_last
+            outputs.boundary_distance_logits = dist_last
 
         return outputs
 

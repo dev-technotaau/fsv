@@ -690,6 +690,7 @@ def train_one_phase(cfg: TrainingConfig) -> int:
                     refined_fds_logits=outputs.refined_fds_logits,
                     cgm_logit=outputs.cgm_logit,
                     is_positive=is_pos,
+                    boundary_distance_logits=outputs.boundary_distance_logits,
                 )
 
                 # EMA self-distillation (Mean Teacher): pull live model toward

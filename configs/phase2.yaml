@@ -15,6 +15,14 @@ model:
   backbone_drop_path_rate: 0.05
   multi_block_n: 6                     # match phase1
   aggregation_type: "weighted_sum"
+  # ViT-Adapter — must match phase1 exactly (FT inherits weights via init_from)
+  use_vit_adapter: true
+  vit_adapter_inplanes: 64
+  vit_adapter_n_heads: 8
+  vit_adapter_n_points: 4
+  vit_adapter_n_interactions: 4
+  vit_adapter_init_values: 0.0
+  vit_adapter_ffn_ratio: 0.25
   # IMPORTANT: must match phase1.yaml exactly (FT inherits weights via init_from)
   pixel_decoder_type: "msdeform"
   pixel_decoder_layers: 12             # match phase1
@@ -43,6 +51,11 @@ model:
   # UNet3+ extras inside the refinement head:
   refinement_use_full_scale_ds: true    # FDS side heads off D1..D{N-1}
   refinement_use_cgm: true              # per-image fence/non-fence classifier + inference gate
+  # Boundary signal extras (must match phase1 — FT inherits weights):
+  refinement_use_distance: true                # signed-distance regression head
+  refinement_use_pointrend_module: true        # forward-time PointRend MLP refinement
+  refinement_pointrend_n_uncertain: 4096       # K most-uncertain pixels to MLP-refine
+  refinement_pointrend_hidden: 128
   gradient_checkpointing: true   # essential at 1024^2 with H+
   torch_compile: false
   torch_compile_mode: "default"
@@ -76,6 +89,10 @@ loss:
   # UNet3+ extras (slightly stronger at FT — fine-tune polishes both):
   refinement_fds_weight: 0.4
   cgm_weight: 0.5
+  # Boundary Distance Regression (slightly stronger at FT — boundary push)
+  boundary_distance_weight: 0.4
+  boundary_distance_clip: 80.0       # wider clip at 1024² (more pixels per image)
+  boundary_distance_normalize: true
 
 optim:
   optimizer: "adamw"
