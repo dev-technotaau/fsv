@@ -543,6 +543,9 @@ class CombinedLoss(nn.Module):
                 aux_logits: Optional[list[torch.Tensor]] = None,
                 edge_logits: Optional[torch.Tensor] = None,
                 refined_iter_logits: Optional[list[torch.Tensor]] = None,
+                refined_fds_logits: Optional[list[torch.Tensor]] = None,
+                cgm_logit: Optional[torch.Tensor] = None,
+                is_positive: Optional[torch.Tensor] = None,
                 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """Returns (total_loss, components).
 
@@ -668,6 +671,36 @@ class CombinedLoss(nn.Module):
             total = total + iter_bce_total + iter_dice_total
             components["bce_refine_iter_avg"] = (iter_bce_total / max(per_iter_w, 1e-9)).detach()
             components["dice_refine_iter_avg"] = (iter_dice_total / max(per_iter_w, 1e-9)).detach()
+
+        # UNet3+ Full-scale Deep Supervision: BCE+Dice on each FDS side head.
+        # Heads are already upsampled to image resolution by the model.
+        fds_w = float(getattr(self.cfg, "refinement_fds_weight", 0.0))
+        if fds_w > 0 and refined_fds_logits is not None and len(refined_fds_logits) > 0:
+            n_fds = len(refined_fds_logits)
+            per_head_w = fds_w / max(1, n_fds)
+            fds_bce_total = torch.zeros((), device=logits.device, dtype=torch.float32)
+            fds_dice_total = torch.zeros((), device=logits.device, dtype=torch.float32)
+            for fl in refined_fds_logits:
+                bce_f, dice_f = _bce_dice(fl)
+                if bce_f is not None and self.cfg.bce_weight > 0:
+                    fds_bce_total = (fds_bce_total
+                                     + per_head_w * self.cfg.bce_weight * bce_f.float())
+                if dice_f is not None and self.cfg.dice_weight > 0:
+                    fds_dice_total = (fds_dice_total
+                                      + per_head_w * self.cfg.dice_weight * dice_f.float())
+            total = total + fds_bce_total + fds_dice_total
+            components["bce_fds_avg"] = (fds_bce_total / max(per_head_w, 1e-9)).detach()
+            components["dice_fds_avg"] = (fds_dice_total / max(per_head_w, 1e-9)).detach()
+
+        # UNet3+ Classification-Guided Module: BCE on the per-image fence/non-
+        # fence classifier. Target = is_positive (caller builds this from
+        # batch metadata's `class` field). Skipped if either is missing.
+        cgm_w = float(getattr(self.cfg, "cgm_weight", 0.0))
+        if (cgm_w > 0 and cgm_logit is not None and is_positive is not None):
+            cgm_target = is_positive.float().to(cgm_logit.device).view_as(cgm_logit)
+            cgm_loss = F.binary_cross_entropy_with_logits(cgm_logit, cgm_target)
+            components["cgm"] = cgm_loss.detach()
+            total = total + cgm_w * cgm_loss.float()
 
         components["total"] = total.detach()
         return total, components

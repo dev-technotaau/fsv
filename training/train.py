@@ -667,6 +667,13 @@ def train_one_phase(cfg: TrainingConfig) -> int:
             x = batch["image"].to(device, non_blocking=True)
             y = batch["mask"].to(device, non_blocking=True)
             w = batch["sample_weight"].to(device, non_blocking=True)
+            # Per-image fence/non-fence label for the UNet3+ CGM head.
+            # Built from the dataset's `class` field (see tools/dataset.py).
+            # 'pos' = contains fence, anything else (neg / unknown) = no fence.
+            is_pos = torch.tensor(
+                [(m.get("class") == "pos") for m in batch["metadata"]],
+                dtype=torch.float32, device=device,
+            ).unsqueeze(1)                          # (B, 1)
 
             with torch.amp.autocast(
                 device_type=device.type,
@@ -680,6 +687,9 @@ def train_one_phase(cfg: TrainingConfig) -> int:
                     aux_logits=outputs.aux_logits,
                     edge_logits=outputs.edge_logits,
                     refined_iter_logits=outputs.refined_iter_logits,
+                    refined_fds_logits=outputs.refined_fds_logits,
+                    cgm_logit=outputs.cgm_logit,
+                    is_positive=is_pos,
                 )
 
                 # EMA self-distillation (Mean Teacher): pull live model toward

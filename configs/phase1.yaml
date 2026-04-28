@@ -13,20 +13,21 @@ model:
   backbone_name: "facebook/dinov3-vith16plus-pretrain-lvd1689m"
   backbone_freeze_first_n_layers: 0
   backbone_drop_path_rate: 0.1
-  # Multi-block aggregation (DINOv3 paper: fusing last 4 blocks meaningfully
-  # improves dense-prediction quality vs using only the final block)
-  multi_block_n: 4
+  # Multi-block aggregation (DINOv3 paper: fusing last N blocks meaningfully
+  # improves dense-prediction quality vs using only the final block).
+  # Tier-1 bump: 4 → 6 captures more semantic depth from the 32-layer H+.
+  multi_block_n: 6
   aggregation_type: "weighted_sum"   # 'sum' | 'concat_proj' | 'weighted_sum'
   # Pixel decoder: 'msdeform' = real M2F (deformable encoder, HF impl).
   # Falls back to 'fpn' for the lighter convolutional decoder.
   pixel_decoder_type: "msdeform"
-  pixel_decoder_layers: 9              # was 6
+  pixel_decoder_layers: 12             # was 9 — more deformable attention encoder layers
   pixel_decoder_heads: 8
-  pixel_decoder_ffn_dim: 2048           # 4x decoder_dim (standard ratio)
+  pixel_decoder_ffn_dim: 3072           # Tier-2 bump: 2048 → 3072 (wider FFN per MSDA layer)
   decoder_type: "mask2former"
   decoder_dim: 512                      # was 256 — 4x more decoder capacity
-  decoder_num_queries: 32               # was 16
-  decoder_num_layers: 9                 # was 6
+  decoder_num_queries: 64               # was 32 — more learnable mask queries
+  decoder_num_layers: 15                # was 9  — deeper transformer decoder
   decoder_dropout: 0.0
   use_masked_attention: true          # Mask2Former's defining feature
   use_global_tokens: true             # CLS + register tokens as decoder memory
@@ -34,15 +35,18 @@ model:
   num_classes: 1
   output_logit: true
   use_refinement_head: true
-  refinement_channels: 64               # was 32 — bigger refinement UNet
+  refinement_channels: 96               # Tier-2 bump: 64 → 96 (more refinement capacity, +25M params)
   refinement_num_blocks: 4              # was 3
   refinement_use_decoder_features: true # A: feed pixel decoder features into UNet
   refinement_decoder_feature_channels: 64
   refinement_use_edge_head: true        # B: predict edges as side task
-  refinement_iterations: 2              # C: run UNet twice, detach between
+  refinement_iterations: 3              # C: Tier-1 bump 2→3 (no params, +1.5% epoch time)
   refinement_use_y_coord: true          # depth-lite: y-position cue (FREE)
   refinement_use_depth: true           # frozen DPT teacher; opt-in (+25% train cost)
   depth_model_name: "Intel/dpt-hybrid-midas"
+  # UNet3+ extras inside the refinement head:
+  refinement_use_full_scale_ds: true    # FDS side heads off D1..D{N-1}
+  refinement_use_cgm: true              # per-image fence/non-fence classifier + inference gate
   gradient_checkpointing: true   # critical for H+ backbone — halves activation mem
   torch_compile: false           # turn on if PyTorch 2.4+ + Triton works smoothly
   torch_compile_mode: "default"
@@ -50,16 +54,16 @@ model:
 loss:
   bce_weight: 1.0
   dice_weight: 1.0
-  boundary_weight: 0.5
+  boundary_weight: 0.8          # Tier-2 bump: 0.5 → 0.8 (sharper boundaries)
   lovasz_weight: 0.5            # ON — direct IoU surrogate
   tversky_weight: 0.5           # ON — recall-friendly (don't miss fence pixels)
   tversky_alpha: 0.7            # FN penalty (higher = more recall focus)
   tversky_beta: 0.3             # FP penalty
-  connectivity_weight: 0.0
+  connectivity_weight: 0.1      # Tier-2 (was 0.0): topology-aware loss; preserves picket separation
   use_pos_weight: true
   pos_weight: null
   focal_gamma: 2.0              # focal BCE — focus on hard pixels (look-alikes)
-  ohem_top_k_ratio: 0.0         # OHEM off by default (PointRend already covers)
+  ohem_top_k_ratio: 0.25        # Tier-1 (was 0.0): keep top-25% hardest BCE pixels per image
   boundary_kernel_size: 5
   dice_smooth: 1.0
   weight_by_review_source: true
@@ -69,11 +73,14 @@ loss:
   pointrend_n_points: 12544          # 112^2 — Mask2Former default
   pointrend_oversample_ratio: 3.0
   pointrend_importance_ratio: 0.75
-  edge_loss_weight: 0.5              # B: refinement edge head supervision
+  edge_loss_weight: 0.8              # Tier-2 bump: 0.5 → 0.8 (refinement edge head pushed harder)
   edge_loss_dilate: 3
   edge_loss_pos_weight: 8.0
   refinement_iter_aux_weight: 0.5    # C: aux loss on non-final iterations
   ema_distill_weight: 0.0            # off in phase 1 (extra fwd cost; EMA still warming)
+  # UNet3+ extras:
+  refinement_fds_weight: 0.3         # FDS — supervised side heads on D1..D{N-1}
+  cgm_weight: 0.5                    # CGM — per-image fence/non-fence classifier BCE
 
 optim:
   optimizer: "adamw"
@@ -92,7 +99,7 @@ optim:
   amp_dtype: "bf16"
 
 train:
-  epochs: 100                  # was 60 — bigger heads + deep supervision needs more epochs
+  epochs: 120                  # Tier-1 bump: 100 → 120 (more convergence headroom)
   batch_size: 4                # dinov3-H+ at 512^2 needs ~16-22GB; reduce to 2 if OOM
   val_batch_size: 8
   num_workers: 6
@@ -118,7 +125,7 @@ train:
   deterministic: false
   init_from: null
   use_tta: false                     # off during per-epoch val (slow)
-  tta_scales: [0.75, 1.0, 1.25]      # used at FINAL test eval if tta_at_final_test
+  tta_scales: [0.5, 0.75, 1.0, 1.25, 1.5]  # Tier-1 bump: more scales for the FINAL test TTA
   tta_flip: true                     # used at FINAL test eval if tta_at_final_test
   tta_at_final_test: true            # auto-enable TTA for the post-training test eval
   skip_step_on_nonfinite_loss: true

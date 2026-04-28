@@ -91,6 +91,18 @@ class ModelConfig:
     refinement_use_depth: bool = False
     depth_model_name: str = "Intel/dpt-hybrid-midas"
 
+    # UNet3+ extras inside the refinement head (UNet3+ paper §3.2 + §3.3):
+    #   - full_scale_ds: side heads off D1..D{N-1} (every decoder node except the
+    #                     main output D0). Each is supervised against the same
+    #                     GT mask via BCE+Dice with a small weight, sharpening
+    #                     the intermediate decoder features.
+    #   - cgm:            per-image binary classifier off the encoder bottleneck
+    #                     ("does this image contain ANY fence pixels?"). Trained
+    #                     on the dataset's pos/neg label. At inference, gates the
+    #                     refined logits — negative images collapse to empty masks.
+    refinement_use_full_scale_ds: bool = True
+    refinement_use_cgm: bool = True
+
     # Memory / speed knobs
     gradient_checkpointing: bool = False    # halves backbone activation mem
     torch_compile: bool = False             # torch.compile(model) — 10-30% speedup
@@ -167,6 +179,15 @@ class LossConfig:
     # teacher's prediction. ~0.5-1% IoU lift on hard-case generalization.
     # 0 = disabled; 0.5 = typical. Only active if `train.use_ema=True`.
     ema_distill_weight: float = 0.0
+
+    # UNet3+ Full-scale Deep Supervision: BCE+Dice on each FDS side head from
+    # the refinement decoder (D1..D{N-1}). Total weight `refinement_fds_weight`,
+    # split evenly across the N-1 heads. 0 = disabled.
+    refinement_fds_weight: float = 0.3
+
+    # UNet3+ Classification-Guided Module: BCE on the per-image fence/non-fence
+    # classifier head. Target = (metadata.class == 'pos'). 0 = disabled.
+    cgm_weight: float = 0.5
 
 
 @dataclass
