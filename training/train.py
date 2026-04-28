@@ -38,7 +38,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 
 # Local imports
 from training.config import TrainingConfig
@@ -56,6 +56,7 @@ from tools.dataset import (
     phase1_train_aug, phase1_val_aug,
     phase2_train_aug, phase2_val_aug,
     compute_pos_weight,
+    compute_balanced_sample_weights,
     load_jsonl,
     seed_worker,
     verify_split_integrity,
@@ -284,8 +285,43 @@ def build_dataloaders(cfg: TrainingConfig, logger: logging.Logger,
     train_gen = torch.Generator()
     train_gen.manual_seed(cfg.train.seed)
 
+    # Optional class-balanced sampling: oversample rare/hard categories so the
+    # model sees them in proportion to (1/freq)^alpha. Mutually exclusive with
+    # `shuffle=True` (the sampler IS the shuffle).
+    train_sampler = None
+    if getattr(cfg.train, "use_balanced_sampler", False):
+        sample_weights = compute_balanced_sample_weights(
+            splits_dir / f"{cfg.data.train_split}.jsonl",
+            balance_by=cfg.train.balance_by,
+            alpha=cfg.train.balance_alpha,
+            min_count=cfg.train.balance_min_count,
+        )
+        train_sampler = WeightedRandomSampler(
+            weights=sample_weights, num_samples=len(sample_weights),
+            replacement=True, generator=train_gen,
+        )
+        # Quick distribution log — show the top oversampled buckets so it's
+        # obvious whether the balance knob is doing what you wanted.
+        from collections import Counter
+        rows = load_jsonl(splits_dir / f"{cfg.data.train_split}.jsonl")
+        keys = [r.get(cfg.train.balance_by, "unknown") or "unknown" for r in rows]
+        counts = Counter(keys)
+        logger.info(
+            f"Balanced sampler ON  by={cfg.train.balance_by}  "
+            f"alpha={cfg.train.balance_alpha}  buckets={len(counts)}  "
+            f"min_count_floor={cfg.train.balance_min_count}"
+        )
+        # Log top 5 weight uplifts vs uniform sampling
+        per_bucket_w = {k: ((1.0 / max(cfg.train.balance_min_count, c))
+                              ** cfg.train.balance_alpha)
+                         for k, c in counts.items()}
+        ranked = sorted(per_bucket_w.items(), key=lambda kv: -kv[1])
+        logger.info("  top oversampled buckets: " +
+                     ", ".join(f"{k}({counts[k]})" for k, _ in ranked[:5]))
+
     train_dl = DataLoader(
-        train_ds, batch_size=cfg.train.batch_size, shuffle=True,
+        train_ds, batch_size=cfg.train.batch_size,
+        shuffle=(train_sampler is None), sampler=train_sampler,
         num_workers=cfg.train.num_workers, pin_memory=cfg.train.pin_memory,
         persistent_workers=cfg.train.persistent_workers and cfg.train.num_workers > 0,
         collate_fn=collator, drop_last=True,
@@ -336,7 +372,8 @@ def validate(model: nn.Module, val_dl: DataLoader, device: torch.device,
                 probs = torch.sigmoid(logits.squeeze(1))
         # Upcast probs to fp32 so the threshold/comparison is stable
         probs = probs.float()
-        accumulator.update(probs, y)
+        sc_list = [m.get("subcategory") for m in batch["metadata"]]
+        accumulator.update(probs, y, subcategories=sc_list)
 
         # Save a few sample predictions as PNG
         if save_samples_to is not None and saved < cfg.log.save_sample_predictions:

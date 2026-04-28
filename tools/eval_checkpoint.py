@@ -198,7 +198,8 @@ def evaluate(checkpoint: Path,
                                              rgb_u8[i], post_cfg)
             probs = torch.from_numpy(masks_np.astype(np.float32)).to(dev)
 
-        accumulator.update(probs, y)
+        sc_list = [md.get("subcategory") for md in batch["metadata"]]
+        accumulator.update(probs, y, subcategories=sc_list)
 
         # Per-image rows
         for i in range(probs.shape[0]):

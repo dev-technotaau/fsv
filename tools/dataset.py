@@ -182,12 +182,22 @@ class FenceDataset(Dataset):
             mask = np.array(_mk)
         if mask.ndim == 3:
             mask = mask[..., 0]   # safety: any unexpected RGB mask -> grayscale
-        # Normalize mask values to {0, 1}. PNG masks are commonly stored as
-        # {0, 255} (PIL/OpenCV convention for visual masks); treating those as
-        # raw class indices would silently break BCE/Dice (label 255 explodes
-        # the loss) and metrics (`(targets == 1)` would be False everywhere).
-        # `(mask > 0)` is the correct, source-agnostic normalization.
-        mask = (mask > 0).astype(np.uint8)
+        # Mask encoding (per the labeling convention):
+        #   0 = background
+        #   1 = fence  (visible — the ONLY positive class)
+        #   2 = occluder in front of fence (NOT fence — must be 0 for training)
+        # Legacy / binary visual masks may use {0, 255} (PIL/OpenCV convention)
+        # — detect those by `max > 2` and fall back to "any non-zero is fence"
+        # for backward compatibility. Critical: previously this used
+        # `(mask > 0)` unconditionally, which silently collapsed value-2
+        # occluders INTO the fence class — the opposite of the labeling
+        # convention. On images with annotated occluders that's a ~20%
+        # systematic mislabel.
+        max_v = int(mask.max()) if mask.size else 0
+        if max_v > 2:
+            mask = (mask > 0).astype(np.uint8)        # legacy binary {0, 255}
+        else:
+            mask = (mask == 1).astype(np.uint8)       # tri-class {0, 1, 2}
 
         if self.transform is not None:
             out = self.transform(image=image, mask=mask)
@@ -1049,6 +1059,45 @@ def compute_class_distribution(img_jsonl: str | Path) -> dict[str, int]:
         c = r.get("class", "?")
         out[c] = out.get(c, 0) + 1
     return out
+
+
+def compute_balanced_sample_weights(img_jsonl: str | Path,
+                                      balance_by: str = "subcategory",
+                                      alpha: float = 0.5,
+                                      min_count: int = 50,
+                                      ) -> list[float]:
+    """Per-sample weights for `torch.utils.data.WeightedRandomSampler` so that
+    rare/hard categories (e.g. neg_shutter_blind, style_cedar) are oversampled
+    relative to common ones (e.g. fence_general).
+
+    For each row, weight = (1 / freq_capped) ** alpha
+        freq_capped = max(min_count, count_of_this_category_in_split)
+
+    Args:
+        balance_by: jsonl key to bucket by — typically 'subcategory' (~30 buckets,
+                     finer-grained) or 'class' (just pos/neg, coarser).
+        alpha:      0.0 = uniform (no balancing), 1.0 = inverse-frequency,
+                     0.5 = sqrt-inverse-frequency (recommended — moderate boost
+                     to rare classes without overfitting on the tiny ones).
+        min_count:  floor on per-bucket count. Prevents an N=10 rare class from
+                     being sampled 100x more than a major class. Set to ~1% of
+                     the split size as a rule of thumb.
+
+    Returns:
+        list[float] of length len(rows), in the same order as the JSONL file.
+        Pass directly to `WeightedRandomSampler(weights, num_samples=..., replacement=True)`.
+    """
+    from collections import Counter
+    rows = load_jsonl(img_jsonl)
+    keys = [r.get(balance_by, "unknown") or "unknown" for r in rows]
+    counts = Counter(keys)
+    counts_floor = {k: max(min_count, v) for k, v in counts.items()}
+    weights = [(1.0 / counts_floor[k]) ** alpha for k in keys]
+    # Normalize to mean=1 so loss-scale stays comparable to uniform sampling.
+    s = sum(weights) / max(1, len(weights))
+    if s > 0:
+        weights = [w / s for w in weights]
+    return weights
 
 
 # ══════════════════════════════════════════════════════════════════════

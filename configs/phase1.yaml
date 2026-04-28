@@ -105,6 +105,12 @@ train:
   multi_scale_max_factor: 1.25
   cutmix_p: 0.3                    # 30% of batches get pair-wise CutMix
   cutmix_alpha: 1.0
+  # Class-balanced sampling — off in phase 1 (let the model see the natural
+  # data distribution first; turn on in phase 2 to focus on weak categories).
+  use_balanced_sampler: false
+  balance_by: "subcategory"
+  balance_alpha: 0.5
+  balance_min_count: 50
   use_ema: true
   ema_decay: 0.9999
   ema_warmup_steps: 1000

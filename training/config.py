@@ -218,6 +218,16 @@ class TrainConfig:
     cutmix_p: float = 0.3
     cutmix_alpha: float = 1.0
 
+    # Class-balanced sampling (WeightedRandomSampler over the train split).
+    # Boosts rare/hard subcategories (e.g. neg_shutter_blind, style_cedar)
+    # so the model sees them roughly proportional to (1/freq)^alpha rather
+    # than to their natural frequency. Stacks orthogonally with the loss-side
+    # `weight_by_review_source`.
+    use_balanced_sampler: bool = False
+    balance_by: str = "subcategory"        # 'class' | 'subcategory'
+    balance_alpha: float = 0.5             # 0=uniform, 1=inverse-freq, 0.5=sqrt
+    balance_min_count: int = 50            # floor on per-bucket count
+
     # EMA
     use_ema: bool = True
     ema_decay: float = 0.9999

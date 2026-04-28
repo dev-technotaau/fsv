@@ -100,6 +100,13 @@ train:
   multi_scale_max_factor: 1.1
   cutmix_p: 0.15               # gentler CutMix at FT phase (was 0)
   cutmix_alpha: 1.0
+  # Class-balanced sampling — ON at FT phase to push the model on weak
+  # subcategories (cedar, look-alike negatives). Sqrt-frequency keeps the
+  # boost moderate; min_count=50 prevents over-amplifying tiny buckets.
+  use_balanced_sampler: true
+  balance_by: "subcategory"
+  balance_alpha: 0.5
+  balance_min_count: 50
   use_ema: true
   ema_decay: 0.9999
   ema_warmup_steps: 200
