@@ -95,6 +95,72 @@ def dense_crf(prob: np.ndarray, image_rgb: np.ndarray, *,
 
 
 # ══════════════════════════════════════════════════════════════════════
+# Connected-component cleanup
+# ══════════════════════════════════════════════════════════════════════
+
+def connected_component_clean(mask: np.ndarray, *,
+                                min_blob_area: int = 200,
+                                fill_holes_smaller_than: int = 0,
+                                keep_top_k_blobs: int = 0,
+                                ) -> np.ndarray:
+    """Clean up speckle false-positives + (optionally) tiny holes.
+
+    `min_blob_area`: drop any foreground blob smaller than N pixels — these
+        are almost certainly false positives in trees/grass that look like
+        wood. Default 200 (~14x14 pixels at 1024², ~7x7 at 512²).
+    `fill_holes_smaller_than`: fill BACKGROUND holes inside the fence that
+        are smaller than N pixels (e.g. occluder leftovers, picket-gap
+        artifacts smaller than expected). 0 = disabled.
+        WARNING: only enable if you're SURE you don't want to preserve
+        small interior gaps (between fence slats, etc.).
+    `keep_top_k_blobs`: if > 0, keep only the K largest foreground blobs.
+        Use to reject everything except the dominant fence regions.
+        0 = disabled (keep all blobs that pass min_blob_area).
+    """
+    if not _HAS_CV2:
+        return mask
+    m = mask.astype(np.uint8)
+    if m.max() <= 1:
+        m = (m * 255).astype(np.uint8)
+
+    # Foreground connected components
+    n_labels, labels, stats, _ = cv2.connectedComponentsWithStats(m, connectivity=8)
+    # stats: [label_id, x, y, w, h, area]; label 0 is background
+    keep_labels = []
+    for lab in range(1, n_labels):
+        if stats[lab, cv2.CC_STAT_AREA] >= min_blob_area:
+            keep_labels.append(lab)
+
+    if keep_top_k_blobs > 0 and len(keep_labels) > keep_top_k_blobs:
+        keep_labels = sorted(
+            keep_labels,
+            key=lambda l: stats[l, cv2.CC_STAT_AREA],
+            reverse=True,
+        )[:keep_top_k_blobs]
+
+    out = np.zeros_like(m)
+    for lab in keep_labels:
+        out[labels == lab] = 255
+
+    # Fill background holes smaller than threshold
+    if fill_holes_smaller_than > 0:
+        inv = 255 - out
+        n_h, h_labels, h_stats, _ = cv2.connectedComponentsWithStats(inv, connectivity=8)
+        for lab in range(1, n_h):
+            # Skip the giant outer-background component — only fill INTERIOR holes.
+            x, y, w, h = (h_stats[lab, cv2.CC_STAT_LEFT], h_stats[lab, cv2.CC_STAT_TOP],
+                           h_stats[lab, cv2.CC_STAT_WIDTH], h_stats[lab, cv2.CC_STAT_HEIGHT])
+            touches_edge = (x == 0 or y == 0
+                            or x + w >= out.shape[1] or y + h >= out.shape[0])
+            if touches_edge:
+                continue
+            if h_stats[lab, cv2.CC_STAT_AREA] < fill_holes_smaller_than:
+                out[h_labels == lab] = 255
+
+    return (out > 0).astype(np.uint8)
+
+
+# ══════════════════════════════════════════════════════════════════════
 # Cascade
 # ══════════════════════════════════════════════════════════════════════
 
@@ -138,6 +204,21 @@ def post_process(prob: np.ndarray, image_rgb: np.ndarray, cfg) -> np.ndarray:
             mask = morphology_clean(mask, kernel_size=cfg.morphology_kernel)
         else:
             warnings.warn("morphology requested but cv2 not installed",
+                           RuntimeWarning)
+    # Stage D: connected-component cleanup (fence-domain post-process)
+    use_cc = bool(getattr(cfg, "use_cc_cleanup", False))
+    if use_cc:
+        if _HAS_CV2:
+            mask = connected_component_clean(
+                mask,
+                min_blob_area=int(getattr(cfg, "cc_min_blob_area", 200)),
+                fill_holes_smaller_than=int(
+                    getattr(cfg, "cc_fill_holes_smaller_than", 0)
+                ),
+                keep_top_k_blobs=int(getattr(cfg, "cc_keep_top_k_blobs", 0)),
+            )
+        else:
+            warnings.warn("CC cleanup requested but cv2 not installed",
                            RuntimeWarning)
     return mask
 

@@ -93,6 +93,18 @@ def evaluate(checkpoint: Path,
 
     payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
     meta = payload.get("meta") or {}
+    bundled_cfg = payload.get("config") or {}
+    # Resolve config: explicit arg > bundled in checkpoint > defaults+meta
+    if config is None and bundled_cfg:
+        try:
+            config = TrainingConfig.from_dict(bundled_cfg)
+            print(f"  Using bundled config from checkpoint "
+                  f"(decoder_dim={config.model.decoder_dim}, "
+                  f"refinement_use_depth={config.model.refinement_use_depth})")
+        except Exception as e:
+            print(f"  WARN: bundled config failed to parse "
+                  f"({type(e).__name__}); falling back to defaults")
+            config = None
     if config is None:
         config = TrainingConfig()
         if "backbone_name" in meta:

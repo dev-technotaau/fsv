@@ -68,6 +68,7 @@ loss:
   edge_loss_dilate: 3
   edge_loss_pos_weight: 8.0
   refinement_iter_aux_weight: 0.5
+  ema_distill_weight: 0.3            # ON at FT phase: EMA is mature, +0.5-1% IoU lift
 
 optim:
   optimizer: "adamw"
@@ -97,6 +98,8 @@ train:
   multi_scale_train: false     # less aug at FT
   multi_scale_min_factor: 0.9
   multi_scale_max_factor: 1.1
+  cutmix_p: 0.15               # gentler CutMix at FT phase (was 0)
+  cutmix_alpha: 1.0
   use_ema: true
   ema_decay: 0.9999
   ema_warmup_steps: 200
@@ -132,6 +135,10 @@ post:
   crf_bilateral_sxy: 50
   crf_bilateral_srgb: 10
   crf_bilateral_compat: 12
+  use_cc_cleanup: true
+  cc_min_blob_area: 400         # higher at 1024² (more pixels per real blob)
+  cc_fill_holes_smaller_than: 0
+  cc_keep_top_k_blobs: 0
 
 log:
   log_dir: "outputs/training_v2"

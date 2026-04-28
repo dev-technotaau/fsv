@@ -73,6 +73,7 @@ loss:
   edge_loss_dilate: 3
   edge_loss_pos_weight: 8.0
   refinement_iter_aux_weight: 0.5    # C: aux loss on non-final iterations
+  ema_distill_weight: 0.0            # off in phase 1 (extra fwd cost; EMA still warming)
 
 optim:
   optimizer: "adamw"
@@ -102,6 +103,8 @@ train:
   multi_scale_train: true
   multi_scale_min_factor: 0.75
   multi_scale_max_factor: 1.25
+  cutmix_p: 0.3                    # 30% of batches get pair-wise CutMix
+  cutmix_alpha: 1.0
   use_ema: true
   ema_decay: 0.9999
   ema_warmup_steps: 1000
@@ -137,6 +140,11 @@ post:
   crf_bilateral_sxy: 50         # fence-tuned (was 80)
   crf_bilateral_srgb: 10        # tighter color similarity (was 13)
   crf_bilateral_compat: 12
+  # Connected-component cleanup (drops false-positive specks in trees/grass)
+  use_cc_cleanup: true
+  cc_min_blob_area: 200         # drop blobs smaller than 200 px
+  cc_fill_holes_smaller_than: 0 # 0 = preserve picket gaps
+  cc_keep_top_k_blobs: 0        # 0 = keep all blobs that pass min_area
 
 log:
   log_dir: "outputs/training_v2"

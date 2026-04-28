@@ -49,7 +49,17 @@ class CheckpointManager:
              scaler: Optional[Any] = None,
              ema: Optional[Any] = None,
              state: Optional[CheckpointState] = None,
-             extra: Optional[dict] = None) -> None:
+             extra: Optional[dict] = None,
+             config_dict: Optional[dict] = None,
+             provenance: Optional[dict] = None) -> None:
+        """Atomic checkpoint save.
+
+        `config_dict`: serialized TrainingConfig (cfg.to_dict()). Bundling it
+            here makes the checkpoint SELF-DESCRIBING — anyone loading it can
+            rebuild the exact model architecture without needing the YAML.
+        `provenance`: who/what/when (git SHA, library versions, hostname,
+            created_at). For audit + debugging post-launch.
+        """
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         payload: dict[str, Any] = {
@@ -70,6 +80,10 @@ class CheckpointManager:
             payload["scaler"] = scaler.state_dict()
         if ema is not None:
             payload["ema"] = ema.state_dict()
+        if config_dict is not None:
+            payload["config"] = config_dict
+        if provenance is not None:
+            payload["provenance"] = provenance
         if extra is not None:
             payload["extra"] = extra
         # Atomic write
@@ -97,14 +111,16 @@ class CheckpointManager:
     def save_inference_only(self,
                               path: str | Path,
                               model: nn.Module,
-                              meta: Optional[dict] = None) -> Path:
-        """Save a STRIPPED-DOWN checkpoint containing ONLY the model weights
-        + a small metadata dict. No optimizer / scheduler / EMA / RNG.
+                              meta: Optional[dict] = None,
+                              config_dict: Optional[dict] = None,
+                              provenance: Optional[dict] = None) -> Path:
+        """Save a STRIPPED-DOWN checkpoint: model weights + meta + config.
+        No optimizer / scheduler / EMA / RNG.
 
-        Use this to publish a model for inference: 3-4x smaller than a full
-        training checkpoint (no AdamW momentum tensors, etc.) and faster to
-        load. The result is loadable with CheckpointManager.load(...) just
-        like any other checkpoint."""
+        With `config_dict` bundled, the checkpoint is fully SELF-DESCRIBING:
+        loading it produces the exact same architecture that was trained,
+        no separate YAML required.
+        """
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         payload: dict[str, Any] = {
@@ -113,6 +129,10 @@ class CheckpointManager:
         }
         if meta is not None:
             payload["meta"] = meta
+        if config_dict is not None:
+            payload["config"] = config_dict
+        if provenance is not None:
+            payload["provenance"] = provenance
         tmp = path.with_suffix(path.suffix + ".tmp")
         torch.save(payload, tmp)
         if path.exists():
@@ -143,17 +163,24 @@ class CheckpointManager:
             ema.restore(model)
         return out
 
-    def save_ema(self, ema, model: nn.Module, state: CheckpointState) -> Path:
+    def save_ema(self, ema, model: nn.Module, state: CheckpointState,
+                 config_dict: Optional[dict] = None,
+                 provenance: Optional[dict] = None) -> Path:
         out = self.ckpt_dir / "ema.pt"
         # Build a "model" state dict from EMA shadow params, so it loads
         # like a normal model checkpoint.
         ema.apply_shadow(model)
         try:
-            torch.save({
+            payload: dict[str, Any] = {
                 "model": _safe_state_dict(model),
                 "state": state.__dict__,
                 "is_ema": True,
-            }, out.with_suffix(".tmp"))
+            }
+            if config_dict is not None:
+                payload["config"] = config_dict
+            if provenance is not None:
+                payload["provenance"] = provenance
+            torch.save(payload, out.with_suffix(".tmp"))
             out.with_suffix(".tmp").replace(out)
         finally:
             ema.restore(model)

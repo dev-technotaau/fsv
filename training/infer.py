@@ -80,14 +80,35 @@ class FencePredictor:
                               weights_only=False)
         meta = payload.get("meta") or {}
         self.meta = meta
+        self.provenance = payload.get("provenance") or {}
 
+        # Resolve the config in priority order:
+        #   1. explicit `config` arg from caller (always wins)
+        #   2. `config` dict bundled in the checkpoint (self-describing path)
+        #   3. fall back to defaults + the few fields in `meta`
+        bundled_config = payload.get("config")
+        if config is None and bundled_config is not None:
+            try:
+                config = TrainingConfig.from_dict(bundled_config)
+                print(f"[infer] Using bundled config from checkpoint "
+                      f"(decoder_dim={config.model.decoder_dim}, "
+                      f"layers={config.model.decoder_num_layers}, "
+                      f"depth={config.model.refinement_use_depth})")
+            except Exception as e:
+                print(f"[infer] WARN: bundled config failed to parse "
+                      f"({type(e).__name__}: {str(e)[:80]}); falling back to defaults")
+                config = None
         if config is None:
-            # Build a default config; override with whatever meta provides
+            # Last resort: defaults + meta override
             config = TrainingConfig()
             if "backbone_name" in meta:
                 config.model.backbone_name = meta["backbone_name"]
             if "image_size" in meta:
                 config.data.image_size = int(meta["image_size"])
+            print("[infer] WARN: no bundled config found; using defaults + meta. "
+                  "If the trained architecture differs from defaults, load "
+                  "may fail — provide --config <yaml> or retrain with the "
+                  "self-describing checkpoint format.")
         self.cfg = config
 
         # Build model + load weights
@@ -206,6 +227,104 @@ class FencePredictor:
         return mask
 
 
+@torch.no_grad()
+def predict_prob_sliding_window(predictor: "FencePredictor",
+                                  image: Image.Image,
+                                  tile_size: int = 1024,
+                                  overlap: int = 256,
+                                  tta_scales: tuple[float, ...] = (1.0,),
+                                  tta_flip: bool = False) -> np.ndarray:
+    """Sliding-window inference for high-resolution photos.
+
+    For images much larger than the model's training resolution (e.g. a 4K
+    customer photo), the standard `predict_prob` resizes the whole image
+    down to ~1024x1024 and loses fence-picket detail. This sliding-window
+    version:
+
+      1. Splits the image into overlapping tiles of `tile_size` x `tile_size`
+      2. Runs the model on each tile (with TTA if enabled)
+      3. Blends the per-tile probability outputs with a triangular weight
+         (so seams between tiles are smoothly blended)
+      4. Returns a probability map at the FULL original resolution
+
+    Cost: roughly N tiles × per-tile cost. For a 4000x3000 image with
+    tile_size=1024 and overlap=256, ~12 tiles → 12× single-image cost.
+    Worth it for the highest-quality on the toughest customer photos.
+
+    Args:
+      predictor:   loaded FencePredictor
+      image:       PIL Image at original size (no pre-resize)
+      tile_size:   size of each tile (and the model's effective input size)
+      overlap:     pixel overlap between adjacent tiles (more = smoother seams,
+                    more compute). Typical: tile_size // 4.
+      tta_scales:  TTA scales applied PER TILE
+      tta_flip:    flip TTA applied PER TILE
+
+    Returns:
+      (H_orig, W_orig) float32 probability map in [0, 1].
+    """
+    if image.mode != "RGB":
+        image = image.convert("RGB")
+    W, H = image.size
+    img_np = np.array(image, dtype=np.uint8)
+
+    # If the image is already small enough, fall back to single forward
+    if H <= tile_size and W <= tile_size:
+        return predictor.predict_prob(
+            image, image_size=tile_size,
+            tta_scales=tta_scales, tta_flip=tta_flip,
+        )
+
+    stride = max(1, tile_size - overlap)
+
+    # Triangular weight per tile (peak in the middle, zero at the edges) so
+    # blends look smooth where tiles overlap.
+    one_d = np.minimum(
+        np.arange(tile_size, dtype=np.float32),
+        np.arange(tile_size - 1, -1, -1, dtype=np.float32),
+    ) + 1.0
+    weight = (one_d[:, None] * one_d[None, :])
+    weight /= weight.max()
+
+    prob_acc = np.zeros((H, W), dtype=np.float32)
+    weight_acc = np.zeros((H, W), dtype=np.float32)
+
+    # Snap stride pattern so the LAST tile ends exactly at the image edge
+    def _starts(L: int) -> list[int]:
+        if L <= tile_size:
+            return [0]
+        starts = list(range(0, L - tile_size, stride))
+        if starts[-1] + tile_size < L:
+            starts.append(L - tile_size)
+        return starts
+
+    ys = _starts(H)
+    xs = _starts(W)
+    n_tiles = len(ys) * len(xs)
+    print(f"  sliding window: {len(ys)}x{len(xs)} = {n_tiles} tiles  "
+          f"(tile={tile_size}, overlap={overlap}, stride={stride})")
+
+    for y in ys:
+        for x in xs:
+            tile = img_np[y:y + tile_size, x:x + tile_size]
+            tile_pil = Image.fromarray(tile)
+            tile_prob = predictor.predict_prob(
+                tile_pil, image_size=tile_size,
+                tta_scales=tta_scales, tta_flip=tta_flip,
+            )
+            # tile_prob is at the tile's ORIGINAL size (might equal tile_size
+            # exactly, or might be slightly different if the tile was at the
+            # edge and got snapped — handle gracefully)
+            th, tw = tile_prob.shape[:2]
+            wh, ww = min(th, tile_size), min(tw, tile_size)
+            prob_acc[y:y + wh, x:x + ww] += tile_prob[:wh, :ww] * weight[:wh, :ww]
+            weight_acc[y:y + wh, x:x + ww] += weight[:wh, :ww]
+
+    # Avoid divide-by-zero in any uncovered pixels (shouldn't happen)
+    weight_acc = np.maximum(weight_acc, 1e-6)
+    return prob_acc / weight_acc
+
+
 def ensemble_predict(predictors: "list[FencePredictor]",
                       image: Image.Image,
                       image_size: Optional[int] = None,
@@ -284,6 +403,18 @@ def main() -> int:
                      help="Add DenseCRF (requires pydensecrf installed).")
     ap.add_argument("--save-overlay", action="store_true",
                      help="Also write a side-by-side overlay PNG.")
+    ap.add_argument("--save-confidence", action="store_true",
+                     help="Also write the float32 probability map (PNG, "
+                          "16-bit grayscale 0-65535) — useful for downstream "
+                          "feathering / staining renderer.")
+    ap.add_argument("--sliding-window", action="store_true",
+                     help="Sliding-window inference for ultra-high-res photos: "
+                          "tiles the image at native resolution instead of "
+                          "downscaling. Slower but preserves picket detail.")
+    ap.add_argument("--sw-tile-size", type=int, default=1024,
+                     help="Sliding-window tile size in pixels (default 1024).")
+    ap.add_argument("--sw-overlap", type=int, default=256,
+                     help="Sliding-window tile overlap in pixels (default 256).")
     args = ap.parse_args()
 
     cfg = (TrainingConfig.from_yaml(args.config) if args.config else None)
@@ -349,14 +480,42 @@ def main() -> int:
         try:
             with Image.open(p) as im:
                 im.load()
-                if len(predictors) == 1:
-                    mask = predictor.predict(
-                        im,
-                        image_size=args.image_size,
+                if args.sliding_window:
+                    # Sliding-window prob (single predictor only — ensemble
+                    # over tiles would be too expensive)
+                    prob = predict_prob_sliding_window(
+                        predictor, im,
+                        tile_size=args.sw_tile_size,
+                        overlap=args.sw_overlap,
                         tta_scales=tuple(args.tta_scales),
                         tta_flip=args.tta_flip,
-                        post=post_cfg,
                     )
+                    if post_cfg is not None and getattr(post_cfg, "enabled", False):
+                        rgb_im = im if im.mode == "RGB" else im.convert("RGB")
+                        mask = post_process(prob, np.asarray(rgb_im), post_cfg)
+                    else:
+                        mask = (prob >= 0.5).astype(np.uint8)
+                elif len(predictors) == 1:
+                    if args.save_confidence:
+                        # Need the prob map separately
+                        prob = predictor.predict_prob(
+                            im, image_size=args.image_size,
+                            tta_scales=tuple(args.tta_scales),
+                            tta_flip=args.tta_flip,
+                        )
+                        if post_cfg is not None and getattr(post_cfg, "enabled", False):
+                            rgb_im = im if im.mode == "RGB" else im.convert("RGB")
+                            mask = post_process(prob, np.asarray(rgb_im), post_cfg)
+                        else:
+                            mask = (prob >= 0.5).astype(np.uint8)
+                    else:
+                        mask = predictor.predict(
+                            im,
+                            image_size=args.image_size,
+                            tta_scales=tuple(args.tta_scales),
+                            tta_flip=args.tta_flip,
+                            post=post_cfg,
+                        )
                 else:
                     mask = ensemble_predict(
                         predictors, im,
@@ -369,6 +528,10 @@ def main() -> int:
                         else out_dir / f"{p.stem}_mask.png")
             _save_outputs(im if im.mode == "RGB" else im.convert("RGB"),
                            mask, out_path, save_overlay=args.save_overlay)
+            if args.save_confidence and 'prob' in locals():
+                conf_path = out_path.with_name(out_path.stem + "_conf.png")
+                conf16 = (np.clip(prob, 0.0, 1.0) * 65535).astype(np.uint16)
+                Image.fromarray(conf16, mode="I;16").save(conf_path)
             n_ok += 1
             if (i + 1) % 25 == 0:
                 rate = (i + 1) / (time.time() - t0 + 1e-6)

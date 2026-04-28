@@ -48,6 +48,7 @@ from training.losses import CombinedLoss
 from training.lr_scheduler import CosineWarmupScheduler, build_param_groups
 from training.metrics import SegMetricsAccumulator
 from training.model import build_model
+from training import provenance as _provenance
 
 # Dataset module from existing tools/
 from tools.dataset import (
@@ -129,35 +130,98 @@ def jsonl_log(path: Path, payload: dict) -> None:
 # ══════════════════════════════════════════════════════════════════════
 
 class MultiScaleCollator:
-    """Wraps a default collator and randomly resizes the WHOLE batch to a random
-    scale within [min_factor, max_factor] of the configured size.
+    """Wraps a default collator and:
+      1. Optionally resizes the WHOLE batch to a random scale within
+         [min_factor, max_factor] of the configured size (multi-scale aug).
+      2. Optionally applies CutMix: pairs samples in the batch and pastes a
+         random rectangular region of one onto the other, with the same cut
+         applied to the masks. Strong regularizer for segmentation.
 
     `patch_size` snaps the new H,W to a multiple of the backbone's patch stride
-    so the ViT doesn't need to auto-pad on every batch (which would defeat the
-    point of multi-scale training)."""
+    so the ViT doesn't need to auto-pad on every batch.
+    """
     def __init__(self, base_size: int, min_factor: float, max_factor: float,
-                 enabled: bool, patch_size: int, seed: int = 0):
+                 enabled: bool, patch_size: int, seed: int = 0,
+                 cutmix_p: float = 0.0,
+                 cutmix_alpha: float = 1.0):
         self.base = base_size
         self.lo = min_factor
         self.hi = max_factor
         self.enabled = enabled
         self.patch_size = max(1, int(patch_size))
         self.rng = random.Random(seed)
+        self.cutmix_p = float(cutmix_p)
+        self.cutmix_alpha = float(cutmix_alpha)
+
+    def _maybe_cutmix(self, samples: list[dict]) -> list[dict]:
+        """In-place pair-wise CutMix on a list of dict samples.
+        Pairs (0,1), (2,3), ...; if odd number, last sample is left alone.
+        For each pair: cut a random box from sample B, paste over sample A.
+        Image and mask both get the same cut/paste.
+        """
+        if self.cutmix_p <= 0 or len(samples) < 2:
+            return samples
+        # Pair adjacent samples for mixing
+        for i in range(0, len(samples) - 1, 2):
+            if self.rng.random() > self.cutmix_p:
+                continue
+            a, b = samples[i], samples[i + 1]
+            img_a = a["image"]                     # (3, H, W) tensor
+            img_b = b["image"]
+            msk_a = a["mask"]                       # (H, W) tensor
+            msk_b = b["mask"]
+            if img_a.shape != img_b.shape:
+                continue   # multi-scale already normalized but be defensive
+            _, H, W = img_a.shape
+            # Sample lambda from Beta(alpha, alpha); the cut region is
+            # ~sqrt(1-lam) * image_size on each side. Standard CutMix.
+            lam = float(np.random.beta(self.cutmix_alpha, self.cutmix_alpha))
+            cut_ratio = float(np.sqrt(1.0 - lam))
+            cw = max(1, int(W * cut_ratio))
+            ch = max(1, int(H * cut_ratio))
+            cx = self.rng.randint(0, W - 1)
+            cy = self.rng.randint(0, H - 1)
+            x0 = max(0, cx - cw // 2)
+            y0 = max(0, cy - ch // 2)
+            x1 = min(W, cx + cw // 2)
+            y1 = min(H, cy + ch // 2)
+            if x1 <= x0 or y1 <= y0:
+                continue
+            # Paste B's region onto A (clones to avoid aliasing across workers)
+            img_a = img_a.clone()
+            msk_a = msk_a.clone()
+            img_a[:, y0:y1, x0:x1] = img_b[:, y0:y1, x0:x1]
+            msk_a[y0:y1, x0:x1] = msk_b[y0:y1, x0:x1]
+            samples[i] = {**a, "image": img_a, "mask": msk_a}
+        return samples
 
     def __call__(self, batch: list[dict]) -> dict:
-        if not self.enabled:
+        if not self.enabled and self.cutmix_p <= 0:
             return _default_collate(batch)
-        s = self.rng.uniform(self.lo, self.hi)
-        ps = self.patch_size
-        new = max(ps * 4, int(round(self.base * s / ps) * ps))
-        out = []
-        for sample in batch:
-            img = sample["image"].unsqueeze(0)              # (1, 3, H, W)
-            mask = sample["mask"].unsqueeze(0).unsqueeze(0).float()
-            img2 = F.interpolate(img, size=(new, new), mode="bilinear", align_corners=False)
-            mask2 = F.interpolate(mask, size=(new, new), mode="nearest")
-            out.append({**sample, "image": img2.squeeze(0), "mask": mask2.squeeze(0).squeeze(0).long()})
-        return _default_collate(out)
+
+        # 1. Multi-scale resize (whole batch to one scale)
+        if self.enabled:
+            s = self.rng.uniform(self.lo, self.hi)
+            ps = self.patch_size
+            new = max(ps * 4, int(round(self.base * s / ps) * ps))
+            resized = []
+            for sample in batch:
+                img = sample["image"].unsqueeze(0)              # (1, 3, H, W)
+                mask = sample["mask"].unsqueeze(0).unsqueeze(0).float()
+                img2 = F.interpolate(img, size=(new, new), mode="bilinear",
+                                       align_corners=False)
+                mask2 = F.interpolate(mask, size=(new, new), mode="nearest")
+                resized.append({
+                    **sample,
+                    "image": img2.squeeze(0),
+                    "mask": mask2.squeeze(0).squeeze(0).to(sample["mask"].dtype),
+                })
+            batch = resized
+
+        # 2. CutMix (pair-wise within the batch)
+        batch = self._maybe_cutmix(batch)
+
+        return _default_collate(batch)
 
 
 def _default_collate(batch: list[dict]) -> dict:
@@ -210,6 +274,8 @@ def build_dataloaders(cfg: TrainingConfig, logger: logging.Logger,
         enabled=cfg.train.multi_scale_train,
         patch_size=patch_size,
         seed=cfg.train.seed,
+        cutmix_p=float(getattr(cfg.train, "cutmix_p", 0.0)),
+        cutmix_alpha=float(getattr(cfg.train, "cutmix_alpha", 1.0)),
     )
 
     # A generator seeds the random sampler so train shuffle order is
@@ -494,6 +560,23 @@ def train_one_phase(cfg: TrainingConfig) -> int:
                     warmup_steps=cfg.train.ema_warmup_steps) \
         if cfg.train.use_ema else None
 
+    # Snapshot full config + provenance ONCE so every checkpoint is
+    # self-describing without bloating individual write paths.
+    config_dict_snapshot = cfg.to_dict()
+    provenance_snapshot = _provenance.collect()
+    provenance_snapshot["run_name"] = cfg.log.run_name
+    provenance_snapshot["run_dir"] = str(run_dir)
+    provenance_snapshot["pipeline_version"] = "training/v2"
+
+    # Rolling history of recent val metrics — bundled into every checkpoint
+    # so reviewers can see "did training converge cleanly?" without opening
+    # TensorBoard. Keep last 10 epochs (small, ~2-3 KB total).
+    from collections import deque
+    val_history: deque = deque(maxlen=10)
+    logger.info(f"Provenance: git={provenance_snapshot.get('git', {}).get('sha', 'n/a')[:8]}  "
+                 f"host={provenance_snapshot.get('hostname', 'n/a')}  "
+                 f"torch={provenance_snapshot.get('libraries', {}).get('torch', 'n/a')}")
+
     # Checkpoint manager
     ckpt_mgr = CheckpointManager(
         ckpt_dir, keep_last_n=cfg.ckpt.keep_last_n,
@@ -561,6 +644,30 @@ def train_one_phase(cfg: TrainingConfig) -> int:
                     edge_logits=outputs.edge_logits,
                     refined_iter_logits=outputs.refined_iter_logits,
                 )
+
+                # EMA self-distillation (Mean Teacher): pull live model toward
+                # EMA-teacher predictions on the same input. Helps generalization
+                # on hard cases. Frozen teacher = no gradient through it.
+                ema_distill_w = float(getattr(cfg.loss, "ema_distill_weight", 0.0))
+                if ema is not None and ema_distill_w > 0:
+                    with torch.no_grad():
+                        ema.apply_shadow(model)
+                        try:
+                            teacher_out = model(x)
+                            teacher_logits = (teacher_out.refined_logits
+                                              if teacher_out.refined_logits is not None
+                                              else teacher_out.mask_logits)
+                            teacher_prob = torch.sigmoid(teacher_logits.detach())
+                        finally:
+                            ema.restore(model)
+                    # Student logits to compare against teacher prob
+                    student_logits = (outputs.refined_logits
+                                      if outputs.refined_logits is not None
+                                      else outputs.mask_logits)
+                    student_prob = torch.sigmoid(student_logits)
+                    distill_loss = F.mse_loss(student_prob, teacher_prob)
+                    comps["ema_distill"] = distill_loss.detach()
+                    loss = loss + ema_distill_w * distill_loss.float()
 
             # Drop the batch entirely if loss is NaN/Inf — preserves training
             # stability under occasional bad augmentations or numerical edge
@@ -680,12 +787,22 @@ def train_one_phase(cfg: TrainingConfig) -> int:
                 for k, v in val_metrics.items():
                     tb.add_scalar(f"val/{k.replace('val_', '')}", v, state.global_step)
                 tb.flush()
-            jsonl_log(metrics_jsonl, {
+            val_log_row = {
                 "epoch": epoch + 1, "global_step": state.global_step,
                 "train_loss": epoch_loss, "train_components": epoch_components,
                 "val_metrics": val_metrics, "epoch_seconds": epoch_dt,
                 "val_seconds": val_dt, "skipped_batches": n_skipped_nonfinite,
                 "timestamp": _utcnow_iso(),
+            }
+            jsonl_log(metrics_jsonl, val_log_row)
+            # Append a SLIM version (without the heavy train_components dict)
+            # to the bundled history; full row is still in val_metrics.jsonl.
+            val_history.append({
+                "epoch": epoch + 1, "global_step": state.global_step,
+                "train_loss": float(epoch_loss),
+                "val_metrics": {k: float(v) for k, v in val_metrics.items()},
+                "epoch_seconds": float(epoch_dt),
+                "skipped_batches": int(n_skipped_nonfinite),
             })
 
             # Best-model tracking (with EMA-aware save)
@@ -703,6 +820,9 @@ def train_one_phase(cfg: TrainingConfig) -> int:
                         model=model, ema=ema,
                         optimizer=optimizer, scheduler=scheduler, scaler=scaler,
                         state=state,
+                        extra={"val_history": list(val_history)},
+                        config_dict=config_dict_snapshot,
+                        provenance=provenance_snapshot,
                     )
                     # Also publish a tiny weights-only snapshot for shipping
                     # (no optimizer state — typically 3-4x smaller).
@@ -718,8 +838,14 @@ def train_one_phase(cfg: TrainingConfig) -> int:
                                 "metric_value": float(metric_value),
                                 "backbone_name": cfg.model.backbone_name,
                                 "image_size": cfg.data.image_size,
+                                "patch_size": int(getattr(model, "patch_size", 14)),
                                 "saved_at": _utcnow_iso(),
+                                "imagenet_mean": [0.485, 0.456, 0.406],
+                                "imagenet_std": [0.229, 0.224, 0.225],
+                                "val_history": list(val_history),
                             },
+                            config_dict=config_dict_snapshot,
+                            provenance=provenance_snapshot,
                         )
                     finally:
                         if ema is not None:
@@ -730,15 +856,30 @@ def train_one_phase(cfg: TrainingConfig) -> int:
                 else:
                     epochs_no_improve += 1
 
-        # Save latest + EMA + periodic
-        ckpt_mgr.save_latest(model=model, optimizer=optimizer, scheduler=scheduler,
-                              scaler=scaler, ema=ema, state=state)
+        # Save latest + EMA + periodic — all carry config + provenance + history
+        history_extra = {"val_history": list(val_history)} if val_history else None
+        ckpt_mgr.save_latest(
+            model=model, optimizer=optimizer, scheduler=scheduler,
+            scaler=scaler, ema=ema, state=state,
+            extra=history_extra,
+            config_dict=config_dict_snapshot,
+            provenance=provenance_snapshot,
+        )
         if ema is not None:
-            ckpt_mgr.save_ema(ema, model, state)
+            ckpt_mgr.save_ema(
+                ema, model, state,
+                config_dict=config_dict_snapshot,
+                provenance=provenance_snapshot,
+            )
         if (epoch + 1) % cfg.ckpt.save_every_n_epochs == 0:
-            ckpt_mgr.save_periodic(epoch + 1, model=model, optimizer=optimizer,
-                                     scheduler=scheduler, scaler=scaler,
-                                     ema=ema, state=state)
+            ckpt_mgr.save_periodic(
+                epoch + 1, model=model, optimizer=optimizer,
+                scheduler=scheduler, scaler=scaler,
+                ema=ema, state=state,
+                extra=history_extra,
+                config_dict=config_dict_snapshot,
+                provenance=provenance_snapshot,
+            )
 
         # Early stopping
         if (cfg.train.early_stop_patience > 0

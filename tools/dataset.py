@@ -603,23 +603,32 @@ class BoundaryAwareCrop(A.DualTransform):
         return ("height", "width", "boundary_p")
 
 
-class CopyPasteOccluder(A.ImageOnlyTransform):
-    """Paste a random RGBA occluder cutout (foliage, tree, person, vehicle,
-    etc.) onto the image at a random position and scale. The mask is preserved
-    intentionally — we treat the occluder as a "what the camera sees" overlay,
-    so the underlying ground-truth fence is still fence-class. This teaches
-    the model to predict fence even where it's partially blocked.
+class CopyPasteOccluder(A.DualTransform):
+    """Paste a random RGBA occluder cutout (foliage, branch, person, vehicle,
+    etc.) onto the image — AND CARVE THE GT MASK WHERE THE OCCLUDER IS OPAQUE.
+
+    This matches the labeling convention where occluders in front of the fence
+    are NOT-fence (the mask only labels visible fence pixels). After this
+    transform:
+        image[paste_region]: pixel-blended with occluder via its alpha
+        mask [paste_region]: zeroed wherever occluder alpha >= mask_carve_threshold
+
+    Net effect: model sees an opaque tree/branch in front of fence and learns
+    "this is NOT fence" — which is exactly what your manual labels say.
+
+    `max_overlap_with_fence` is intentionally HIGH for this transform (default
+    1.0 = no constraint) because we WANT the occluder to land on top of fence
+    regions: that's the whole point.
 
     Pool layout (recursive glob):
         dataset/occluders/foliage/leaf_001.png
-        dataset/occluders/foliage/branch_002.png
-        dataset/occluders/people/person_001.png
+        dataset/occluders/coco/dog/<id>.png
+        dataset/occluders/coco/person/<id>.png
         dataset/occluders/...
-    Subdirectories are treated as categories for organization but the
-    transform samples uniformly across all PNGs.
 
     Build a pool with: `python -m tools.build_occluder_pool --procedural`
-    (or `--from-images <dir>` to extract from real photos via rembg).
+    (or `--from-images <dir>` to extract from real photos via rembg, or
+    `--from-coco` to download COCO categories with built-in seg masks).
 
     Args:
       occluder_dir:        Directory to glob (recursive) for *.png files.
@@ -628,8 +637,12 @@ class CopyPasteOccluder(A.ImageOnlyTransform):
       rotation_range:      (min, max) degrees of random rotation per occluder.
       flip_p:              Per-occluder horizontal flip probability.
       color_jitter:        If True, randomly shift occluder RGB channels ±20%.
-      cache_in_memory:     Preload all occluder PNGs into RAM (recommended:
-                            saves ~5-15 ms per sample × N occluders).
+      mask_carve_threshold: Alpha threshold above which the occluder is
+                            considered opaque enough to mark mask=0 (i.e.
+                            "this pixel is occluder, not fence"). Default
+                            0.5 — matches the visual where >50% opaque pixels
+                            are visually dominated by the occluder.
+      cache_in_memory:     Preload all occluder PNGs into RAM.
       p:                   Per-image apply probability.
     """
     def __init__(self,
@@ -639,6 +652,7 @@ class CopyPasteOccluder(A.ImageOnlyTransform):
                  rotation_range: tuple[float, float] = (-20.0, 20.0),
                  flip_p: float = 0.5,
                  color_jitter: bool = True,
+                 mask_carve_threshold: float = 0.5,
                  cache_in_memory: bool = True,
                  p: float = 0.3) -> None:
         super().__init__(p=p)
@@ -648,6 +662,7 @@ class CopyPasteOccluder(A.ImageOnlyTransform):
         self.rotation_range = rotation_range
         self.flip_p = flip_p
         self.color_jitter = color_jitter
+        self.mask_carve_threshold = float(mask_carve_threshold)
         self.cache_in_memory = cache_in_memory
 
         self._occluder_paths: list[Path] = []
@@ -673,6 +688,11 @@ class CopyPasteOccluder(A.ImageOnlyTransform):
 
     def __len__(self) -> int:
         return len(self._cached) if self.cache_in_memory else len(self._occluder_paths)
+
+    def get_transform_init_args_names(self) -> tuple[str, ...]:
+        return ("occluder_dir", "max_per_image", "scale_range",
+                "rotation_range", "flip_p", "color_jitter",
+                "mask_carve_threshold", "cache_in_memory")
 
     # ── Internal helpers ─────────────────────────────────────────────
 
@@ -707,21 +727,21 @@ class CopyPasteOccluder(A.ImageOnlyTransform):
             occ[..., :3] = np.clip(rgb, 0, 255).astype(np.uint8)
         return occ
 
-    # ── Public API ───────────────────────────────────────────────────
+    # ── DualTransform: pre-compute one paste plan, apply to image + mask ─
 
-    def apply(self, image: np.ndarray, **params) -> np.ndarray:
-        # No-op if no occluders available
+    def get_params_dependent_on_data(self, params: dict, data: dict) -> dict:
+        """Pre-compute the full paste plan (occluders + positions + alphas)
+        so apply() and apply_to_mask() see the SAME state."""
         if not (self._cached or self._occluder_paths):
-            return image
-        # Derive a deterministic per-call seed from numpy's global state so the
-        # transform is reproducible when the upstream worker_init_fn seeds
-        # numpy. (Avoids constructing a fresh non-seeded RNG which leaks
-        # entropy from the OS and breaks reproducibility.)
+            return {"plan": []}
+        img = data["image"]
+        H, W = img.shape[:2]
+        # Reproducible seed from numpy global RNG (which is seeded per worker)
         seed = int(np.random.randint(0, 2**31 - 1))
         rng = np.random.default_rng(seed)
         n = int(rng.integers(1, self.max_per_image + 1))
-        H, W = image.shape[:2]
-        out = image.copy()
+
+        plan: list[dict] = []
         for _ in range(n):
             occ = self._get_occluder(rng)
             if occ is None or occ.size == 0:
@@ -729,8 +749,6 @@ class CopyPasteOccluder(A.ImageOnlyTransform):
             occ = self._augment_occluder(occ, rng)
             if occ.shape[0] < 1 or occ.shape[1] < 1:
                 continue
-
-            # Scale the occluder relative to image height
             scale = float(rng.uniform(*self.scale_range))
             target_h = max(4, int(H * scale))
             target_w = max(4, int(occ.shape[1] * (target_h / occ.shape[0])))
@@ -744,8 +762,7 @@ class CopyPasteOccluder(A.ImageOnlyTransform):
                 )
             except Exception:
                 continue
-
-            # Random position; allow partial off-frame pastes (clip to image bounds)
+            # Random position; allow partial off-frame pastes
             y0 = int(rng.integers(-target_h // 4, max(1, H - target_h * 3 // 4)))
             x0 = int(rng.integers(-target_w // 4, max(1, W - target_w * 3 // 4)))
             sy0, sx0 = max(0, -y0), max(0, -x0)
@@ -756,18 +773,55 @@ class CopyPasteOccluder(A.ImageOnlyTransform):
             pw = x1_c - x0_c
             if ph <= 0 or pw <= 0:
                 continue
+            plan.append({
+                "occ": occ_resized,
+                "sy0": sy0, "sx0": sx0,
+                "y0": y0_c, "x0": x0_c,
+                "y1": y1_c, "x1": x1_c,
+                "ph": ph, "pw": pw,
+            })
+        return {"plan": plan}
 
-            occ_rgb = occ_resized[sy0:sy0 + ph, sx0:sx0 + pw, :3].astype(np.float32)
-            alpha = (occ_resized[sy0:sy0 + ph, sx0:sx0 + pw, 3:4].astype(np.float32) / 255.0)
-            patch = out[y0_c:y1_c, x0_c:x1_c].astype(np.float32)
-            out[y0_c:y1_c, x0_c:x1_c] = (
-                patch * (1.0 - alpha) + occ_rgb * alpha
-            ).astype(np.uint8)
+    def apply(self, image: np.ndarray, plan: Optional[list] = None,
+              **params) -> np.ndarray:
+        """Paste each occluder onto the image via alpha compositing."""
+        if not plan:
+            return image
+        out = image.copy()
+        for item in plan:
+            occ = item["occ"]
+            sy0, sx0 = item["sy0"], item["sx0"]
+            y0, x0, y1, x1 = item["y0"], item["x0"], item["y1"], item["x1"]
+            ph, pw = item["ph"], item["pw"]
+            occ_rgb = occ[sy0:sy0 + ph, sx0:sx0 + pw, :3].astype(np.float32)
+            alpha = (occ[sy0:sy0 + ph, sx0:sx0 + pw, 3:4].astype(np.float32) / 255.0)
+            patch = out[y0:y1, x0:x1].astype(np.float32)
+            out[y0:y1, x0:x1] = (patch * (1.0 - alpha) + occ_rgb * alpha
+                                  ).astype(np.uint8)
         return out
 
-    def get_transform_init_args_names(self) -> tuple[str, ...]:
-        return ("occluder_dir", "max_per_image", "scale_range",
-                "rotation_range", "flip_p", "color_jitter", "cache_in_memory")
+    def apply_to_mask(self, mask: np.ndarray, plan: Optional[list] = None,
+                       **params) -> np.ndarray:
+        """CARVE the mask wherever the occluder's alpha >= mask_carve_threshold.
+
+        This is the critical fix: it makes the augmented training image
+        match the user's labeling convention (occluder in front of fence
+        => mask is 0, NOT 1)."""
+        if not plan:
+            return mask
+        out = mask.copy()
+        thr_byte = int(self.mask_carve_threshold * 255)
+        for item in plan:
+            occ = item["occ"]
+            sy0, sx0 = item["sy0"], item["sx0"]
+            y0, x0, y1, x1 = item["y0"], item["x0"], item["y1"], item["x1"]
+            ph, pw = item["ph"], item["pw"]
+            alpha_byte = occ[sy0:sy0 + ph, sx0:sx0 + pw, 3]
+            opaque = (alpha_byte >= thr_byte)
+            region = out[y0:y1, x0:x1]
+            region[opaque] = 0
+            out[y0:y1, x0:x1] = region
+        return out
 
 
 def phase1_val_aug(image_size: int = 512) -> A.Compose:

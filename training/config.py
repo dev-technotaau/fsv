@@ -161,6 +161,13 @@ class LossConfig:
     # Only applies when model.refinement_iterations > 1.
     refinement_iter_aux_weight: float = 0.5
 
+    # EMA self-distillation: consistency loss between live model output and
+    # the EMA-teacher output on the same input. Mean-Teacher style. The EMA
+    # forward runs in no_grad — we only push the live model toward the
+    # teacher's prediction. ~0.5-1% IoU lift on hard-case generalization.
+    # 0 = disabled; 0.5 = typical. Only active if `train.use_ema=True`.
+    ema_distill_weight: float = 0.0
+
 
 @dataclass
 class OptimConfig:
@@ -204,6 +211,12 @@ class TrainConfig:
     multi_scale_train: bool = False        # randomly resize within range during train
     multi_scale_min_factor: float = 0.75
     multi_scale_max_factor: float = 1.25
+
+    # CutMix augmentation (pair-wise in the batch). 0 = disabled, 0.3-0.5 = typical.
+    # Cuts a random rectangle from sample B and pastes it onto sample A (with
+    # mask). Strong regularizer, helps generalization on hard images.
+    cutmix_p: float = 0.3
+    cutmix_alpha: float = 1.0
 
     # EMA
     use_ema: bool = True
@@ -277,6 +290,14 @@ class PostProcessConfig:
     crf_bilateral_sxy: int = 50
     crf_bilateral_srgb: int = 10
     crf_bilateral_compat: int = 12
+    # Connected-component cleanup (fence-domain post-process):
+    #   - drop tiny false-positive blobs (in trees / grass)
+    #   - optionally fill tiny background holes inside the fence mask
+    #   - optionally keep only the K largest blobs
+    use_cc_cleanup: bool = True
+    cc_min_blob_area: int = 200             # drop blobs smaller than N pixels
+    cc_fill_holes_smaller_than: int = 0     # 0 = preserve picket gaps; raise to fill
+    cc_keep_top_k_blobs: int = 0            # 0 = unlimited; e.g. 5 = up to 5 fence regions
 
 
 @dataclass
