@@ -1,0 +1,87 @@
+{
+  "stats": {
+    "generated_at": "2026-04-17T09:01:28+00:00",
+    "manifest_path": "dataset\\manifest.jsonl",
+    "manifest_sha256": "d132ccd394e1906b4cb3f9619216d812ac0fe59490558e7026c4557553fa90f4",
+    "total": 33423
+  },
+  "by_tier": {
+    "RISKY": 17537,
+    "SAFE": 12367,
+    "SAFE_ATTR": 3519
+  },
+  "per_source": [
+    {
+      "source": "company_sites",
+      "count": 924,
+      "tier": "RISKY",
+      "rationale": "Direct scrapes from fence/staining company sites. Copyright held by each company.",
+      "attribution_field": null,
+      "license_url": "Varies per company"
+    },
+    {
+      "source": "pexels",
+      "count": 6915,
+      "tier": "SAFE",
+      "rationale": "Pexels License: free for commercial use, no attribution required",
+      "attribution_field": null,
+      "license_url": "https://www.pexels.com/license/"
+    },
+    {
+      "source": "pixabay",
+      "count": 2638,
+      "tier": "SAFE",
+      "rationale": "Pixabay Content License: free for commercial use, no attribution",
+      "attribution_field": null,
+      "license_url": "https://pixabay.com/service/license-summary/"
+    },
+    {
+      "source": "pw_bing",
+      "count": 4675,
+      "tier": "RISKY",
+      "rationale": "Scraped via Bing Images — same as Google. Third-party copyright.",
+      "attribution_field": null,
+      "license_url": "https://www.microsoft.com/en-us/legal/terms-of-use"
+    },
+    {
+      "source": "pw_google",
+      "count": 5726,
+      "tier": "RISKY",
+      "rationale": "Scraped via Google Images — images belong to third-party sources. Copyright unverified; commercial use not cleared.",
+      "attribution_field": null,
+      "license_url": "https://policies.google.com/terms"
+    },
+    {
+      "source": "pw_houzz",
+      "count": 4247,
+      "tier": "RISKY",
+      "rationale": "Houzz photos copyright by original companies / photographers. TOS prohibits unauthorized use.",
+      "attribution_field": null,
+      "license_url": "https://www.houzz.com/terms"
+    },
+    {
+      "source": "pw_pinterest",
+      "count": 1965,
+      "tier": "RISKY",
+      "rationale": "Pinterest pins retain original uploader copyright. Pinterest TOS prohibits commercial scraping.",
+      "attribution_field": null,
+      "license_url": "https://policy.pinterest.com/en/terms-of-service"
+    },
+    {
+      "source": "unsplash",
+      "count": 2814,
+      "tier": "SAFE",
+      "rationale": "Unsplash License: free commercial use (excludes 'Unsplash+' tier)",
+      "attribution_field": null,
+      "license_url": "https://unsplash.com/license"
+    },
+    {
+      "source": "wikimedia",
+      "count": 3519,
+      "tier": "SAFE_ATTR",
+      "rationale": "CC-BY / CC-BY-SA / PD variants — attribution required per file",
+      "attribution_field": "See per-row 'extra.license' field",
+      "license_url": "https://commons.wikimedia.org/wiki/Commons:Licensing"
+    }
+  ]
+}

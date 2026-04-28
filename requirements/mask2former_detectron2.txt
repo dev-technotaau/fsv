@@ -1,0 +1,185 @@
+# Mask2Former + Detectron2 + SegFormer-B5 Training Requirements
+# Ultra Enterprise Setup for Fence Segmentation
+# Python 3.8+ required
+
+# ============================================================================
+# CORE DEEP LEARNING FRAMEWORKS
+# ============================================================================
+torch>=2.0.0,<3.0.0              # PyTorch for deep learning
+torchvision>=0.15.0              # Vision utilities and models
+torchaudio>=2.0.0                # Audio processing (required by torch)
+
+# ============================================================================
+# DETECTRON2 (Install separately - see instructions below)
+# ============================================================================
+# detectron2 @ git+https://github.com/facebookresearch/detectron2.git
+# NOTE: Install Detectron2 manually with:
+#   python -m pip install 'git+https://github.com/facebookresearch/detectron2.git'
+# OR for development:
+#   git clone https://github.com/facebookresearch/detectron2.git
+#   python -m pip install -e detectron2
+
+# ============================================================================
+# MASK2FORMER (Install separately - see instructions below)
+# ============================================================================
+# mask2former @ git+https://github.com/facebookresearch/Mask2Former.git
+# NOTE: Install Mask2Former manually with:
+#   python -m pip install git+https://github.com/facebookresearch/Mask2Former.git
+# OR for development:
+#   git clone https://github.com/facebookresearch/Mask2Former.git
+#   cd Mask2Former
+#   pip install -r requirements.txt
+#   cd mask2former/modeling/pixel_decoder/ops
+#   sh make.sh
+
+# ============================================================================
+# COMPUTER VISION & IMAGE PROCESSING
+# ============================================================================
+opencv-python>=4.8.0             # OpenCV for image operations
+opencv-contrib-python>=4.8.0     # OpenCV with extra modules
+pillow>=10.0.0                   # PIL for image I/O
+scikit-image>=0.21.0             # Image processing algorithms
+imageio>=2.31.0                  # Image reading/writing
+
+# ============================================================================
+# DATA AUGMENTATION
+# ============================================================================
+albumentations>=1.3.0            # Advanced augmentation library
+imgaug>=0.4.0                    # Additional augmentation options
+
+# ============================================================================
+# TRANSFORMERS & NLP (for SegFormer)
+# ============================================================================
+transformers>=4.30.0             # HuggingFace Transformers for SegFormer
+tokenizers>=0.13.0               # Fast tokenizers
+sentencepiece>=0.1.99            # Tokenization
+
+# ============================================================================
+# COCO API & EVALUATION
+# ============================================================================
+pycocotools>=2.0.6               # COCO dataset API and evaluation
+# For Windows users, if pycocotools fails, use:
+# pycocotools-windows>=2.0.0.2
+
+# ============================================================================
+# SCIENTIFIC COMPUTING
+# ============================================================================
+numpy>=1.24.0,<2.0.0             # Numerical computing
+scipy>=1.10.0                    # Scientific computing
+pandas>=2.0.0                    # Data manipulation
+scikit-learn>=1.3.0              # Machine learning utilities
+
+# ============================================================================
+# VISUALIZATION & PLOTTING
+# ============================================================================
+matplotlib>=3.7.0                # Plotting library
+seaborn>=0.12.0                  # Statistical visualization
+plotly>=5.14.0                   # Interactive plots
+
+# ============================================================================
+# LOGGING & MONITORING
+# ============================================================================
+tensorboard>=2.13.0              # TensorBoard logging
+wandb>=0.15.0                    # Weights & Biases (optional)
+tqdm>=4.65.0                     # Progress bars
+colorlog>=6.7.0                  # Colored logging
+
+# ============================================================================
+# SYSTEM & UTILITIES
+# ============================================================================
+psutil>=5.9.0                    # System and process utilities
+pyyaml>=6.0                      # YAML parsing
+omegaconf>=2.3.0                 # Configuration management
+hydra-core>=1.3.0                # Configuration framework
+fvcore>=0.1.5                    # Facebook research core library
+iopath>=0.1.9                    # I/O operations
+
+# ============================================================================
+# OPTIMIZATION & ACCELERATION
+# ============================================================================
+ninja>=1.11.0                    # Build system for C++ extensions
+timm>=0.9.0                      # PyTorch Image Models
+einops>=0.6.1                    # Tensor operations
+
+# ============================================================================
+# DEVELOPMENT & TESTING
+# ============================================================================
+pytest>=7.4.0                    # Testing framework
+pytest-cov>=4.1.0                # Coverage reporting
+black>=23.7.0                    # Code formatting
+flake8>=6.0.0                    # Linting
+mypy>=1.4.0                      # Type checking
+ipython>=8.14.0                  # Interactive shell
+jupyter>=1.0.0                   # Jupyter notebooks
+notebook>=7.0.0                  # Jupyter notebook interface
+
+# ============================================================================
+# DISTRIBUTED TRAINING
+# ============================================================================
+cloudpickle>=2.2.0               # Pickle for cloud computing
+submitit>=1.4.5                  # Job submission (for clusters)
+
+# ============================================================================
+# MODEL EXPORT & DEPLOYMENT
+# ============================================================================
+onnx>=1.14.0                     # ONNX format
+onnxruntime>=1.15.0              # ONNX runtime
+onnxsim>=0.4.0                   # ONNX simplification
+caffe2                           # Caffe2 (optional, for Detectron2)
+
+# ============================================================================
+# OPTIONAL ENHANCEMENTS
+# ============================================================================
+# apex @ git+https://github.com/NVIDIA/apex.git  # NVIDIA Apex for mixed precision
+# flash-attn>=2.0.0              # Flash Attention (requires CUDA)
+# xformers>=0.0.20               # Memory-efficient transformers
+
+# ============================================================================
+# INSTALLATION INSTRUCTIONS
+# ============================================================================
+# 
+# 1. Install CUDA Toolkit 11.8 or 12.1 (match with PyTorch version)
+#    https://developer.nvidia.com/cuda-downloads
+# 
+# 2. Install PyTorch with CUDA support:
+#    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+# 
+# 3. Install Detectron2:
+#    python -m pip install 'git+https://github.com/facebookresearch/detectron2.git'
+# 
+# 4. Install Mask2Former:
+#    git clone https://github.com/facebookresearch/Mask2Former.git
+#    cd Mask2Former
+#    pip install -r requirements.txt
+#    cd mask2former/modeling/pixel_decoder/ops
+#    sh make.sh  # Linux/Mac
+#    # For Windows, compile manually or use WSL
+# 
+# 5. Install remaining requirements:
+#    pip install -r requirements_mask2former_detectron2.txt
+# 
+# 6. Verify installation:
+#    python -c "import torch; print(f'PyTorch: {torch.__version__}, CUDA: {torch.cuda.is_available()}')"
+#    python -c "import detectron2; print(f'Detectron2: {detectron2.__version__}')"
+#    python -c "from mask2former import add_maskformer2_config; print('Mask2Former: OK')"
+# 
+# ============================================================================
+# TROUBLESHOOTING
+# ============================================================================
+# 
+# Issue: CUDA out of memory
+# Solution: Reduce BATCH_SIZE in Config class
+# 
+# Issue: Detectron2 install fails
+# Solution: Install build tools (Visual Studio on Windows, GCC on Linux)
+# 
+# Issue: pycocotools fails on Windows
+# Solution: pip install pycocotools-windows
+# 
+# Issue: Mask2Former ops compilation fails
+# Solution: Use WSL on Windows or ensure CUDA toolkit is properly installed
+# 
+# Issue: Slow training
+# Solution: Enable torch.backends.cudnn.benchmark = True (default in script)
+# 
+# ============================================================================

@@ -1,0 +1,82 @@
+{
+  "generated_at": "2026-04-17T08:08:24+00:00",
+  "total": 33423,
+  "tiers": {
+    "HD": 6260,
+    "LOW": 12723,
+    "STANDARD": 13154,
+    "ULTRA": 1286
+  },
+  "by_class": {
+    "pos": {
+      "HD": 3269,
+      "LOW": 7437,
+      "STANDARD": 9987,
+      "ULTRA": 721
+    },
+    "neg": {
+      "STANDARD": 3167,
+      "LOW": 5286,
+      "HD": 2991,
+      "ULTRA": 565
+    }
+  },
+  "cumulative": [
+    {
+      "threshold": 1024,
+      "count": 20700,
+      "pct": 61.93,
+      "pos": 13977,
+      "neg": 6723
+    },
+    {
+      "threshold": 1280,
+      "count": 11542,
+      "pct": 34.53,
+      "pos": 7326,
+      "neg": 4216
+    },
+    {
+      "threshold": 1536,
+      "count": 7546,
+      "pct": 22.58,
+      "pos": 3990,
+      "neg": 3556
+    },
+    {
+      "threshold": 1792,
+      "count": 2412,
+      "pct": 7.22,
+      "pos": 1636,
+      "neg": 776
+    },
+    {
+      "threshold": 2048,
+      "count": 1286,
+      "pct": 3.85,
+      "pos": 721,
+      "neg": 565
+    },
+    {
+      "threshold": 2560,
+      "count": 768,
+      "pct": 2.3,
+      "pos": 418,
+      "neg": 350
+    },
+    {
+      "threshold": 3072,
+      "count": 336,
+      "pct": 1.01,
+      "pos": 144,
+      "neg": 192
+    }
+  ],
+  "hq_threshold": 1024,
+  "hq_counts": {
+    "all": 20700,
+    "pos": 13977,
+    "neg": 6723
+  },
+  "verify_files_issues": null
+}

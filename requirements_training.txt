@@ -1,0 +1,71 @@
+# ════════════════════════════════════════════════════════════════════════
+# Requirements for training/, configs/, tools/  (fence segmentation)
+# Cross-platform: works on Windows AND Linux. Same package versions.
+# ════════════════════════════════════════════════════════════════════════
+#
+# Python 3.11 or 3.12 recommended (3.13 works but newer; 3.10 is min).
+#
+# Install (in your activated env):
+#   pip install -r requirements_training.txt
+#
+# ─── Windows prerequisites (one-time) ─────────────────────────────────
+#   - Visual Studio 2022 Build Tools (C++ workload) — already installed
+#       cl.exe / link.exe + INCLUDE/LIB env vars needed for pydensecrf
+#   - Run pip install from a "x64 Native Tools Command Prompt for VS 2022"
+#       OR call vcvarsall.bat x64 first in your shell
+#   - git for Windows (for the pydensecrf git+ install)
+#
+# ─── Linux prerequisites (one-time) ───────────────────────────────────
+#   sudo apt install -y build-essential git python3-dev
+#
+# ─── HuggingFace authentication (both OSes, one-time) ─────────────────
+#   huggingface-cli login
+#   Then visit https://huggingface.co/facebook/dinov3-vith16plus-pretrain-lvd1689m
+#   and click "Agree and access repository" if you haven't.
+#
+# ════════════════════════════════════════════════════════════════════════
+
+# ───── PyTorch + CUDA 12.6 ─────
+# This index serves the right wheel for both Windows and Linux automatically.
+--extra-index-url https://download.pytorch.org/whl/cu126
+torch==2.11.0
+torchvision==0.26.0
+
+# ───── Core training (required by training/ + tools/dataset.py) ─────
+transformers==5.5.4              # DINOv3 + DPT-Hybrid + Mask2Former encoder layer
+albumentations==2.0.8            # full augmentation pipeline (train/val transforms)
+numpy==2.4.4
+pillow==10.4.0
+pyyaml==6.0.3                    # config.py YAML I/O
+opencv-contrib-python==4.13.0.92 # cv2 + cv2.ximgproc.guidedFilter for post-processing
+tensorboard==2.20.0              # training metrics logging
+
+# ───── DenseCRF post-processing (training/post_process.py) ─────
+# Sharpens fence-vs-grass / fence-vs-sky edges at inference.
+# Needs a C compiler at install time:
+#   Linux:   gcc (apt install build-essential)
+#   Windows: MSVC (Visual Studio 2022 Build Tools) — run install from a
+#            VS Native Tools cmd, or call vcvarsall.bat x64 first.
+cython==3.2.4
+pydensecrf @ git+https://github.com/lucasb-eyer/pydensecrf.git
+
+# ───── ONNX export (tools/export_onnx.py) ─────
+onnx==1.19.1
+onnxscript==0.7.0                # required by torch.onnx.export(opset>=17)
+onnxruntime==1.23.2              # CPU runtime for parity validation after export
+onnxruntime-gpu==1.24.4          # optional: GPU runtime for fast ONNX inference
+
+# ───── rembg (tools/build_occluder_pool.py --from-images mode) ─────
+# Only needed if you extract occluder cutouts from your own photos.
+# Procedural and --from-coco modes don't need this.
+rembg==2.0.75
+
+# ───── Gemini API trials (tools/trial_gemini3_vs_current.py) ─────
+# Only if you run the Gemini-vs-current-model labeler comparison.
+google-genai==1.73.1
+python-dotenv==1.2.1
+shapely==2.1.2
+
+# ───── Google Cloud Vision OCR (tools/scan_pii.py) ─────
+# Only if you run the PII scan over your dataset for compliance.
+google-cloud-vision==3.13.0

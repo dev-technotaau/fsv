@@ -1,0 +1,21 @@
+# Core GA engine
+typer[all]>=0.12.0
+rich>=13.7.0
+pyyaml>=6.0
+pydantic>=2.5.0
+
+# Training / eval
+torch>=2.1.0
+torchvision>=0.16.0
+numpy>=1.24.0
+Pillow>=10.0.0
+scipy>=1.11.0                         # for boundary F1 (distance_transform_edt)
+tensorboard>=2.15.0
+
+# Optional per-adapter (install as needed)
+# timm>=0.9.12                        # for EVA-02, Swin-V2, ConvNeXt-V2, BEiT-V2 (combos 05,07,08,13)
+# transformers>=4.35.0                # SegFormer, Mask2Former adapters
+# segmentation-models-pytorch>=0.3.3  # UNet++ adapter
+# opencv-python>=4.8.0                # post-processing (morphology, bilateral)
+# pydensecrf                          # ensemble CRF (combo 14) — may need system libs
+# ultralytics>=8.0.0                  # YOLO (not in current 18 but kept for future)

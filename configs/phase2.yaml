@@ -1,0 +1,149 @@
+# ============================================================
+# Phase 2: 1024px on HQ subset (fine-tune from Phase 1 best)
+# ============================================================
+# Strategy: lower LR, gentler aug, smaller batch (because 1024^2),
+# init from phase1's best checkpoint. Gets you the boundary detail
+# that Phase 1 at 512 couldn't preserve.
+#
+# Set --init-from outputs/training_v2/phase1/checkpoints/best.pt
+# (or specify init_from below).
+# ============================================================
+
+model:
+  backbone_name: "facebook/dinov3-vith16plus-pretrain-lvd1689m"
+  backbone_freeze_first_n_layers: 0
+  backbone_drop_path_rate: 0.05
+  multi_block_n: 4
+  aggregation_type: "weighted_sum"
+  pixel_decoder_type: "msdeform"
+  pixel_decoder_layers: 9
+  pixel_decoder_heads: 8
+  pixel_decoder_ffn_dim: 2048
+  decoder_type: "mask2former"
+  decoder_dim: 512
+  decoder_num_queries: 32
+  decoder_num_layers: 9
+  decoder_dropout: 0.0
+  use_masked_attention: true
+  use_global_tokens: true
+  mask_attention_threshold: 0.5
+  num_classes: 1
+  output_logit: true
+  use_refinement_head: true
+  refinement_channels: 64
+  refinement_num_blocks: 4
+  refinement_use_decoder_features: true
+  refinement_decoder_feature_channels: 64
+  refinement_use_edge_head: true
+  refinement_iterations: 2
+  refinement_use_y_coord: true
+  refinement_use_depth: true           # set true at FT phase if you can afford the ~25% slowdown
+  depth_model_name: "Intel/dpt-hybrid-midas"
+  gradient_checkpointing: true   # essential at 1024^2 with H+
+  torch_compile: false
+  torch_compile_mode: "default"
+
+loss:
+  bce_weight: 1.0
+  dice_weight: 1.0
+  boundary_weight: 0.7        # boost boundary loss at higher res
+  lovasz_weight: 0.7          # bumped at FT — IoU push at high res
+  tversky_weight: 0.7         # bumped at FT — recall push at high res
+  tversky_alpha: 0.7
+  tversky_beta: 0.3
+  connectivity_weight: 0.0
+  use_pos_weight: true
+  pos_weight: null
+  focal_gamma: 2.0
+  ohem_top_k_ratio: 0.0
+  boundary_kernel_size: 7
+  dice_smooth: 1.0
+  weight_by_review_source: true
+  deep_supervision_weight: 1.0
+  use_pointrend: true
+  pointrend_n_points: 12544
+  pointrend_oversample_ratio: 3.0
+  pointrend_importance_ratio: 0.75
+  edge_loss_weight: 0.7              # bumped at FT phase (boundary detail matters more at 1024)
+  edge_loss_dilate: 3
+  edge_loss_pos_weight: 8.0
+  refinement_iter_aux_weight: 0.5
+
+optim:
+  optimizer: "adamw"
+  base_lr: 5.0e-5             # head LR (lower than phase1)
+  backbone_lr: 2.0e-6         # backbone LR (much lower for fine-tune)
+  backbone_lr_decay: 0.85
+  weight_decay: 0.05
+  betas: [0.9, 0.999]
+  warmup_epochs: 3                # was 1 — bigger model needs longer warmup at FT
+  warmup_lr: 1.0e-8
+  lr_min: 1.0e-8
+  schedule: "cosine"
+  grad_clip_norm: 1.0
+  grad_accumulation_steps: 8   # effective batch = batch_size * accum_steps  (1 * 8 = 8)
+  use_amp: true
+  amp_dtype: "bf16"
+
+train:
+  epochs: 50                   # was 30 — bigger heads + deep sup benefits from more FT epochs
+  batch_size: 1                # dinov3-H+ at 1024^2: ~22-30GB; raise to 2 if VRAM allows
+  val_batch_size: 2
+  num_workers: 4
+  pin_memory: true
+  persistent_workers: true
+  val_every_n_epochs: 1
+  val_inference_size: 0
+  multi_scale_train: false     # less aug at FT
+  multi_scale_min_factor: 0.9
+  multi_scale_max_factor: 1.1
+  use_ema: true
+  ema_decay: 0.9999
+  ema_warmup_steps: 200
+  seed: 43
+  deterministic: false
+  init_from: "outputs/training_v2/phase1/checkpoints/best.pt"
+  use_tta: false
+  tta_scales: [0.75, 1.0, 1.25]
+  tta_flip: true
+  tta_at_final_test: true            # auto-enable TTA at final test eval
+  skip_step_on_nonfinite_loss: true
+  log_grad_norm: true
+  early_stop_patience: 0
+  early_stop_min_delta: 1.0e-4
+  run_test_eval_on_finish: true
+
+data:
+  splits_dir: "dataset/splits"
+  image_size: 1024
+  train_split: "train_hq"
+  val_split: "val_hq"
+  test_split: "test_hq"
+
+post:
+  enabled: true
+  use_morphology: true
+  morphology_kernel: 3
+  use_guided_filter: true
+  guided_filter_radius: 4
+  guided_filter_eps: 1.0e-4
+  use_dense_crf: true
+  crf_iterations: 5
+  crf_bilateral_sxy: 50
+  crf_bilateral_srgb: 10
+  crf_bilateral_compat: 12
+
+log:
+  log_dir: "outputs/training_v2"
+  run_name: "phase2"
+  log_every_n_steps: 25
+  use_tensorboard: true
+  save_sample_predictions: 8
+
+ckpt:
+  save_every_n_epochs: 3
+  save_best_metric: "val_iou"
+  save_best_mode: "max"
+  keep_last_n: 3
+  save_optimizer_state: true
+  resume_from: null

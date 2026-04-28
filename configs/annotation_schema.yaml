@@ -1,0 +1,877 @@
+# ═════════════════════════════════════════════════════════════════════════
+# MULTI-CLASS ANNOTATION SCHEMA — Grounded-SAM 2 Pipeline
+# ═════════════════════════════════════════════════════════════════════════
+# 20 classes organized into 5 functional tiers. Every pixel of every image
+# (positives + negatives) gets one class label. Priority resolution handles
+# overlapping detections — higher-priority classes win the pixel.
+#
+# Design principles:
+#   - "Functional classes" — what does this pixel DO in the scene, not just
+#     what IS it
+#   - Fine-grained fence materials for robustness across deployment
+#   - Occluders are top priority so we never paint stain over a dog/plant
+#   - Ground/sky/building as context so model learns scene-level reasoning
+#   - Gap-between-slats is handled at SAM level (natural mask shape)
+#
+# Class ID 0 is always BACKGROUND (unlabeled pixels).
+# All classes below have ID 1-19.
+
+version: "1.0.0"
+
+# ─────────────────────────────────────────────────────────────────────────
+# CLASS DEFINITIONS
+# Priority: higher value = wins pixel when multiple classes overlap.
+# Fusion rule: paint low-priority masks first, then overlay higher-priority
+# masks on top so occluders (trees, humans) beat fence underneath.
+# ─────────────────────────────────────────────────────────────────────────
+
+classes:
+
+  # ═══ TIER 1: FENCE CLASSES (main target for model) ═══
+
+  - id: 1
+    name: fence_wood
+    tier: fence
+    priority: 50
+    color: [139, 90, 43]        # cedar brown
+    is_staining_target: true    # what the stainer visualizes color on
+    prompts:
+      - "wood fence"
+      - "wooden fence"
+      - "cedar fence"
+      - "picket fence"
+      - "wooden privacy fence"
+      - "wooden plank fence"
+      - "wood board fence"
+      - "wooden shadowbox fence"
+      - "stockade fence"
+      - "board on board wooden fence"
+      - "horizontal slat wood fence"
+      - "wooden split rail fence"
+      - "painted wooden fence"
+      # Cedar-specific variants — boost DINO's match confidence on
+      # cedar fences so they get detected at >=0.30 and the fence-
+      # preservation fusion rule protects them from vegetation_occluder.
+      - "cedar horizontal slat privacy fence"
+      - "modern horizontal cedar plank fence"
+      - "cedar board and batten fence"
+      - "close-up cedar fence texture wood grain"
+      - "vertical cedar plank privacy fence"
+    box_threshold: 0.28
+    text_threshold: 0.22
+
+  - id: 2
+    name: fence_wood_post
+    tier: fence
+    priority: 55                 # slightly higher than fence_wood — posts clearly structural
+    color: [101, 67, 33]         # darker brown
+    is_staining_target: true
+    prompts:
+      - "wood fence post"
+      - "wooden fence post"
+      - "cedar fence post"
+      - "vertical wooden post in fence"
+    box_threshold: 0.30
+    text_threshold: 0.22
+
+  - id: 3
+    name: fence_wood_gate
+    tier: fence
+    priority: 52
+    color: [160, 100, 50]
+    is_staining_target: true
+    prompts:
+      - "wooden fence gate"
+      - "wood gate in fence"
+      - "wooden garden gate"
+      - "wooden driveway gate"
+    box_threshold: 0.30
+    text_threshold: 0.22
+
+  - id: 4
+    name: fence_vinyl
+    tier: fence
+    priority: 48
+    color: [240, 240, 240]       # white
+    is_staining_target: false    # cannot be stained
+    prompts:
+      - "vinyl fence"
+      - "PVC fence"
+      - "white vinyl fence"
+      - "plastic fence"
+      - "vinyl picket fence"
+      - "white plastic fence"
+      # Composite / faux-stone variants — PVC panels printed with stacked-stone
+      # texture. Generic "plastic fence" didn't match these; DINO was labeling
+      # them as logo_watermark/foreground_object/vegetation_occluder instead.
+      - "composite fence faux stone panels"
+      - "plastic fence with stone texture"
+      - "PVC faux stone privacy fence"
+      - "vinyl stacked stone panel fence"
+      # Night / warm-light variants — pure white looks cream/tan under warm
+      # porch lights, so "white vinyl fence" alone misses these.
+      - "warm lit white fence at night"
+      - "cream colored vinyl fence in evening light"
+      - "beige white fence under warm light"
+      - "vinyl fence illuminated by porch light"
+    box_threshold: 0.30
+    text_threshold: 0.22
+
+  - id: 5
+    name: fence_metal
+    tier: fence
+    priority: 48
+    color: [80, 80, 80]          # dark grey
+    is_staining_target: false
+    prompts:
+      # Common residential metal fences
+      - "chain link fence"
+      - "metal fence"
+      - "wrought iron fence"
+      - "aluminum fence"
+      - "steel fence"
+      - "wire mesh fence"
+      - "metal slat fence"
+      - "iron fence"
+      # Diamond-pattern / chain-link variants — base "chain link fence" was
+      # scoring low (c451744c) letting construction_maintenance (priority 76)
+      # claim the fence pixels instead. Specific prompts boost DINO confidence.
+      - "chain link metal fence diamond pattern"
+      - "galvanized steel mesh fence"
+      - "woven wire diamond link fence"
+      # Ornate / decorative variants — were being missed and grabbed by
+      # wood_gate_standalone / vegetation_occluder in ornate-garden photos
+      - "ornate wrought iron fence with decorative finials"
+      - "decorative iron railing fence"
+      - "wrought iron garden fence with spear points"
+      - "ornate metal gate in fence"
+      - "painted metal gate"
+      - "painted wrought iron gate"
+      - "green painted iron gate"
+      - "black painted iron gate"
+      # Agricultural / livestock
+      - "barbed wire fence"
+      - "welded wire fence"
+      - "hog wire fence"
+      - "cattle fence wire"
+      # High-security / industrial
+      - "razor wire fence"
+      - "concertina wire fence"
+      - "razor ribbon fence"
+      - "security fence with razor wire"
+      - "high security perimeter fence"
+      - "prison fence"
+      # Electric
+      - "electric fence"
+      - "electric cattle fence"
+      - "electric horse fence"
+      - "electric wire fence"
+    box_threshold: 0.30
+    text_threshold: 0.22
+
+  - id: 6
+    name: fence_masonry
+    tier: fence
+    priority: 48
+    color: [180, 130, 100]       # terracotta
+    is_staining_target: false
+    prompts:
+      - "brick fence wall"
+      - "stone fence"
+      - "concrete fence"
+      - "masonry boundary wall"
+    box_threshold: 0.32
+    text_threshold: 0.25
+
+  - id: 7
+    name: fence_natural
+    tier: fence
+    priority: 45
+    color: [30, 100, 30]         # hedge green
+    is_staining_target: false
+    prompts:
+      # Living / hedge fences
+      - "hedge boundary"
+      - "tall hedge fence"
+      - "living fence"
+      - "privet hedge fence"
+      # Natural-material constructed fences
+      - "bamboo privacy fence"
+      - "bamboo stake fence"
+      - "bamboo reed screen fence"
+      - "bamboo pole fence"
+      - "wattle fence woven sticks"
+      - "woven branch fence"
+      - "rustic stick fence"
+      - "wicker garden fence"
+    box_threshold: 0.32
+    text_threshold: 0.25
+
+  # ═══ TIER 2: FENCE-LIKE NON-FENCE (hard negatives — model must NOT paint) ═══
+
+  - id: 8
+    name: pergola_trellis
+    tier: distractor
+    priority: 40
+    color: [200, 150, 100]
+    is_staining_target: false
+    prompts:
+      - "pergola"
+      - "wooden pergola structure"
+      - "garden arbor"
+      - "wooden trellis"
+      - "climbing plant trellis"
+      # removed "wooden arbor archway" — matched distant tents / domes /
+      # pavilions (anything archway-shaped) in wide-scene shots
+    box_threshold: 0.45                # raised further (was 0.38) — wooden-siding
+                                       # houses with architectural trim matched at
+                                       # 0.52; real pergolas typically score 0.50+
+                                       # so stricter cutoff filters FPs cleanly
+    text_threshold: 0.25
+
+  - id: 9
+    name: deck_railing
+    tier: distractor
+    priority: 42                 # higher than pergola (often confused with fence)
+    color: [150, 100, 60]
+    is_staining_target: false
+    prompts:
+      - "deck railing"
+      - "porch railing"
+      - "balcony railing"
+      - "stair handrail"
+      - "wooden deck rail"
+      - "balcony balustrade"
+      # Night / warm-light variants
+      - "white deck railing at night with porch light"
+      - "porch railing under warm evening light"
+    box_threshold: 0.32
+    text_threshold: 0.25
+
+  - id: 10
+    name: wood_siding
+    tier: distractor
+    priority: 38
+    color: [175, 130, 90]
+    is_staining_target: false
+    prompts:
+      - "wood house siding"
+      - "shed exterior wood siding"
+      - "cedar shake siding"
+      - "horizontal shiplap siding"
+      - "wooden wall of building"
+      - "wood exterior wall"
+      - "log cabin wall"
+    box_threshold: 0.32
+    text_threshold: 0.25
+
+  - id: 11
+    name: wall_masonry
+    tier: distractor
+    priority: 35
+    color: [180, 100, 80]
+    is_staining_target: false
+    prompts:
+      # Freestanding / retaining walls
+      - "brick wall"
+      - "stone wall"
+      - "concrete wall"
+      - "retaining wall"
+      - "cinder block wall"
+      - "stucco wall"
+      - "dry stone wall"
+      # Short base / plinth under wood fence
+      - "masonry base under wood fence"
+      - "concrete base under wood fence"
+      - "stone plinth under fence"
+      - "brick base below fence"
+      # Integrated columns between fence panels
+      - "brick column between fence panels"
+      - "stone pillar between fence sections"
+      - "masonry pier in fence line"
+      # Adjacent / curb / footing
+      - "concrete fence footing"
+      - "concrete curb at fence base"
+      - "stone veneer on fence post"
+    box_threshold: 0.32
+    text_threshold: 0.25
+
+  # ═══ TIER 3: OCCLUDERS (highest priority — must NEVER be painted) ═══
+
+  - id: 12
+    name: vegetation_occluder
+    tier: occluder
+    priority: 80                 # beats fence underneath
+    color: [40, 180, 40]
+    is_staining_target: false
+    prompts:
+      # Trees — only FOREGROUND / OCCLUSIVE variants. Generic "tree" / "tree
+      # canopy" / "tree leaves" matched backgrounds too and ate ~50% of each
+      # image after priority fusion. Background trees belong in
+      # vegetation_background (priority 20), not here.
+      - "tree branches in front of fence"
+      # removed "tree trunk in front of fence" — cedar board-on-board fence
+      # slats have wood-grain bark-like texture that matched "tree trunk",
+      # causing veg_occluder to paint cedar fences green (see 6d79ddb4 viz).
+      # Tree trunks are narrow and rarely dominate fence occlusion anyway.
+      - "overhanging tree branch over fence"
+      - "leaves covering part of fence"
+      # Shrubs / bushes / climbers — must be in front of / on fence
+      - "bush in front of fence"
+      - "shrub in front of fence"
+      - "climbing vines on fence"
+      - "ivy covering fence"
+      - "flowering plant in front of fence"
+      - "pampas grass plume in front of fence"
+      - "miscanthus ornamental grass clump"
+      - "climbing roses on fence"
+      - "hydrangeas in front of fence"
+      - "fern in front of fence"
+      - "boxwood hedge in front of fence"
+      # Garden / crops — specific, so DINO doesn't generalize to any greenery
+      - "tomato plant in front of fence"
+      - "vegetable garden next to fence"
+      - "raised garden bed in front of fence"
+      - "cornstalks in front of fence"
+      - "sunflowers in front of fence"
+      - "tall overgrown weeds pressed against fence"
+      - "pile of fallen autumn leaves"
+      # Snow / ice specifically on or covering fence
+      - "snow on plants in foreground"
+      - "snow covering top of fence"
+      - "snow piled on fence"
+      - "snow drift on fence"
+      - "icicles on fence"
+      - "frost on fence"
+      - "ice on fence"
+      - "snow accumulation on fence top"
+    box_threshold: 0.35                # raised from 0.25 — generic greenery was
+                                       # matching too loosely and painting over fence
+    text_threshold: 0.25
+
+  - id: 13
+    name: vegetation_background
+    tier: context
+    priority: 20
+    color: [20, 120, 20]
+    is_staining_target: false
+    prompts:
+      - "tree in background"
+      - "distant trees"
+      - "background foliage"
+      - "forest in background"
+    box_threshold: 0.30
+    text_threshold: 0.22
+
+  - id: 14
+    name: human_animal
+    tier: occluder
+    priority: 90                 # highest priority — never misclassify a person
+    color: [255, 100, 100]
+    is_staining_target: false
+    prompts:
+      - "person"
+      - "child"
+      - "adult"
+      - "dog"
+      - "cat"
+      - "pet"
+      - "bird"
+      - "horse"
+      - "wildlife animal"
+      - "squirrel"
+    box_threshold: 0.25
+    text_threshold: 0.22
+
+  - id: 15
+    name: foreground_object
+    tier: occluder
+    priority: 77                 # raised from 75 to 77 — sits just above
+                                 # construction_maintenance (76) so an identified
+                                 # physical object (utility box, AC unit, sign)
+                                 # wins pixels over generic "construction debris"
+                                 # on overlap. Cedar-fence yards rarely have
+                                 # real construction; real objects are more
+                                 # common and should take precedence.
+    color: [180, 180, 50]
+    is_staining_target: false
+    prompts:
+      # Vehicles
+      - "car"
+      - "bicycle"
+      - "motorcycle"
+      - "parked vehicle"
+      - "scooter"
+      # General yard items (non-construction)
+      - "wheelbarrow"
+      - "garden hose"
+      - "garden tools"
+      # Waste / containers
+      - "trash can"
+      - "recycling bin"
+      - "compost bin"
+      # Outdoor furniture
+      - "outdoor furniture"
+      - "patio chair"
+      - "outdoor table"
+      - "hammock"
+      - "deck chair"
+      - "picnic table"
+      # Garden accessories
+      - "flower pot"
+      - "potted plant"
+      - "planter"
+      - "hanging basket"
+      - "bird feeder"
+      # Specific bird-feeder variants — plain "bird feeder" scored low; gazebo-
+      # shaped wooden feeders were matching pergola_trellis / building instead.
+      - "hanging wooden bird feeder with roof"
+      - "wooden bird feeder house on pole"
+      - "miniature gazebo bird feeder"
+      - "bird bath"
+      - "garden statue"
+      - "lawn ornament"
+      - "garden gnome"
+      - "wind chime"
+      # Garden protective structures — mesh/netting cages around vegetable beds.
+      # These are physical structures (not fences in the fence-staining sense)
+      # that the stainer should NOT paint. Previously caught loosely by generic
+      # fg-obj prompts like "playhouse" / "outdoor furniture".
+      - "garden mesh enclosure"
+      - "garden netting cage"
+      - "plant protection netting enclosure"
+      - "bird netting over garden beds"
+      - "vegetable garden mesh cover"
+      - "row cover hoop tunnel"
+      # Outdoor equipment
+      - "barbecue grill"
+      - "gas grill"
+      - "smoker"
+      - "outdoor heater"
+      - "fire pit"
+      - "air conditioner unit"
+      - "outdoor HVAC unit"
+      - "pool equipment"
+      - "propane tank"
+      - "generator"
+      # Utility / electrical enclosures — these were getting mis-labeled as
+      # construction_maintenance (e.g., the orange box in wattle-fence park photo).
+      - "electrical utility box"
+      - "electrical meter box"
+      - "electrical junction box outdoor"
+      - "utility enclosure cabinet"
+      - "transformer box outdoor"
+      - "gas meter cabinet"
+      - "water meter enclosure"
+      # Kids / leisure
+      - "children toys"
+      - "outdoor toys"
+      - "soccer ball"
+      - "basketball hoop"
+      - "trampoline"
+      - "playhouse"
+      - "swingset"
+      - "sandbox"
+      - "kiddie pool"
+      # Laundry / clothes
+      - "laundry hanging"
+      - "clothes on clothesline"
+      # Signs / graffiti / decorations attached to fence
+      - "no trespassing sign"
+      - "beware of dog sign"
+      - "sign on fence"
+      - "yard sign"
+      - "political yard sign"
+      - "real estate sign"
+      - "for sale sign"
+      - "banner on fence"
+      - "flag on fence"
+      - "graffiti on fence"
+      - "tagged fence with graffiti"
+      - "spray painted fence"
+      - "decoration hanging on fence"
+      - "wreath on fence"
+      - "holiday decoration on fence"
+      - "address number on fence"
+    box_threshold: 0.28
+    text_threshold: 0.22
+
+  - id: 16
+    name: pole_wire
+    tier: occluder
+    priority: 70
+    color: [120, 120, 120]
+    is_staining_target: false
+    prompts:
+      # Standalone poles any material (wooden, metal, concrete)
+      - "utility pole"
+      - "telephone pole"
+      - "lamp post"
+      - "light pole"
+      - "street light post"
+      - "mailbox post"
+      - "flag pole"
+      - "sign post"
+      - "wooden post standalone"
+      - "metal pole"
+      - "weathervane pole"
+      - "clothesline post"
+      # Wires / cables
+      - "power line wire"
+      - "cable wire"
+      - "overhead wire"
+      - "clothesline"
+      - "string lights"
+      - "fairy lights outdoor"
+    box_threshold: 0.28
+    text_threshold: 0.22
+
+  # ═══ TIER 4: SCENE CONTEXT (low priority — fills gaps in the image) ═══
+
+  - id: 17
+    name: ground
+    tier: context
+    priority: 10
+    color: [120, 90, 60]
+    is_staining_target: false
+    prompts:
+      - "grass lawn"
+      - "green grass"
+      - "dried grass"
+      - "dirt ground"
+      - "bare soil"
+      - "garden mulch"
+      - "wood chip mulch"
+      - "bark mulch"
+      - "gravel path"
+      - "gravel driveway"
+      - "concrete walkway"
+      - "asphalt driveway"
+      - "paved ground"
+      - "brick pathway"
+      - "flagstone pathway"
+      - "stone pavers"
+      - "snow on ground"
+      - "fallen leaves on ground"
+      - "sand"
+      - "garden bed soil"
+    box_threshold: 0.30
+    text_threshold: 0.22
+
+  - id: 18
+    name: sky
+    tier: context
+    priority: 5
+    color: [135, 206, 235]       # sky blue
+    is_staining_target: false
+    prompts:
+      - "sky"
+      - "clouds in sky"
+      - "blue sky"
+    box_threshold: 0.30
+    text_threshold: 0.25
+
+  - id: 19
+    name: building
+    tier: context
+    priority: 30
+    color: [200, 200, 160]
+    is_staining_target: false
+    prompts:
+      - "house"
+      - "garage"
+      - "shed"
+      - "building"
+      - "outbuilding"
+      - "gazebo"
+      - "wooden shed"
+      - "neighbor's house"
+      - "commercial building"
+      - "barn"
+    box_threshold: 0.30
+    text_threshold: 0.22
+
+  - id: 20
+    name: water_feature
+    tier: context
+    priority: 15                 # higher than ground, lower than fence — water typically isn't "in front of" fence but surrounds it
+    color: [70, 130, 180]         # steel blue
+    is_staining_target: false
+    prompts:
+      - "swimming pool"
+      - "backyard pool"
+      - "above ground pool"
+      - "pond"
+      - "fish pond"
+      - "decorative pond"
+      - "fountain"
+      - "water fountain"
+      # removed generic "stream" — matched desert gravel paths (9ed1294f) and
+      # grass fields (9fc85d07) at 0.38-0.45 scores. Actual streams are rare in
+      # residential cedar-fence data.
+      - "water stream flowing rapids"
+      - "hot tub"
+      - "jacuzzi"
+    box_threshold: 0.45                # tightened further — 0.42 still catching
+                                       # gravel driveway (be798613) at 0.42. Real
+                                       # pools score 0.50+, so 0.45 cutoff is
+                                       # well above terrain false positives.
+    text_threshold: 0.32
+
+  - id: 21
+    name: construction_maintenance
+    tier: occluder
+    priority: 76                 # just above foreground_object so stacked fence boards win over general "lumber pile"
+    color: [210, 130, 60]         # construction orange
+    is_staining_target: false
+    # CRITICAL class: stacked fence boards look ALMOST IDENTICAL to an assembled
+    # fence (same material, similar shapes). Dedicated class + priority gives the
+    # model an explicit "wood boards ≠ installed fence" training signal, plus
+    # covers fence/lawn maintenance debris that frequently appears in hard-positive
+    # scrape results (mid-construction photos, staining-in-progress shots, etc.).
+    prompts:
+      # ── Fence-specific construction state ──
+      - "stacked fence boards"
+      - "stack of cedar fence boards"
+      - "fence boards ready for installation"
+      - "fence panels stacked"
+      - "fence posts stacked on ground"
+      - "pile of fence slats"
+      - "bundle of fence pickets"
+      - "cedar lumber pile"
+      # ── Fence demolition / waste ──
+      - "demolished fence pile"
+      - "broken fence pieces"
+      - "old fence boards removed"
+      - "fence debris pile"
+      - "fence waste wood pile"
+      - "dismantled fence stack"
+      - "rotten fence pieces"
+      - "removed fence panels"
+      # ── General construction materials ──
+      - "lumber pile"
+      - "lumber stack"
+      - "construction materials stack"
+      - "building supplies pile"
+      - "plywood stack"
+      - "2x4 boards stack"
+      - "pallet of materials"
+      - "tarp covering materials"
+      # ── Construction debris / waste ──
+      - "construction debris pile"
+      - "sawdust pile"
+      - "wood chips pile"
+      - "scrap wood"
+      - "junk pile"
+      # ── Construction safety / markers ──
+      - "sandbag"
+      - "construction cone"
+      - "orange safety cone"
+      - "caution tape"
+      - "construction sign"
+      - "temporary barrier"
+      # ── Construction tools ──
+      - "circular saw on ground"
+      - "drill on ground"
+      - "nail gun"
+      - "hammer left outside"
+      - "power tool outdoor"
+      - "sawhorse"
+      - "ladder leaning against fence"
+      - "extension ladder"
+      - "step ladder"
+      - "scaffolding frame"
+      # ── Lawn maintenance ──
+      - "lawn mower"
+      - "riding lawn mower"
+      - "push mower"
+      - "string trimmer"
+      - "weed whacker"
+      - "edger"
+      - "leaf blower"
+      - "hedge trimmer"
+      - "chainsaw"
+      - "leaf rake"
+      - "shovel on ground"
+      - "pitchfork"
+      # ── Yard waste ──
+      - "bag of yard waste"
+      - "lawn clippings bag"
+      - "pile of leaves raked"
+      - "mulch bag"
+      - "soil bag"
+      # ── Fence maintenance (painting/staining) ──
+      - "paint can near fence"
+      - "stain can outdoor"
+      - "bucket of wood stain"
+      - "paint brush on fence"
+      - "paint roller"
+      - "paint tray"
+      - "drop cloth on ground"
+      - "masking tape on fence"
+      - "paint sprayer"
+      - "pressure washer"
+      - "pressure washing wood"
+      - "sanding equipment"
+      - "belt sander"
+    box_threshold: 0.40                # strict — "stacked fence boards" and
+                                       # "lumber pile" look visually similar to
+                                       # an intact fence close-up; only fire on
+                                       # high-confidence construction scenes
+    text_threshold: 0.28
+
+  - id: 22
+    name: wood_gate_standalone
+    tier: distractor
+    priority: 40
+    color: [140, 95, 60]          # warm mid-brown (distinct from fence_wood_gate @160/100/50)
+    is_staining_target: false
+    # A wooden gate with NO attached fence (e.g., an archway gate between hedges,
+    # a freestanding garden gate, a wooden entrance gate framed by stone walls).
+    # Distinct from fence_wood_gate (class 3, staining target) which is integrated
+    # into a fence line. Distractor tier — the stainer should NOT paint these,
+    # since the product scope is fences, not standalone architectural gates.
+    prompts:
+      # Only unambiguous wooden gates. The previous list had
+      # "arched wooden gate", "wooden gate between stone walls", etc. which
+      # DINO matched to literal stone archways (ignoring "wooden") and ate
+      # 375k-pixel chunks of masonry architecture in wikimedia garden-gate photos.
+      - "standalone wooden garden gate"
+      - "freestanding wooden gate"
+      - "wooden garden gate with no fence"
+      - "wooden entrance gate alone"
+      - "wooden garden door standalone"
+      - "rustic wooden gate isolated"
+      - "wooden driveway gate no fence"
+      - "carriage style wooden garage door"
+      - "barn sliding wood door standalone"
+      - "japanese torii wooden gate"
+      - "wooden cellar door"
+      - "wooden dutch door standalone"
+    box_threshold: 0.45                # raised further — 0.44 detections on
+                                       # bush scenes (41be6b4f) still passing.
+                                       # Real standalone wood gates usually score
+                                       # 0.50+ when clearly framed; 0.45 keeps
+                                       # those while filtering residual FPs.
+    text_threshold: 0.30
+
+  - id: 23
+    name: fence_glass
+    tier: fence
+    priority: 48
+    color: [180, 220, 240]        # very pale blue (transparent-ish)
+    is_staining_target: false
+    # Glass / transparent-panel fences — common on pool decks, modern patios,
+    # balconies. Real fences so 'fence' tier (not distractor), but non-staining
+    # because the stain-visualizer can't apply wood stain to glass.
+    prompts:
+      - "glass fence"
+      - "glass pool fence"
+      - "frameless glass pool fence"
+      - "glass panel pool enclosure"
+      - "transparent pool fence"
+      - "clear plexiglass fence"
+      - "acrylic fence panel"
+      - "glass panel fence"
+      - "glass balcony fence"
+      - "glass deck railing"
+      - "tempered glass fence"
+      - "glass wall fence outdoor"
+    box_threshold: 0.40                # raised from 0.32 — firing at 0.40 on
+                                       # white vinyl fences (a0f0c8d8) with low
+                                       # confidence; real glass pool fences
+                                       # score 0.45+ so strict cutoff is safe.
+    text_threshold: 0.30
+
+  - id: 24
+    name: logo_watermark
+    tier: occluder
+    priority: 45                 # LOWERED from 82 — at 82 false-positive logo
+                                 # detections on cedar wood grain were overwriting
+                                 # fence_wood(50)/fence_wood_post(55)/fence_wood_gate(52)
+                                 # and producing all-magenta fence viz. At 45, any
+                                 # real wood fence pixels win on overlap — cost is
+                                 # that a true watermark covering fence won't paint
+                                 # over it, which is acceptable for our dataset
+                                 # (client photos rarely have watermarks).
+    color: [255, 0, 255]          # magenta — visually obvious in viz PNGs
+    is_staining_target: false
+    # Image overlays that aren't part of the physical scene: stock-photo watermarks,
+    # company logos, signatures, URL overlays, social-media attribution. Common in
+    # scraped data from pw_pinterest, pw_houzz, company_sites sources. Must NOT be
+    # painted-over by the stainer (fence pixels behind a watermark shouldn't be
+    # classified as fence_wood, or the visualizer would generate weird colors
+    # under the watermark).
+    prompts:
+      # Stock-photo watermarks — specific brand names only. Generic "watermark
+      # on image" and "text overlay" were matching cedar wood grain (repeating
+      # vertical lines read as "text" to Grounding DINO), so those are out.
+      - "shutterstock watermark logo"
+      - "istock watermark logo"
+      - "getty images watermark logo"
+      - "adobe stock watermark logo"
+      - "dreamstime watermark logo"
+      - "alamy watermark logo"
+      # Company / branding — must be an identifiable logo, not any text
+      - "fence company logo overlay corner"
+      - "real estate company logo overlay"
+      # Social media attribution
+      - "instagram handle watermark"
+      - "pinterest watermark logo"
+      # Logos physically on the fence (painted/stuck on)
+      - "company logo sign attached to fence"
+      - "business name sign mounted on fence"
+      - "sticker decal attached to fence"
+    box_threshold: 0.50                # raised further — 0.49 false positives
+                                       # on wooden shadowbox fence (40aca171)
+                                       # still painting fence magenta. Real
+                                       # brand watermarks typically score 0.55+
+                                       # so 0.50 is safe.
+    text_threshold: 0.34
+
+# Class ID 0 is BACKGROUND (reserved) — unlabeled pixels after all classes applied.
+
+# ─────────────────────────────────────────────────────────────────────────
+# PIPELINE HYPERPARAMETERS
+# ─────────────────────────────────────────────────────────────────────────
+
+pipeline:
+  # Grounding DINO
+  grounding_dino:
+    model: "IDEA-Research/grounding-dino-base"     # max-accuracy variant (~680M params)
+    max_text_prompt_length: 256
+    batch_prompts_per_call: 4         # kept small so joined phrases stay under Grounding DINO's 256-token text-position-embedding cap
+    # Combine prompts from multiple classes into a single call using "class_a . class_b . class_c ." format
+    # Grounding DINO handles multi-class text-prompted detection natively.
+
+  # SAM 2
+  sam2:
+    model: "facebook/sam2.1-hiera-large" # SAM 2.1 (Sept 2024 update) — sharper
+                                         # boundaries, better on thin structures.
+                                         # Fallback to sam2-hiera-large if unavailable.
+    points_per_batch: 64
+    multimask_output: true               # SAM 2 returns 3 candidate masks; pick best IoU
+    mask_threshold: 0.0                  # raw SAM output threshold (final binary via > 0)
+
+  # Filtering
+  min_mask_area_pixels: 256              # drop masks smaller than this (noise)
+  min_mask_area_ratio: 0.0005            # and below this fraction of image area
+  max_boxes_per_class_per_image: 20      # cap detections per class (prevent prompt spam)
+
+  # Fusion
+  iou_merge_threshold: 0.80              # if two same-class boxes overlap by this much, merge them
+  overlap_priority_strategy: "winner_takes_pixel"
+  # Valid: "winner_takes_pixel" (simple priority), "soft_blend" (alpha), "inverse_depth" (priority × confidence)
+
+# ─────────────────────────────────────────────────────────────────────────
+# QA CONFIDENCE THRESHOLDS
+# ─────────────────────────────────────────────────────────────────────────
+
+qa:
+  # Per-image confidence scoring — images below these thresholds queued for
+  # human review.
+  min_overall_confidence: 0.55           # weighted mean of all mask confidences
+  min_fence_wood_confidence_for_positives: 0.40   # positive-class images should detect fence
+  flag_no_detections: true               # images with zero detections get auto-flagged
+  flag_if_fence_wood_missing_in_positive: true
+  sample_rate_for_qa: 0.10               # 10% of all images get queued regardless of score

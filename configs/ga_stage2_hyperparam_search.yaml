@@ -1,0 +1,48 @@
+# Stage 2: hyperparameter GA on a single combo (the Stage 1 winner).
+# Set fixed_combo to the winning key from Stage 1's hall_of_fame.json.
+
+data:
+  images_dir: data/images
+  masks_dir: data/masks
+  val_split: 0.15
+  hard_eval_dir: null
+  seed: 42
+
+fitness:
+  metric: composite
+  iou_weight: 1.0
+  boundary_f1_weight: 0.5
+  tv_smoothness_penalty: 0.1
+  proxy_budget: epochs
+  proxy_epochs: 20                   # longer than stage1 — we care about final performance
+  early_kill_iou: 0.30
+  early_kill_at_fraction: 0.3
+
+ga:
+  stage: stage2_hyperparam
+  population_size: 16
+  generations: 20
+  elite_count: 3
+  tournament_k: 4
+  crossover_prob: 0.75
+  mutation_prob: 0.35
+  combo_mutation_rate: 0.0           # NEVER change combo in stage2
+  param_mutation_rate: 0.4
+  combo_pool: null
+  # Set this to the winning combo_key from stage1 Hall of Fame
+  fixed_combo: "01_dinov2_l_m2f"
+  niching_quota: null                # irrelevant when fixed_combo is set
+  seed: 43
+  max_retries_per_individual: 1
+
+runtime:
+  output_dir: runs/ga/stage2
+  checkpoint_every_gen: 1
+  resume_from: null
+  n_gpus: 1
+  parallel_workers: 1
+  per_worker_gpu: null
+  dry_run: false
+  log_to_tensorboard: true
+  log_to_csv: true
+  timeout_per_individual_minutes: 360

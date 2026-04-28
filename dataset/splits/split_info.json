@@ -1,0 +1,406 @@
+{
+  "created_at": "2026-04-26T09:49:01+00:00",
+  "command": "split_dataset.py --manifest dataset/manifest_final.jsonl --force --group-by-dhash",
+  "python_version": "3.13.9",
+  "git_commit": null,
+  "seed": 42,
+  "ratios_requested": [
+    0.7,
+    0.15,
+    0.15
+  ],
+  "ratios_actual": [
+    0.6999,
+    0.15,
+    0.1501
+  ],
+  "min_group_size": 3,
+  "group_by_dhash": true,
+  "dhash_threshold": 5,
+  "dhash_grouping": {
+    "total_rows": 33423,
+    "unique_groups": 32898,
+    "multi_row_groups": 227,
+    "rows_in_multi_row_groups": 752,
+    "largest_group_size": 152
+  },
+  "manifest_path": "dataset\\manifest_final.jsonl",
+  "manifest_sha256": "2396de28d49b07c53ad535b7c289437b34fed0d4fb8502b74b667305e03265bd",
+  "manifest_rows": 33423,
+  "log_file": "dataset\\splits\\split_dataset.log",
+  "outputs": {
+    "train": "dataset\\splits\\train.jsonl",
+    "val": "dataset\\splits\\val.jsonl",
+    "test": "dataset\\splits\\test.jsonl"
+  },
+  "totals": {
+    "train": 23394,
+    "val": 5013,
+    "test": 5016,
+    "all": 33423
+  },
+  "small_groups_to_train": [
+    "neg:multi_structure(n=2)",
+    "neg:urban_rundown(n=1)",
+    "neg:weather_extreme(n=1)"
+  ],
+  "distribution": {
+    "neg:angle": {
+      "total": 15,
+      "buckets": 15,
+      "train": 10,
+      "val": 3,
+      "test": 2
+    },
+    "neg:complex_background": {
+      "total": 6,
+      "buckets": 6,
+      "train": 4,
+      "val": 1,
+      "test": 1
+    },
+    "neg:damaged_construction": {
+      "total": 15,
+      "buckets": 15,
+      "train": 10,
+      "val": 3,
+      "test": 2
+    },
+    "neg:fence_general": {
+      "total": 351,
+      "buckets": 350,
+      "train": 246,
+      "val": 52,
+      "test": 53
+    },
+    "neg:fence_general_wood": {
+      "total": 10,
+      "buckets": 10,
+      "train": 7,
+      "val": 1,
+      "test": 2
+    },
+    "neg:general_positive": {
+      "total": 44,
+      "buckets": 43,
+      "train": 31,
+      "val": 6,
+      "test": 7
+    },
+    "neg:humans_animals": {
+      "total": 42,
+      "buckets": 42,
+      "train": 29,
+      "val": 7,
+      "test": 6
+    },
+    "neg:lighting": {
+      "total": 33,
+      "buckets": 33,
+      "train": 23,
+      "val": 5,
+      "test": 5
+    },
+    "neg:multi_structure": {
+      "total": 2,
+      "buckets": 2,
+      "train": 2,
+      "val": 0,
+      "test": 0
+    },
+    "neg:neg_divider_louver": {
+      "total": 374,
+      "buckets": 374,
+      "train": 262,
+      "val": 56,
+      "test": 56
+    },
+    "neg:neg_furniture_back": {
+      "total": 59,
+      "buckets": 59,
+      "train": 41,
+      "val": 9,
+      "test": 9
+    },
+    "neg:neg_masonry": {
+      "total": 306,
+      "buckets": 306,
+      "train": 214,
+      "val": 46,
+      "test": 46
+    },
+    "neg:neg_nonwood_fence": {
+      "total": 981,
+      "buckets": 981,
+      "train": 687,
+      "val": 147,
+      "test": 147
+    },
+    "neg:neg_pergola_trellis": {
+      "total": 39,
+      "buckets": 39,
+      "train": 27,
+      "val": 6,
+      "test": 6
+    },
+    "neg:neg_pure_random": {
+      "total": 8985,
+      "buckets": 8985,
+      "train": 6290,
+      "val": 1347,
+      "test": 1348
+    },
+    "neg:neg_shutter_blind": {
+      "total": 180,
+      "buckets": 180,
+      "train": 126,
+      "val": 27,
+      "test": 27
+    },
+    "neg:neg_siding": {
+      "total": 158,
+      "buckets": 158,
+      "train": 111,
+      "val": 23,
+      "test": 24
+    },
+    "neg:neg_slatted_furniture": {
+      "total": 52,
+      "buckets": 52,
+      "train": 36,
+      "val": 8,
+      "test": 8
+    },
+    "neg:neg_wood_panel": {
+      "total": 274,
+      "buckets": 274,
+      "train": 192,
+      "val": 41,
+      "test": 41
+    },
+    "neg:neg_wood_yard_object": {
+      "total": 309,
+      "buckets": 309,
+      "train": 216,
+      "val": 47,
+      "test": 46
+    },
+    "neg:negative_uncategorized": {
+      "total": 292,
+      "buckets": 292,
+      "train": 204,
+      "val": 44,
+      "test": 44
+    },
+    "neg:occlusion": {
+      "total": 607,
+      "buckets": 607,
+      "train": 425,
+      "val": 91,
+      "test": 91
+    },
+    "neg:occlusion_mild": {
+      "total": 886,
+      "buckets": 886,
+      "train": 620,
+      "val": 133,
+      "test": 133
+    },
+    "neg:painted_color": {
+      "total": 3,
+      "buckets": 3,
+      "train": 2,
+      "val": 0,
+      "test": 1
+    },
+    "neg:scale_extreme": {
+      "total": 44,
+      "buckets": 44,
+      "train": 31,
+      "val": 6,
+      "test": 7
+    },
+    "neg:scene_context": {
+      "total": 2357,
+      "buckets": 2355,
+      "train": 1650,
+      "val": 353,
+      "test": 354
+    },
+    "neg:style_cedar": {
+      "total": 1159,
+      "buckets": 1159,
+      "train": 811,
+      "val": 174,
+      "test": 174
+    },
+    "neg:style_nonwood": {
+      "total": 1786,
+      "buckets": 1786,
+      "train": 1250,
+      "val": 268,
+      "test": 268
+    },
+    "neg:style_wood": {
+      "total": 724,
+      "buckets": 724,
+      "train": 507,
+      "val": 108,
+      "test": 109
+    },
+    "neg:urban_rundown": {
+      "total": 1,
+      "buckets": 1,
+      "train": 1,
+      "val": 0,
+      "test": 0
+    },
+    "neg:weather_extreme": {
+      "total": 1,
+      "buckets": 1,
+      "train": 1,
+      "val": 0,
+      "test": 0
+    },
+    "pos:angle": {
+      "total": 276,
+      "buckets": 276,
+      "train": 193,
+      "val": 42,
+      "test": 41
+    },
+    "pos:complex_background": {
+      "total": 282,
+      "buckets": 282,
+      "train": 197,
+      "val": 43,
+      "test": 42
+    },
+    "pos:damaged_construction": {
+      "total": 612,
+      "buckets": 611,
+      "train": 428,
+      "val": 92,
+      "test": 92
+    },
+    "pos:fence_general": {
+      "total": 3312,
+      "buckets": 3286,
+      "train": 2318,
+      "val": 497,
+      "test": 497
+    },
+    "pos:fence_general_wood": {
+      "total": 68,
+      "buckets": 68,
+      "train": 48,
+      "val": 10,
+      "test": 10
+    },
+    "pos:general_positive": {
+      "total": 402,
+      "buckets": 402,
+      "train": 281,
+      "val": 61,
+      "test": 60
+    },
+    "pos:humans_animals": {
+      "total": 15,
+      "buckets": 15,
+      "train": 10,
+      "val": 3,
+      "test": 2
+    },
+    "pos:lighting": {
+      "total": 480,
+      "buckets": 478,
+      "train": 336,
+      "val": 72,
+      "test": 72
+    },
+    "pos:multi_structure": {
+      "total": 358,
+      "buckets": 358,
+      "train": 251,
+      "val": 53,
+      "test": 54
+    },
+    "pos:occlusion": {
+      "total": 126,
+      "buckets": 126,
+      "train": 88,
+      "val": 19,
+      "test": 19
+    },
+    "pos:occlusion_mild": {
+      "total": 212,
+      "buckets": 212,
+      "train": 148,
+      "val": 32,
+      "test": 32
+    },
+    "pos:painted_color": {
+      "total": 93,
+      "buckets": 93,
+      "train": 65,
+      "val": 14,
+      "test": 14
+    },
+    "pos:reflection_water": {
+      "total": 78,
+      "buckets": 78,
+      "train": 55,
+      "val": 11,
+      "test": 12
+    },
+    "pos:scale_extreme": {
+      "total": 96,
+      "buckets": 96,
+      "train": 67,
+      "val": 15,
+      "test": 14
+    },
+    "pos:scene_context": {
+      "total": 23,
+      "buckets": 23,
+      "train": 16,
+      "val": 4,
+      "test": 3
+    },
+    "pos:style_cedar": {
+      "total": 3683,
+      "buckets": 3681,
+      "train": 2578,
+      "val": 553,
+      "test": 552
+    },
+    "pos:style_nonwood": {
+      "total": 3,
+      "buckets": 3,
+      "train": 2,
+      "val": 0,
+      "test": 1
+    },
+    "pos:style_wood": {
+      "total": 3194,
+      "buckets": 3192,
+      "train": 2236,
+      "val": 479,
+      "test": 479
+    },
+    "pos:urban_rundown": {
+      "total": 5,
+      "buckets": 5,
+      "train": 4,
+      "val": 0,
+      "test": 1
+    },
+    "pos:weather_extreme": {
+      "total": 10,
+      "buckets": 10,
+      "train": 7,
+      "val": 1,
+      "test": 2
+    }
+  }
+}

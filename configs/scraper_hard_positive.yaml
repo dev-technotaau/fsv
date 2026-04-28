@@ -1,0 +1,556 @@
+# Hard-positive top-up scrape — EXTENDS data_scraped/ past 17,004.
+# Robust coverage across 18 explicit hard-positive categories.
+#
+# Same dedup DB as the original positive run (data_scraped/dedup.sqlite), so
+# URL-seen and SHA checks automatically prevent duplicates with existing 17k.
+# Vision ON at relaxed threshold 0.4 (hard positives intentionally have low
+# fence-label confidence) — uses Cloud credits via Vertex.
+#
+# Hard-positive distribution (191 curated queries, target ~5,000 new saves):
+#   15  extreme occlusion       (fence 50-80% hidden by plants/snow/crops)
+#   15  challenging lighting    (backlit, night, dramatic shadows, twilight)
+#   12  extreme angles          (worm's-eye, aerial, oblique, fisheye)
+#   15  partial / damaged       (broken, rotting, under construction, mid-stain)
+#   12  complex backgrounds     (cluttered, chaotic, many distractors)
+#   10  scale extremes          (macro + telephoto + wide landscape)
+#   12  multi-structure context (fence + shed + pergola + deck etc.)
+#   12  weather extremes        (heavy snow, storm, fog, ice, hurricane)
+#   12  staining mid-process    (half-stained, drips, touch-ups, samples)
+#   10  multi-fence / corners   (two fences meeting, parallel fences)
+#    8  motion blur / focus     (pans, bokeh, shallow DOF, tilt-shift)
+#   12  painted / non-natural   (white/red/blue/black paint, peeling, graffiti)
+#    6  biological growth       (moss, algae, lichen, fungi on fence)
+#    8  reflections / water     (fence in ponds/puddles, rain streaks)
+#   10  multi-class boundary    (fence meeting grass/concrete/gravel/pavers — CRUCIAL)
+#    8  urban / run-down        (alley graffiti, abandoned, industrial grunge)
+#    8  slope / curved          (hillside, stepped, arched, wrapping)
+#    6  incidental background   (portrait/wedding/pet with fence behind)
+
+runtime:
+  target_total_images: 22000         # was 17004 → +~5000 hard positives
+  download_workers: 16
+  download_timeout_s: 15
+  max_retries: 2
+  progress_interval_s: 5.0
+  output_root: data_scraped          # SAME as positive run (extends dataset)
+  dry_run: false
+  log_level: INFO
+  log_file: data_scraped/scraper.log.jsonl
+  log_format: plain
+  min_free_disk_gb: 2.0
+  disk_check_interval_s: 30.0
+  max_image_megapixels: 100
+
+proxy:
+  enabled: false
+  proxies: []
+  failure_cool_down_s: 300.0
+
+circuit_breaker:
+  enabled: true
+  failure_threshold: 5
+  cool_down_s: 60.0
+
+content_filter:
+  enabled: true
+  extra_block_keywords: []
+  extra_block_domains: []
+
+query_priority:
+  enabled: true
+  target_per_query: 80
+
+distributed:
+  enabled: false
+  redis_url: ${REDIS_URL}
+  key_prefix: "fence_scraper:"
+
+batched_writer:
+  enabled: true
+  batch_size: 50
+  flush_interval_s: 0.5
+
+# Static/Gemini disabled — those already ran in the positive scrape. Only the
+# curated hard-positive queries below run (125 fresh prompts).
+queries:
+  use_static: false
+  use_gemini_expansion: false
+  gemini_api_key: ${GEMINI_API_KEY}
+  gemini_target_extra: 0
+  custom:
+    # ───────────── CATEGORY 1: Extreme occlusion (15 queries) ─────────────
+    # Fence 50-80% hidden by plants, snow, or terrain
+    - "cedar fence barely visible behind dense hedge"
+    - "wooden fence hidden by thick ivy leaves overgrowth"
+    - "cedar fence obscured by tall ornamental grass wall"
+    - "fence nearly buried behind hostas plantings"
+    - "wooden fence covered fallen autumn leaves pile"
+    - "cedar fence glimpsed through blooming hydrangeas"
+    - "fence partially visible through dense bamboo stalks"
+    - "wooden fence behind climbing roses wall dense"
+    - "cedar fence hidden snow drift winter"
+    - "fence behind tall cornfield stalks summer"
+    - "cedar fence under weeping willow branches hanging"
+    - "wooden fence glimpsed through forsythia spring bloom"
+    - "fence barely visible through dense fog morning"
+    - "cedar fence behind wildflower meadow tall"
+    - "wooden fence mostly obscured overgrown vines"
+
+    # ───────────── CATEGORY 2: Challenging lighting (15 queries) ─────────────
+    # Backlit, night, dramatic shadows — all underrepresented before
+    - "wooden fence backlit silhouette sunset orange"
+    - "cedar fence at night porch light warm glow"
+    - "cedar fence dramatic harsh midday shadow hot"
+    - "wooden fence golden hour long shadows amber"
+    - "fence twilight blue hour violet sky"
+    - "cedar fence moonlight night blue tone"
+    - "wooden fence silhouette sunrise foggy silhouette"
+    - "cedar fence dappled sunlight through tree canopy"
+    - "fence backlit rising sun morning mist"
+    - "cedar fence illuminated lantern warm glow evening"
+    - "wooden fence floodlight night security lit"
+    - "cedar fence snow glow dusk blue"
+    - "fence rim light contre-jour glowing edge"
+    - "wooden fence reflected puddle after rain twilight"
+    - "cedar fence flash photography nighttime contrast"
+
+    # ───────────── CATEGORY 3: Extreme angles (12 queries) ─────────────
+    - "cedar fence worms eye view looking upward"
+    - "wooden fence aerial drone top down view property"
+    - "cedar fence 45 degree oblique angle dramatic"
+    - "fence extreme perspective vanishing point receding"
+    - "cedar fence wide angle distorted curved"
+    - "wooden fence shot from below upward low angle"
+    - "cedar fence viewed from rooftop above"
+    - "fence diagonal composition dynamic angle"
+    - "wooden fence overhead drone orthogonal"
+    - "cedar fence fisheye lens distortion"
+    - "fence receding horizon long telephoto compressed"
+    - "wooden fence low angle dramatic sky"
+
+    # ───────────── CATEGORY 4: Partial / damaged / under construction (15 queries) ─────────────
+    - "broken wooden fence boards hanging loose fallen"
+    - "rotten cedar fence post leaning collapse"
+    - "wooden fence blown over wind storm damage"
+    - "cedar fence missing several boards large gap"
+    - "wooden fence half demolished removed"
+    - "cedar fence under repair new boards patched contrast"
+    - "wooden fence being built construction workers"
+    - "cedar fence panels stacked ready install"
+    - "wooden fence post holes dug new install"
+    - "cedar fence mid application stain wet brush"
+    - "wooden fence partially finished new construction"
+    - "cedar fence old weathered splitting cracking"
+    - "fence damaged tree fell across storm"
+    - "wooden fence after storm debris scattered"
+    - "cedar fence replacement new next to old weathered"
+
+    # ───────────── CATEGORY 5: Complex backgrounds (12 queries) ─────────────
+    # Fence in cluttered, chaotic scenes that test context understanding
+    - "cedar fence crowded urban backyard many objects"
+    - "wooden fence busy garden tools plants scattered"
+    - "cedar fence among multiple outdoor structures yard"
+    - "fence chaotic yard junk debris outdoor"
+    - "cedar fence busy playground equipment colorful"
+    - "wooden fence farmers market stalls vendors behind"
+    - "cedar fence workshop lumber scattered wood pile"
+    - "fence in cluttered junk yard rusty"
+    - "cedar fence greenhouse tomato plants growing behind"
+    - "wooden fence community garden plot busy"
+    - "cedar fence beside fire pit party setup night"
+    - "fence backdrop yard work scattered tools"
+
+    # ───────────── CATEGORY 6: Scale extremes (10 queries) ─────────────
+    - "cedar fence tiny small part wide landscape panorama"
+    - "wooden fence macro extreme close-up single board"
+    - "cedar fence extending to distant horizon far"
+    - "fence drone aerial property line extending long"
+    - "cedar fence telephoto compression distant view"
+    - "wooden fence filling entire frame close"
+    - "cedar fence barely visible wide panoramic shot"
+    - "fence wide panoramic countryside long view"
+    - "cedar fence magnified nail holes wood grain macro"
+    - "wooden fence detail knot grain pattern extreme close"
+
+    # ───────────── CATEGORY 7: Multi-structure context (12 queries) ─────────────
+    # Fence adjacent to multiple similar wooden structures — HARDEST to segment
+    - "cedar fence with shed pergola fire pit combination"
+    - "wooden fence corner next log cabin exterior wall"
+    - "cedar fence connecting two outbuildings yard"
+    - "fence beside tall deck railing same wood"
+    - "cedar fence between wooden pergola and shed"
+    - "wooden fence next garden shed both cedar material"
+    - "cedar fence driveway gate pergola combined"
+    - "fence corner wooden shed utility pole adjacent"
+    - "cedar fence with trellis arbor pergola all wood"
+    - "wooden fence beside wooden retaining wall"
+    - "cedar fence attached wooden deck transition"
+    - "fence wooden gazebo shed outdoor living space"
+
+    # ───────────── CATEGORY 8: Weather extremes (12 queries) ─────────────
+    - "cedar fence heavy snow drift piled high winter"
+    - "wooden fence torrential rain downpour storm"
+    - "cedar fence ice storm encased frozen"
+    - "fence after hailstorm damaged dented"
+    - "cedar fence dense thick fog barely visible"
+    - "wooden fence windstorm leaning bent gust"
+    - "cedar fence wet after rain glistening fresh"
+    - "wooden fence spring thaw melting snow"
+    - "cedar fence hurricane aftermath debris around"
+    - "fence tornado damage splintered broken"
+    - "cedar fence covered frost winter morning crystals"
+    - "wooden fence monsoon rain heavy tropical"
+
+    # ───────────── CATEGORY 9: Staining / color mid-process (12 queries) ─────────────
+    # Crucial for the staining visualizer — mid-application + transitions
+    - "cedar fence fresh stain drips running wet application"
+    - "wooden fence half stained half natural transition line"
+    - "cedar fence multiple stain colors swatches comparison"
+    - "fence mid-application brush strokes visible wet"
+    - "cedar fence paint tape masking sections staining"
+    - "wooden fence after power wash before stain raw"
+    - "cedar fence stain samples swatches test patches"
+    - "fence sanded raw wood preparation sanding"
+    - "cedar fence sealing polyurethane application shiny wet"
+    - "wooden fence weathered grey ready restain preparation"
+    - "cedar fence post-stain oil finish sheen fresh"
+    - "fence touching up stain repair small damaged area"
+
+    # ───────────── CATEGORY 10: Multi-fence / corners / transitions (10 queries) ─────────────
+    - "two cedar fences meeting at right angle corner"
+    - "parallel wooden fences alleyway narrow"
+    - "cedar fence foreground different fence background"
+    - "cedar fence transitioning to vinyl fence material change"
+    - "wooden fence different heights meeting corner"
+    - "cedar fence curving around property corner bend"
+    - "fence turning 90 degree corner post visible"
+    - "cedar fence meeting stone retaining wall"
+    - "wooden fence with gate integrated transition"
+    - "cedar fence along driveway meeting property line corner"
+
+    # ───────────── CATEGORY 11: Motion blur / focus effects (8 queries) ─────────────
+    # Photographic variations — trains model on non-sharp inputs
+    - "wooden fence motion blur car passing"
+    - "cedar fence shallow depth of field bokeh background"
+    - "fence out of focus background portrait bokeh"
+    - "cedar fence panning shot vehicle blur"
+    - "wooden fence handheld camera blur low light"
+    - "wooden fence tilt shift miniature effect"
+    - "fence artistic intentional motion blur"
+    - "cedar fence distant heat shimmer summer"
+
+    # ───────────── CATEGORY 12: Painted / non-natural color (12 queries) ─────────────
+    # Non-cedar-natural colors — white picket, black modern, red farm, peeling
+    - "white painted wooden fence picket yard"
+    - "black painted wooden fence modern contemporary"
+    - "red painted wooden picket fence farmhouse"
+    - "blue painted wooden fence coastal cottage"
+    - "green painted wooden fence garden"
+    - "grey painted wooden fence modern minimalist"
+    - "wooden fence peeling paint old weathered"
+    - "wooden fence chipped paint weathered time"
+    - "wooden fence graffiti spray paint urban"
+    - "wooden fence colorful mural painted art"
+    - "bleached sun damaged wooden fence white"
+    - "wooden fence bright primary colors playful"
+
+    # ───────────── CATEGORY 13: Biological growth (6 queries) ─────────────
+    # Moss / algae / fungi changing surface appearance
+    - "wooden fence covered in moss green thick"
+    - "wooden fence algae growth damp shaded"
+    - "cedar fence lichen patches old weathered"
+    - "wooden fence mushrooms growing rotted"
+    - "wooden fence mildew black spots weathered"
+    - "wooden fence overgrown moss damp climate"
+
+    # ───────────── CATEGORY 14: Reflections / water interactions (8 queries) ─────────────
+    # Double-visual content — trains model on reflected edges
+    - "wooden fence reflected pool water clear"
+    - "cedar fence reflected pond calm mirror surface"
+    - "wooden fence puddle reflection after rain"
+    - "fence wet glistening water droplets sprinkler"
+    - "cedar fence partially flooded yard standing water"
+    - "wooden fence rain streaks running down wet"
+    - "fence reflected wet pavement twilight"
+    - "wooden fence water macro droplets close up"
+
+    # ───────────── CATEGORY 15: Multi-class boundary transitions (10 queries) ─────────────
+    # CRITICAL for segmentation edge accuracy — fence meeting other surfaces
+    - "wooden fence meeting grass lawn edge boundary"
+    - "cedar fence base concrete walkway sidewalk transition"
+    - "wooden fence above gravel pathway garden"
+    - "cedar fence edge mulched garden bed"
+    - "wooden fence meeting brick patio transition"
+    - "cedar fence base stone pavers patio"
+    - "wooden fence on asphalt driveway edge"
+    - "fence meeting pool deck wood transition"
+    - "cedar fence base river rocks decorative"
+    - "wooden fence edge wood chips landscaping"
+
+    # ───────────── CATEGORY 16: Urban / run-down / aged (8 queries) ─────────────
+    # Grunge texture variation — industrial, neglected, alley settings
+    - "urban alley wooden fence graffiti tagged"
+    - "abandoned wooden fence overgrown weeds rural"
+    - "wooden fence between dumpsters alley narrow"
+    - "weathered wooden fence run down neighborhood"
+    - "wooden fence construction site rough temporary"
+    - "wooden fence behind garbage cans dirty"
+    - "wooden fence industrial area grunge urban"
+    - "wooden fence alleyway urban dense city"
+
+    # ───────────── CATEGORY 17: Slope / curved / geometric (8 queries) ─────────────
+    # Non-flat terrain and non-straight fence lines
+    - "cedar fence on steep hillside slope property"
+    - "wooden fence stepping down terrain hill"
+    - "fence on top retaining wall combination"
+    - "cedar fence along sloped driveway"
+    - "wooden fence curving arc around garden bed"
+    - "cedar fence wrapping pool curved"
+    - "wooden fence arched top decorative"
+    - "fence 135 degree corner obtuse angle"
+
+    # ───────────── CATEGORY 18: Incidental background (6 queries) ─────────────
+    # Fence is NOT the subject — trains model on low-salience fence detection
+    - "portrait photo with wooden fence behind background"
+    - "wedding photo wooden fence backdrop"
+    - "child playing with wooden fence behind"
+    - "pet dog with wooden fence behind portrait"
+    - "family photo wooden fence backyard background"
+    - "engagement photo wooden fence blurred"
+
+quality:
+  min_width: 800
+  min_height: 600
+  max_width: 8000
+  max_height: 8000
+  min_aspect: 0.4
+  max_aspect: 2.5
+  min_bytes: 40000
+  max_bytes: 25000000
+
+# SAME dedup DB as positive run → automatic URL/SHA dedup against existing 17k
+dedup:
+  phash_hamming_threshold: 5
+  db_path: data_scraped/dedup.sqlite
+
+storage:
+  images_dir: data_scraped/images
+  metadata_jsonl: data_scraped/metadata.jsonl
+  failed_log: data_scraped/failures.jsonl
+  file_extension: jpg
+
+# ───────────────────────── PAID ─────────────────────────
+
+google_cse:
+  enabled: false
+  api_key: ${GOOGLE_CSE_API_KEY}
+  cx: ${GOOGLE_CSE_CX}
+  rate_limit_per_minute: 30
+  max_concurrent: 4
+  target_images: 3000
+
+# VISION ENABLED — Vertex AI → Cloud credits.
+# Threshold lowered to 0.4 (from 0.6) because hard positives intentionally have
+# low fence-label confidence (heavy occlusion, partial visibility, unusual angles,
+# extreme lighting). 0.6 would reject ~30-50% of valid hard positives. 0.4 still
+# filters clearly off-topic results but keeps the edge cases we actually want.
+google_vision:
+  enabled: true
+  credentials_json: ${GOOGLE_APPLICATION_CREDENTIALS}
+  min_fence_confidence: 0.4
+  sample_rate: 1.0
+  batch_size: 10
+  batch_timeout_ms: 500
+  labels_to_accept:
+    # ── Direct fence-family ──
+    - Fence
+    - Picket fence
+    - Home fencing
+    - Wall
+    # ── Wood / material (common top label for close-ups) ──
+    - Wood
+    - Lumber                # board/plank-level shots
+    - Plank                 # fence-board close-ups, wood-grain macros
+    - Hardwood
+    # ── Fence-adjacent wooden structures (common in positive scenes) ──
+    - Gate                  # fence gates (may be dominant over "Fence")
+    - Deck                  # fences + deck combos
+    - Pergola               # fences + pergola
+    - Arbor                 # fences + arbor
+    - Lattice               # lattice-top fences, trellises
+    # ── Context / setting (outdoor fence scenes) ──
+    - Yard
+    - Backyard
+    - Lawn
+    - Garden
+    - Landscape
+    - Outdoor
+    - Property
+    - Rural area            # farm/pasture fences
+    # ── Occluders / foreground (heavy-occlusion fence queries) ──
+    - Plant                 # fence-behind-plants queries
+    - Tree
+    - Shrub
+    - Hedge
+    - Flower                # fences with flowers in front (very common)
+    - Flowering plant
+    - Leaf                  # autumn/foliage occlusion
+    - Ivy                   # climbing ivy on fences
+    - Vine                  # similar
+    # ── Weather / lighting extremes ──
+    - Snow
+    - Fog
+    - Winter
+    - Rain
+
+# ───────────────────────── FREE WITH API KEY ─────────────────────────
+
+pexels:
+  enabled: true
+  api_key: ${PEXELS_API_KEY}
+  rate_limit_per_minute: 200
+  max_concurrent: 4
+  target_images: 3500
+
+unsplash:
+  enabled: true
+  access_key: ${UNSPLASH_ACCESS_KEY}
+  rate_limit_per_minute: 50
+  max_concurrent: 2
+  target_images: 1500
+
+pixabay:
+  enabled: true
+  api_key: ${PIXABAY_API_KEY}
+  rate_limit_per_minute: 60
+  max_concurrent: 1
+  target_images: 7000
+
+flickr:
+  enabled: false
+  api_key: ${FLICKR_API_KEY}
+  rate_limit_per_minute: 120
+  max_concurrent: 4
+  target_images: 6000
+
+# ───────────────────────── FREE, NO KEY ─────────────────────────
+
+wikimedia:
+  enabled: true
+  rate_limit_per_minute: 60
+  max_concurrent: 4
+  target_images: 1000
+
+reddit:
+  enabled: false
+  rate_limit_per_minute: 60
+  max_concurrent: 4
+  target_images: 1500
+  user_agent: "ninja-fence-scraper/0.1 by /u/yourusername"
+  client_id: ${REDDIT_CLIENT_ID}
+  client_secret: ${REDDIT_CLIENT_SECRET}
+  username: null
+  password: null
+  subreddits:
+    - Fencing
+    - Homestead
+    - Landscaping
+    - Gardening
+    - BackyardDesign
+
+# ───────────────────────── FREE VIA PLAYWRIGHT ─────────────────────────
+
+pw_google:
+  enabled: true
+  headless: true
+  browser: chromium
+  max_scrolls: 25
+  scroll_delay_s: 1.8
+  request_timeout_s: 45
+  rate_limit_per_minute: 6
+  max_concurrent: 1
+  target_images: 1500
+
+pw_bing:
+  enabled: true
+  headless: true
+  browser: chromium
+  max_scrolls: 40
+  scroll_delay_s: 1.2
+  request_timeout_s: 30
+  rate_limit_per_minute: 5
+  max_concurrent: 1
+  target_images: 500
+
+pw_ddg:
+  enabled: false
+  headless: true
+  browser: chromium
+  max_scrolls: 30
+  scroll_delay_s: 1.5
+  request_timeout_s: 30
+  rate_limit_per_minute: 10
+  max_concurrent: 1
+  target_images: 2500
+
+pw_pinterest:
+  enabled: true
+  headless: true
+  browser: chromium
+  max_scrolls: 30
+  scroll_delay_s: 1.4
+  request_timeout_s: 45
+  rate_limit_per_minute: 6
+  max_concurrent: 1
+  target_images: 4000
+
+pw_houzz:
+  enabled: true
+  headless: true
+  browser: chromium
+  max_scrolls: 25
+  scroll_delay_s: 1.3
+  request_timeout_s: 45
+  rate_limit_per_minute: 6
+  max_concurrent: 1
+  target_images: 3000
+
+# company_sites re-enabled for completeness; its 30 URLs already ran in the
+# positive scrape (query_progress shows them all completed) so the producer will
+# skip them in <1s. No-op, safe to keep enabled.
+company_sites:
+  enabled: true
+  rate_limit_per_minute: 30
+  max_concurrent: 2
+  target_images: 2000
+  urls:
+    - "https://fenceanddecksupply.com/photos/fence-photos/"
+    - "https://www.fencedefenseplano.com/wood-staining-picture-gallery/"
+    - "https://smuckerfence.com/gallery/wood-fence-gallery"
+    - "https://www.ricksfencing.com/privacy-fence-ideas-for-pacific-northwest-homes/"
+    - "https://www.aaronsdeckstaining.com/before-and-after-photos/"
+    - "https://www.texasselectfencing.com/"
+    - "https://mitfence.com/fence-idea-gallery/wood-fence-gallery/"
+    - "https://abetterfencecompany.com/wood-fences/privacy-wood-fences/"
+    - "https://tsfencing.com/fences/staining/"
+    - "https://cedarcreekfences.com/gallery"
+    - "https://www.illinoisfencing.com/wood-fence-pictures-cedar-fencing"
+    - "https://www.arrowfenceco.com/cedar-privacy-fence-photo-gallery/"
+    - "https://www.bakkenfence.com/gallery/wood-fence.php"
+    - "https://www.arrowfenceco.com/cedar-decorative-fence-photo-gallery/"
+    - "https://www.superiorfenceandrail.com/fence-types/cedar-fence/cedar-fence-gallery/"
+    - "https://www.cedarfencedeck.com/portfolio"
+    - "https://cedarrustic.com/gallery"
+    - "https://ntfencedeck.com/gallery/"
+    - "https://www.northwestcedarproducts.com/gallery/"
+    - "https://www.robinsonfencestain.com/gallery/"
+    - "https://chambleefence.com/fence-stain-before-and-after/"
+    - "https://fencemakeovers.com/fence-staining-gallery/"
+    - "https://fencemakeovers.com/fence-staining-gallery/fence-staining-before-and-after/"
+    - "https://twodaypainting.com/services/decks-and-fences/"
+    - "https://bluepainting.com/exterior-painting-services/deck-fence-staining/"
+    - "https://fencemakeovers.com/fence-staining-gallery/new-fences/"
+    - "https://www.outdoorfence.com/"
+    - "https://tcfence.us/"
+    - "https://www.cbfencecompany.com/"
+    - "https://fwfence.com/commercial-fence-canby-oregon/"

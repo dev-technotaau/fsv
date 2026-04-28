@@ -1,0 +1,1083 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VisionGuard - SegFormer Fence Detector (Your Trained Model)</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 40px;
+        }
+
+        h1 {
+            text-align: center;
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 2.5em;
+        }
+
+        .subtitle {
+            text-align: center;
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 1.1em;
+        }
+
+        .badge {
+            display: inline-block;
+            background: linear-gradient(135deg, #4CAF50 0%, #45a049 100%);
+            color: white;
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-size: 0.9em;
+            font-weight: 600;
+            margin-left: 10px;
+        }
+
+        .upload-section {
+            text-align: center;
+            margin-bottom: 30px;
+            padding: 40px;
+            border: 3px dashed #ccc;
+            border-radius: 15px;
+            background: #f9f9f9;
+            transition: all 0.3s;
+        }
+
+        .upload-section:hover {
+            border-color: #667eea;
+            background: #f0f4ff;
+        }
+
+        .upload-section.drag-over {
+            border-color: #4CAF50;
+            background: #e8f5e9;
+        }
+
+        .upload-btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 15px 40px;
+            border: none;
+            border-radius: 50px;
+            font-size: 1.1em;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        .upload-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.6);
+        }
+
+        #file-input {
+            display: none;
+        }
+
+        .controls {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .control-group {
+            background: #f5f5f5;
+            padding: 20px;
+            border-radius: 10px;
+        }
+
+        .control-group label {
+            font-weight: 600;
+            color: #333;
+            font-size: 0.9em;
+            display: block;
+            margin-bottom: 10px;
+        }
+
+        input[type="range"] {
+            width: 100%;
+            margin-top: 5px;
+        }
+
+        input[type="color"] {
+            width: 100%;
+            height: 50px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+        }
+
+        select {
+            width: 100%;
+            padding: 10px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 1em;
+            background: white;
+        }
+
+        .value-display {
+            display: inline-block;
+            float: right;
+            color: #667eea;
+            font-weight: bold;
+        }
+
+        .btn-group {
+            display: flex;
+            gap: 15px;
+            justify-content: center;
+            margin-bottom: 30px;
+            flex-wrap: wrap;
+        }
+
+        .action-btn {
+            padding: 12px 30px;
+            border: none;
+            border-radius: 10px;
+            font-size: 1em;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .btn-detect {
+            background: #4CAF50;
+            color: white;
+        }
+
+        .btn-detect:hover:not(:disabled) {
+            background: #45a049;
+            transform: translateY(-2px);
+        }
+
+        .btn-recolor {
+            background: #2196F3;
+            color: white;
+        }
+
+        .btn-recolor:hover:not(:disabled) {
+            background: #0b7dda;
+            transform: translateY(-2px);
+        }
+
+        .btn-download {
+            background: #FF9800;
+            color: white;
+        }
+
+        .btn-download:hover:not(:disabled) {
+            background: #e68900;
+            transform: translateY(-2px);
+        }
+
+        .btn-reset {
+            background: #f44336;
+            color: white;
+        }
+
+        .btn-reset:hover:not(:disabled) {
+            background: #da190b;
+            transform: translateY(-2px);
+        }
+
+        .action-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .canvas-container {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+
+        .canvas-wrapper {
+            background: #f5f5f5;
+            border-radius: 15px;
+            padding: 20px;
+            text-align: center;
+        }
+
+        .canvas-wrapper h3 {
+            color: #333;
+            margin-bottom: 15px;
+            font-size: 1.2em;
+        }
+
+        canvas {
+            max-width: 100%;
+            border-radius: 10px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            background: white;
+        }
+
+        .status {
+            text-align: center;
+            padding: 15px;
+            background: #e3f2fd;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            font-size: 1em;
+            color: #1976d2;
+            font-weight: 600;
+        }
+
+        .status.loading {
+            background: #fff3e0;
+            color: #f57c00;
+        }
+
+        .status.success {
+            background: #e8f5e9;
+            color: #2e7d32;
+        }
+
+        .status.error {
+            background: #ffebee;
+            color: #c62828;
+        }
+
+        .loader {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 15px;
+            display: none;
+        }
+
+        .loader.active {
+            display: block;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .info-box {
+            background: #f0f4ff;
+            border-left: 4px solid #667eea;
+            padding: 20px;
+            border-radius: 8px;
+            margin-top: 20px;
+        }
+
+        .info-box h4 {
+            color: #667eea;
+            margin-bottom: 10px;
+            font-size: 1.1em;
+        }
+
+        .info-box ul {
+            list-style: none;
+            padding-left: 0;
+        }
+
+        .info-box li {
+            padding: 5px 0;
+            color: #555;
+        }
+
+        .info-box li:before {
+            content: "✓ ";
+            color: #4CAF50;
+            font-weight: bold;
+        }
+
+        .model-info {
+            background: #e8f5e9;
+            border-left: 4px solid #4CAF50;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+        }
+
+        .model-info-item {
+            text-align: center;
+        }
+
+        .model-info-item .label {
+            font-size: 0.85em;
+            color: #666;
+            margin-bottom: 5px;
+        }
+
+        .model-info-item .value {
+            font-size: 1.2em;
+            font-weight: bold;
+            color: #2e7d32;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🏡 VisionGuard Fence Detector <span class="badge">UNet++</span></h1>
+        <p class="subtitle">AI-Powered Fence Detection & Recoloring with UNet++ Deep Learning</p>
+
+        <!-- Model Information -->
+        <div class="model-info" id="model-info" style="display: none;">
+            <div class="model-info-item">
+                <div class="label">Model Status</div>
+                <div class="value" id="model-status">Loading...</div>
+            </div>
+            <div class="model-info-item">
+                <div class="label">Input Size</div>
+                <div class="value" id="model-input-size">-</div>
+            </div>
+            <div class="model-info-item">
+                <div class="label">Model Size</div>
+                <div class="value" id="model-size">-</div>
+            </div>
+            <div class="model-info-item">
+                <div class="label">Inference Time</div>
+                <div class="value" id="inference-time">-</div>
+            </div>
+        </div>
+
+        <!-- Upload Section -->
+        <div class="upload-section" id="upload-section">
+            <h3 style="color: #666; margin-bottom: 15px;">📤 Upload or Drag & Drop Image</h3>
+            <input type="file" id="file-input" accept="image/*">
+            <button class="upload-btn" onclick="document.getElementById('file-input').click()">
+                Choose Image
+            </button>
+            <p style="margin-top: 15px; color: #999; font-size: 0.9em;">
+                Supported: JPG, PNG, WebP | Max 10MB
+            </p>
+        </div>
+
+        <!-- Status -->
+        <div class="loader" id="loader"></div>
+        <div class="status" id="status">Initializing UNet++ model...</div>
+
+        <!-- Controls -->
+        <div class="controls">
+            <div class="control-group">
+                <label>
+                    Fence Color
+                    <span class="value-display" id="color-preview" style="background: #8B4513; padding: 2px 10px; border-radius: 4px; color: white;">#8B4513</span>
+                </label>
+                <input type="color" id="color-picker" value="#8B4513">
+            </div>
+            <div class="control-group">
+                <label>
+                    Blend Mode
+                </label>
+                <select id="blend-mode">
+                    <option value="normal">Normal</option>
+                    <option value="multiply" selected>Multiply (Realistic)</option>
+                    <option value="overlay">Overlay</option>
+                    <option value="screen">Screen</option>
+                    <option value="hardlight">Hard Light</option>
+                </select>
+            </div>
+            <div class="control-group">
+                <label>
+                    Opacity
+                    <span class="value-display" id="opacity-value">80%</span>
+                </label>
+                <input type="range" id="opacity" min="0" max="100" value="80">
+            </div>
+            <div class="control-group">
+                <label>
+                    Detection Threshold
+                    <span class="value-display" id="threshold-value">0.5</span>
+                </label>
+                <input type="range" id="threshold" min="0" max="1" step="0.05" value="0.5">
+            </div>
+        </div>
+
+        <!-- Action Buttons -->
+        <div class="btn-group">
+            <button class="action-btn btn-detect" id="detect-btn" disabled>
+                <span>🔍</span> Detect Fence
+            </button>
+            <button class="action-btn btn-recolor" id="recolor-btn" disabled>
+                <span>🎨</span> Recolor Fence
+            </button>
+            <button class="action-btn btn-download" id="download-btn" disabled>
+                <span>💾</span> Download Result
+            </button>
+            <button class="action-btn btn-reset" id="reset-btn">
+                <span>🔄</span> Reset
+            </button>
+        </div>
+
+        <!-- Canvas Display -->
+        <div class="canvas-container">
+            <div class="canvas-wrapper">
+                <h3>📷 Original Image</h3>
+                <canvas id="original-canvas"></canvas>
+            </div>
+            <div class="canvas-wrapper">
+                <h3>🎯 Fence Detection Mask</h3>
+                <canvas id="mask-canvas"></canvas>
+            </div>
+            <div class="canvas-wrapper">
+                <h3>✨ Recolored Result</h3>
+                <canvas id="result-canvas"></canvas>
+            </div>
+        </div>
+
+        <!-- Info Boxes -->
+        <div class="info-box">
+            <h4>📋 How to Use</h4>
+            <ul>
+                <li>Upload a photo of a fence (JPG, PNG)</li>
+                <li>Click "Detect Fence" to run AI detection</li>
+                <li>Choose your desired fence color</li>
+                <li>Click "Recolor Fence" to apply the new color</li>
+                <li>Download your recolored image</li>
+            </ul>
+        </div>
+
+        <div class="info-box" style="background: #fff3e0; border-left-color: #f57c00;">
+            <h4>🚀 Model Details</h4>
+            <ul>
+                <li>UNet++ architecture with deep supervision</li>
+                <li>ONNX Runtime for fast browser inference</li>
+                <li>Client-side processing (privacy-friendly)</li>
+                <li>Works offline after initial load</li>
+            </ul>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js"></script>
+    <script>
+        // ============================================================================
+        // UNET++ CONFIGURATION
+        // ============================================================================
+        const CONFIG = {
+            MODEL_PATH: '../../models/onnx/fence_model_unet_browser.onnx',
+            INPUT_SIZE: 512,
+            NUM_CLASSES: 2,
+            DEBUG: false,
+            // UNet++ uses simple normalization (0-1), not ImageNet stats
+            NORMALIZE_ONLY: true
+        };
+
+        // ============================================================================
+        // GLOBAL VARIABLES
+        // ============================================================================
+        let session = null;
+        let originalImage = null;
+        let maskData = null;
+        
+        const fileInput = document.getElementById('file-input');
+        const uploadSection = document.getElementById('upload-section');
+        const originalCanvas = document.getElementById('original-canvas');
+        const maskCanvas = document.getElementById('mask-canvas');
+        const resultCanvas = document.getElementById('result-canvas');
+        const colorPicker = document.getElementById('color-picker');
+        const blendMode = document.getElementById('blend-mode');
+        const opacity = document.getElementById('opacity');
+        const opacityValue = document.getElementById('opacity-value');
+        const status = document.getElementById('status');
+        const loader = document.getElementById('loader');
+        
+        const detectBtn = document.getElementById('detect-btn');
+        const recolorBtn = document.getElementById('recolor-btn');
+        const downloadBtn = document.getElementById('download-btn');
+        const resetBtn = document.getElementById('reset-btn');
+
+        // ============================================================================
+        // INITIALIZE
+        // ============================================================================
+        async function init() {
+            updateStatus('Initializing UNet++ model...', 'loading');
+            loader.classList.add('active');
+            
+            try {
+                session = await ort.InferenceSession.create(CONFIG.MODEL_PATH);
+                updateStatus('✅ UNet++ model loaded successfully!', 'success');
+                console.log('UNet++ model loaded:', session);
+            } catch (error) {
+                updateStatus('❌ Failed to load UNet++ model: ' + error.message, 'error');
+                console.error('Model loading error:', error);
+            } finally {
+                loader.classList.remove('active');
+            }
+        }
+
+        // ============================================================================
+        // EVENT LISTENERS
+        // ============================================================================
+        fileInput.addEventListener('change', handleImageUpload);
+        detectBtn.addEventListener('click', detectFence);
+        recolorBtn.addEventListener('click', recolorFence);
+        downloadBtn.addEventListener('click', downloadResult);
+        resetBtn.addEventListener('click', reset);
+        
+        opacity.addEventListener('input', () => {
+            document.getElementById('opacity-value').textContent = opacity.value + '%';
+        });
+        
+        const threshold = document.getElementById('threshold');
+        threshold.addEventListener('input', () => {
+            document.getElementById('threshold-value').textContent = threshold.value;
+        });
+        
+        // Drag and drop functionality
+        uploadSection.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadSection.classList.add('drag-over');
+        });
+        
+        uploadSection.addEventListener('dragleave', () => {
+            uploadSection.classList.remove('drag-over');
+        });
+        
+        uploadSection.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadSection.classList.remove('drag-over');
+            const file = e.dataTransfer.files[0];
+            if (file && file.type.startsWith('image/')) {
+                const event = { target: { files: [file] } };
+                handleImageUpload(event);
+            }
+        });
+
+        // ============================================================================
+        // IMAGE UPLOAD
+        // ============================================================================
+        function handleImageUpload(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const img = new Image();
+                img.onload = () => {
+                    originalImage = img;
+                    drawOriginalImage();
+                    detectBtn.disabled = !session;
+                    resetBtn.disabled = false;
+                    updateStatus(session ? '✅ Image loaded! Click "Detect Fence".' : '⚠️ Model not loaded', session ? 'success' : 'error');
+                };
+                img.src = e.target.result;
+            };
+            reader.readAsDataURL(file);
+        }
+
+        function drawOriginalImage() {
+            originalCanvas.width = originalImage.width;
+            originalCanvas.height = originalImage.height;
+            const ctx = originalCanvas.getContext('2d');
+            ctx.drawImage(originalImage, 0, 0);
+        }
+
+        // ============================================================================
+        // FENCE RECOLORING (First instance - will be removed)
+        // ============================================================================
+        function recolorFence_OLD() {
+            if (!originalImage || !maskData) return;
+
+            updateStatus('🎨 Recoloring fence...', 'loading');
+
+            const width = originalImage.width;
+            const height = originalImage.height;
+
+            resultCanvas.width = width;
+            resultCanvas.height = height;
+            const ctx = resultCanvas.getContext('2d');
+
+            // Draw original image
+            ctx.drawImage(originalImage, 0, 0);
+            const imageData = ctx.getImageData(0, 0, width, height);
+            const data = imageData.data;
+
+            // Get selected color
+            const hexColor = colorPicker.value;
+            const rgb = hexToRgb(hexColor);
+            const blendModeValue = blendMode.value;
+            const opacityValue = parseFloat(opacity.value) / 100;
+
+            // Apply recoloring with smooth edges
+            for (let i = 0; i < maskData.length; i++) {
+                const maskValue = maskData[i];
+                if (maskValue > 0) {
+                    const idx = i * 4;
+                    const r = data[idx];
+                    const g = data[idx + 1];
+                    const b = data[idx + 2];
+
+                    const blended = applyBlendMode(r, g, b, rgb.r, rgb.g, rgb.b, blendModeValue);
+
+                    // Use mask value as alpha for smooth edges
+                    const alpha = maskValue * opacityValue;
+                    data[idx] = r + (blended.r - r) * alpha;
+                    data[idx + 1] = g + (blended.g - g) * alpha;
+                    data[idx + 2] = b + (blended.b - b) * alpha;
+                }
+            }
+
+            ctx.putImageData(imageData, 0, 0);
+            updateStatus('✅ Recoloring complete!', 'success');
+            downloadBtn.disabled = false;
+        }
+
+        function applyBlendMode(r, g, b, cr, cg, cb, mode) {
+            switch (mode) {
+                case 'multiply':
+                    return {
+                        r: (r / 255) * (cr / 255) * 255,
+                        g: (g / 255) * (cg / 255) * 255,
+                        b: (b / 255) * (cb / 255) * 255
+                    };
+                case 'overlay':
+                    return {
+                        r: r < 128 ? 2 * r * cr / 255 : 255 - 2 * (255 - r) * (255 - cr) / 255,
+                        g: g < 128 ? 2 * g * cg / 255 : 255 - 2 * (255 - g) * (255 - cg) / 255,
+                        b: b < 128 ? 2 * b * cb / 255 : 255 - 2 * (255 - b) * (255 - cb) / 255
+                    };
+                case 'screen':
+                    return {
+                        r: 255 - (255 - r) * (255 - cr) / 255,
+                        g: 255 - (255 - g) * (255 - cg) / 255,
+                        b: 255 - (255 - b) * (255 - cb) / 255
+                    };
+                case 'color':
+                    return { r: cr, g: cg, b: cb };
+                default:
+                    return { r, g, b };
+            }
+        }
+
+        function hexToRgb(hex) {
+            const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+            return result ? {
+                r: parseInt(result[1], 16),
+                g: parseInt(result[2], 16),
+                b: parseInt(result[3], 16)
+            } : null;
+        }
+
+        // ============================================================================
+        // DOWNLOAD & RESET
+        // ============================================================================
+        function downloadResult() {
+            const link = document.createElement('a');
+            link.download = 'fence_recolored_segformer.png';
+            link.href = resultCanvas.toDataURL();
+            link.click();
+            updateStatus('✅ Image downloaded!', 'success');
+        }
+
+        function reset() {
+            originalImage = null;
+            maskData = null;
+            fileInput.value = '';
+            
+            const contexts = [originalCanvas, maskCanvas, resultCanvas].map(c => c.getContext('2d'));
+            contexts.forEach(ctx => ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height));
+
+            detectBtn.disabled = true;
+            recolorBtn.disabled = true;
+            downloadBtn.disabled = true;
+            resetBtn.disabled = true;
+
+            updateStatus(session ? 'Upload an image to begin' : '⚠️ Model not loaded', session ? '' : 'error');
+        }
+
+        function updateStatus(message, type = '') {
+            status.textContent = message;
+            status.className = 'status ' + type;
+        }
+
+        // ============================================================================
+        // INITIALIZE ON LOAD
+        // ============================================================================
+        window.addEventListener('load', init);
+    </script>
+</body>
+</html>
+        
+        const detectBtn = document.getElementById('detect-btn');
+        const recolorBtn = document.getElementById('recolor-btn');
+        const downloadBtn = document.getElementById('download-btn');
+        const resetBtn = document.getElementById('reset-btn');
+
+        // ============================================================================
+        // IMAGE UPLOAD
+        // ============================================================================
+        function handleImageUpload(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            
+            if (file.size > 10 * 1024 * 1024) {
+                updateStatus('✗ File too large! Max 10MB', 'error');
+                return;
+            }
+            
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const img = new Image();
+                img.onload = () => {
+                    originalImage = img;
+                    drawOriginalImage();
+                    detectBtn.disabled = false;
+                    updateStatus('✓ Image loaded! Click "Detect Fence" to analyze.', 'success');
+                };
+                img.src = e.target.result;
+            };
+            reader.readAsDataURL(file);
+        }
+
+        function drawOriginalImage() {
+            originalCanvas.width = originalImage.width;
+            originalCanvas.height = originalImage.height;
+            const ctx = originalCanvas.getContext('2d');
+            ctx.drawImage(originalImage, 0, 0);
+        }
+
+        // ============================================================================
+        // UNET++ PREPROCESSING (Simple 0-1 Normalization)
+        // ============================================================================
+        function preprocessImage(img) {
+            const canvas = document.createElement('canvas');
+            canvas.width = CONFIG.INPUT_SIZE;
+            canvas.height = CONFIG.INPUT_SIZE;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0, CONFIG.INPUT_SIZE, CONFIG.INPUT_SIZE);
+            
+            const imageData = ctx.getImageData(0, 0, CONFIG.INPUT_SIZE, CONFIG.INPUT_SIZE);
+            const data = imageData.data;
+            
+            // UNet++ preprocessing: simple 0-1 normalization (pixel / 255)
+            const float32Data = new Float32Array(3 * CONFIG.INPUT_SIZE * CONFIG.INPUT_SIZE);
+            
+            for (let i = 0; i < CONFIG.INPUT_SIZE * CONFIG.INPUT_SIZE; i++) {
+                // R, G, B channels - simple normalization to [0, 1]
+                float32Data[i] = data[i * 4] / 255.0;                                    // R
+                float32Data[CONFIG.INPUT_SIZE * CONFIG.INPUT_SIZE + i] = data[i * 4 + 1] / 255.0;    // G
+                float32Data[2 * CONFIG.INPUT_SIZE * CONFIG.INPUT_SIZE + i] = data[i * 4 + 2] / 255.0; // B
+            }
+            
+            return new ort.Tensor('float32', float32Data, [1, 3, CONFIG.INPUT_SIZE, CONFIG.INPUT_SIZE]);
+        }
+
+        // ============================================================================
+        // FENCE DETECTION (UNet++)
+        // ============================================================================
+        async function detectFence() {
+            if (!originalImage || !session) return;
+            
+            updateStatus('🔍 UNet++ detecting fence...', 'loading');
+            loader.classList.add('active');
+            detectBtn.disabled = true;
+            
+            try {
+                const tensor = preprocessImage(originalImage);
+                
+                // UNet++ model input name is typically 'input' or 'input.1'
+                const feeds = { input: tensor };
+                const results = await session.run(feeds);
+                
+                // Get output (UNet++ outputs segmentation mask)
+                const outputName = Object.keys(results)[0];
+                const output = results[outputName];
+                
+                console.log('UNet++ output:', outputName, output.dims);
+                
+                // Postprocess output to mask
+                maskData = postprocessUNetOutput(output, originalImage.width, originalImage.height);
+                drawMask(maskData);
+                
+                updateStatus('✅ Fence detected successfully with UNet++!', 'success');
+                recolorBtn.disabled = false;
+            } catch (error) {
+                console.error('Detection error:', error);
+            } finally {
+                loader.classList.remove('active');
+                detectBtn.disabled = false;
+            }
+        }
+
+        // ============================================================================
+        // UNET++ POSTPROCESSING
+        // ============================================================================
+        function postprocessUNetOutput(output, targetWidth, targetHeight) {
+            const thresholdValue = parseFloat(document.getElementById('threshold').value);
+            
+            const dims = output.dims;
+            const data = output.data;
+            
+            let modelHeight, modelWidth, numClasses;
+            
+            if (dims.length === 4) {
+                numClasses = dims[1];
+                modelHeight = dims[2];
+                modelWidth = dims[3];
+            } else if (dims.length === 3) {
+                numClasses = dims[0];
+                modelHeight = dims[1];
+                modelWidth = dims[2];
+            } else {
+                console.error('Unexpected output shape:', dims);
+                return new Uint8Array(targetWidth * targetHeight);
+            }
+            
+            const totalPixels = modelWidth * modelHeight;
+            const mask = new Uint8Array(totalPixels);
+            
+            // Apply argmax to get class predictions
+            for (let i = 0; i < totalPixels; i++) {
+                let maxVal = -Infinity;
+                let maxClass = 0;
+                
+                for (let c = 0; c < numClasses; c++) {
+                    const idx = c * totalPixels + i;
+                    if (data[idx] > maxVal) {
+                        maxVal = data[idx];
+                        maxClass = c;
+                    }
+                }
+                
+                mask[i] = (maxClass === 1 && maxVal > thresholdValue) ? 255 : 0;
+            }
+            
+            if (targetWidth !== modelWidth || targetHeight !== modelHeight) {
+                return resizeMask(mask, modelWidth, modelHeight, targetWidth, targetHeight);
+            }
+            
+            return mask;
+            
+            if (CONFIG.DEBUG) {
+                console.log('Postprocessing:', {
+                    modelHeight,
+                    modelWidth,
+                    targetWidth,
+                    targetHeight,
+                    numClasses,
+                    totalPixels,
+                    threshold: thresholdValue
+                });
+            }
+            
+            // Logits shape: [1, num_classes, H, W] or [num_classes, H, W]
+            // For SegFormer: logits are usually [1, 2, H, W]
+            const mask = new Uint8Array(totalPixels);
+            let positiveCount = 0;
+            
+            // Simple argmax approach (faster, no stack overflow)
+            for (let i = 0; i < totalPixels; i++) {
+                // Get logits for both classes at this pixel
+                const bgLogit = logits[i];  // Background (class 0)
+                const fenceLogit = logits[totalPixels + i];  // Fence (class 1)
+                
+                // Simple comparison: fence logit > background logit
+                if (fenceLogit > bgLogit) {
+                    mask[i] = 1;
+                    positiveCount++;
+                } else {
+                    mask[i] = 0;
+                }
+            }
+            
+            if (CONFIG.DEBUG) {
+                console.log('Detection results:', {
+                    totalPixels,
+                    fencePixels: positiveCount,
+                    percentage: ((positiveCount / totalPixels) * 100).toFixed(2) + '%'
+                });
+            }
+            
+            // Resize mask to original image size
+            if (targetWidth !== modelWidth || targetHeight !== modelHeight) {
+                return resizeMask(mask, modelWidth, modelHeight, targetWidth, targetHeight);
+            }
+            
+            return mask;
+        }
+        
+        function resizeMask(mask, srcW, srcH, dstW, dstH) {
+            if (CONFIG.DEBUG) {
+                console.log('Resizing mask:', { srcW, srcH, dstW, dstH });
+            }
+            
+            const resized = new Uint8Array(dstW * dstH);
+            const xRatio = srcW / dstW;
+            const yRatio = srcH / dstH;
+            
+            // Use nearest neighbor interpolation
+            for (let y = 0; y < dstH; y++) {
+                for (let x = 0; x < dstW; x++) {
+                    const srcX = Math.min(Math.floor(x * xRatio), srcW - 1);
+                    const srcY = Math.min(Math.floor(y * yRatio), srcH - 1);
+                    resized[y * dstW + x] = mask[srcY * srcW + srcX];
+                }
+            }
+            
+            return resized;
+        }
+
+        function drawMask(mask) {
+            maskCanvas.width = originalImage.width;
+            maskCanvas.height = originalImage.height;
+            const ctx = maskCanvas.getContext('2d');
+            
+            const imageData = ctx.createImageData(originalImage.width, originalImage.height);
+            const data = imageData.data;
+            
+            for (let i = 0; i < mask.length; i++) {
+                const val = mask[i] * 255;
+                data[i * 4] = val;      // R
+                data[i * 4 + 1] = val;  // G
+                data[i * 4 + 2] = val;  // B
+                data[i * 4 + 3] = 255;  // A
+            }
+            
+            ctx.putImageData(imageData, 0, 0);
+        }
+
+        // ============================================================================
+        // FENCE RECOLORING
+        // ============================================================================
+        function recolorFence() {
+            if (!originalImage || !maskData) return;
+            
+            updateStatus('🎨 Recoloring fence...', 'loading');
+            
+            resultCanvas.width = originalImage.width;
+            resultCanvas.height = originalImage.height;
+            const ctx = resultCanvas.getContext('2d');
+            
+            // Draw original
+            ctx.drawImage(originalImage, 0, 0);
+            
+            // Get image data
+            const imageData = ctx.getImageData(0, 0, originalImage.width, originalImage.height);
+            const data = imageData.data;
+            
+            // Get color
+            const rgb = hexToRgb(colorPicker.value);
+            const alpha = parseInt(opacity.value) / 100;
+            const mode = blendMode.value;
+            
+            // Apply color to masked regions
+            for (let i = 0; i < maskData.length; i++) {
+                if (maskData[i] === 1) {
+                    const idx = i * 4;
+                    const [r, g, b] = applyBlendMode(
+                        data[idx], data[idx + 1], data[idx + 2],
+                        rgb.r, rgb.g, rgb.b,
+                        mode
+                    );
+                    
+                    data[idx] = r * alpha + data[idx] * (1 - alpha);
+                    data[idx + 1] = g * alpha + data[idx + 1] * (1 - alpha);
+                    data[idx + 2] = b * alpha + data[idx + 2] * (1 - alpha);
+                }
+            }
+            
+            ctx.putImageData(imageData, 0, 0);
+            
+            downloadBtn.disabled = false;
+            updateStatus('✓ Recoloring complete! Download your result.', 'success');
+        }
+
+        // ============================================================================
+        // BLEND MODES
+        // ============================================================================
+        function applyBlendMode(r, g, b, cr, cg, cb, mode) {
+            switch (mode) {
+                case 'multiply':
+                    return [r * cr / 255, g * cg / 255, b * cb / 255];
+                case 'overlay':
+                    return [
+                        r < 128 ? 2 * r * cr / 255 : 255 - 2 * (255 - r) * (255 - cr) / 255,
+                        g < 128 ? 2 * g * cg / 255 : 255 - 2 * (255 - g) * (255 - cg) / 255,
+                        b < 128 ? 2 * b * cb / 255 : 255 - 2 * (255 - b) * (255 - cb) / 255
+                    ];
+                case 'screen':
+                    return [
+                        255 - (255 - r) * (255 - cr) / 255,
+                        255 - (255 - g) * (255 - cg) / 255,
+                        255 - (255 - b) * (255 - cb) / 255
+                    ];
+                case 'hardlight':
+                    return [
+                        cr < 128 ? 2 * r * cr / 255 : 255 - 2 * (255 - r) * (255 - cr) / 255,
+                        cg < 128 ? 2 * g * cg / 255 : 255 - 2 * (255 - g) * (255 - cg) / 255,
+                        cb < 128 ? 2 * b * cb / 255 : 255 - 2 * (255 - b) * (255 - cb) / 255
+                    ];
+                default: // normal
+                    return [cr, cg, cb];
+            }
+        }
+
+        function hexToRgb(hex) {
+            const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+            return result ? {
+                r: parseInt(result[1], 16),
+                g: parseInt(result[2], 16),
+                b: parseInt(result[3], 16)
+            } : { r: 139, g: 69, b: 19 };
+        }
+
+        // ============================================================================
+        // DOWNLOAD & RESET
+        // ============================================================================
+        function downloadResult() {
+            const link = document.createElement('a');
+            link.download = 'fence_recolored.png';
+            link.href = resultCanvas.toDataURL();
+            link.click();
+        }
+
+        function reset() {
+            originalImage = null;
+            maskData = null;
+            originalCanvas.width = 0;
+            maskCanvas.width = 0;
+            resultCanvas.width = 0;
+            detectBtn.disabled = true;
+            recolorBtn.disabled = true;
+            downloadBtn.disabled = true;
+            fileInput.value = '';
+            updateStatus('Ready for new image!', 'success');
+        }
+
+        function updateStatus(message, type = '') {
+            status.textContent = message;
+            status.className = 'status ' + type;
+        }
+
+        // ============================================================================
+        // INITIALIZE ON LOAD
+        // ============================================================================
+        window.addEventListener('load', init);
+    </script>
+</body>
+</html>

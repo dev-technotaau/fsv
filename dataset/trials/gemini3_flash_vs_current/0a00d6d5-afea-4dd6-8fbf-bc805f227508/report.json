@@ -1,0 +1,36 @@
+{
+  "image_id": "0a00d6d5-afea-4dd6-8fbf-bc805f227508",
+  "source_image": "data_scraped\\images\\company_sites__www_aaronsdeckstaining_com__163d8944.jpg",
+  "resolution": [
+    2048,
+    1536
+  ],
+  "model": "gemini-3-flash-preview",
+  "vertex_project": "gen-lang-client-0219777911",
+  "vertex_location": "global",
+  "gemini": {
+    "latency_s": 70.323,
+    "has_fence": true,
+    "n_raw_polygons": 5,
+    "n_refined_polygons": 2
+  },
+  "current_method": {
+    "mask_path": "dataset\\annotations_v1\\masks\\0a00d6d5-afea-4dd6-8fbf-bc805f227508.png",
+    "fence_class_id": 1,
+    "fence_pixel_count": 897508
+  },
+  "agreement_metrics_treating_current_as_reference": {
+    "iou": 0.4434,
+    "dice": 0.6144,
+    "precision_vs_reference": 0.8898,
+    "recall_vs_reference": 0.4692,
+    "pixel_agreement": 0.832,
+    "pred_coverage_pct": 15.044,
+    "ref_coverage_pct": 28.531,
+    "tp": 421107,
+    "fp": 52128,
+    "fn": 476401,
+    "tn": 2196092
+  },
+  "note": "There is no human-labeled ground truth for this image. Metrics describe agreement between Gemini's mask and the current-method (Grounded-SAM 2) fence_wood mask, not absolute accuracy."
+}

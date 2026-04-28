@@ -1,0 +1,489 @@
+# Negative-dataset scraper config. COMPLETELY SEPARATE from the positive run —
+# different output dirs, different dedup DB, different queries, Vision OFF.
+#
+# Negative distribution (12,000 total, ~70% of 17k positives) across 10 categories:
+#   Pure negatives                (35 queries)   no fence at all
+#   Wood non-fence structures     (45 queries)   railings, pergolas, trellises, siding, louvers
+#   Non-wood fences               (30 queries)   vinyl, chain-link, iron — can't be stained
+#   Masonry walls                 (25 queries)   brick, stone, concrete, retaining
+#   Natural fence-like            (25 queries)   hedges, bamboo, tree rows
+#   Empty outdoor scenes          (20 queries)   backyards/fields without fence
+#   Wooden gates standalone       (12 queries)   isolated gate ≠ fence
+#   Wooden bridges / boardwalks   (12 queries)   slatted rails, not fences
+#   Isolated wooden posts         (10 queries)   single posts (mailbox, sign, flag)
+#   Slatted outdoor furniture     (12 queries)   Adirondack chairs, slat benches
+# ═══ TOTAL: 226 queries across 10 hard-neg + pure-neg categories ═══
+
+runtime:
+  target_total_images: 12000
+  download_workers: 16
+  download_timeout_s: 15
+  max_retries: 2
+  progress_interval_s: 5.0
+  output_root: data_scraped_neg          # SEPARATE from positive's data_scraped/
+  dry_run: false
+  log_level: INFO
+  log_file: data_scraped_neg/scraper.log.jsonl
+  log_format: plain
+  min_free_disk_gb: 2.0
+  disk_check_interval_s: 30.0
+  max_image_megapixels: 100
+
+proxy:
+  enabled: false
+  proxies: []
+  failure_cool_down_s: 300.0
+
+circuit_breaker:
+  enabled: true
+  failure_threshold: 5
+  cool_down_s: 60.0
+
+content_filter:
+  enabled: true
+  extra_block_keywords: []
+  extra_block_domains: []
+
+query_priority:
+  enabled: true
+  target_per_query: 80
+
+distributed:
+  enabled: false
+  redis_url: ${REDIS_URL}
+  key_prefix: "fence_scraper_neg:"
+
+batched_writer:
+  enabled: true
+  batch_size: 50
+  flush_interval_s: 0.5
+
+# CRITICAL: disable the fence-focused static corpus + Gemini (prompt is fence-only).
+# All queries come from the hand-crafted `custom` list below.
+queries:
+  use_static: false
+  use_gemini_expansion: false
+  gemini_api_key: ${GEMINI_API_KEY}
+  gemini_target_extra: 0
+  custom:
+    # ───────────── CATEGORY 1: Pure negatives (35 queries) ─────────────
+    # Diverse scenes with zero chance of fence content
+    - "mountain landscape sunrise fog"
+    - "beach sunset ocean waves"
+    - "forest hiking trail pine"
+    - "desert sand dunes sky"
+    - "autumn leaves colorful park"
+    - "snowy winter landscape trees"
+    - "cherry blossoms spring bloom"
+    - "wildflower meadow summer"
+    - "lake reflection calm water"
+    - "waterfall cascade rocks"
+    - "rocky coastline cliff ocean"
+    - "tropical island palm trees"
+    - "rainforest canopy dense green"
+    - "savanna grassland wildlife"
+    - "tundra arctic ice"
+    - "city skyline night lights"
+    - "downtown skyscrapers day"
+    - "cobblestone street european old town"
+    - "subway underground tunnel"
+    - "airport departure lounge gate"
+    - "train station platform interior"
+    - "highway road desert long"
+    - "bridge suspension fog"
+    - "harbor boats marina"
+    - "modern kitchen interior design"
+    - "minimalist living room furniture"
+    - "bathroom marble tile luxury"
+    - "home office desk workspace"
+    - "restaurant dining table setting"
+    - "cafe coffee shop latte art"
+    - "library books shelves interior"
+    - "museum gallery paintings white wall"
+    - "gym weights workout floor"
+    - "yoga studio mat interior"
+    - "hospital corridor interior"
+
+    # ───────────── CATEGORY 2: Wood non-fence structures (40 queries) ─────────────
+    # CRITICAL hard negatives — wooden things that look like fence panels
+    - "deck railing wooden balcony"
+    - "wooden stair handrail interior"
+    - "porch wooden railing outdoor"
+    - "wooden pergola backyard standalone"
+    - "garden arbor wooden archway"
+    - "wooden trellis climbing rose"
+    - "wood siding exterior horizontal shiplap"
+    - "cedar shake shingle siding house"
+    - "wooden shingle wall exterior"
+    - "bamboo privacy screen indoor"
+    - "reed wall outdoor patio"
+    - "wooden room divider modern interior"
+    - "wooden folding screen decor"
+    - "wooden lattice panel decorative wall"
+    - "wooden shutters closed exterior window"
+    - "wooden horizontal blinds window"
+    - "wooden louvered door closet"
+    - "wooden beam ceiling exposed rustic"
+    - "wooden plank flooring herringbone"
+    - "wooden deck boards close up floor"
+    - "log cabin wall exterior rustic"
+    - "log home interior wall"
+    - "tongue and groove pine wall"
+    - "wooden headboard bed plank"
+    - "wooden chair slat back"
+    - "wooden crate stacked warehouse"
+    - "wooden pallet stack yard"
+    - "firewood log stack organized cord"
+    - "wood pallet wall art"
+    - "wooden ceiling beams living room"
+    - "wooden wall art vertical planks"
+    - "wooden barn wall weathered texture"
+    - "rustic wood plank wall interior"
+    - "reclaimed barn wood boards"
+    - "wooden picnic table outdoor"
+    - "wooden garden bench close"
+    - "wooden outdoor storage box deck"
+    - "wooden raised garden bed"
+    - "wooden gazebo outdoor yard"
+    - "wooden potting shed exterior wall"
+    - "wooden louvered exterior panel"
+    - "horizontal wood slat privacy screen outdoor"
+    - "exterior sliding barn door wood"
+    - "wooden vent louver exterior wall"
+    - "wooden awning slatted outdoor cafe"
+
+    # ───────────── CATEGORY 3: Non-wood fences (30 queries) ─────────────
+    # Real fences that AREN'T wood — can't be stained → negative for our model
+    - "white vinyl privacy fence"
+    - "vinyl picket fence suburban"
+    - "tan beige vinyl fence"
+    - "chain link fence backyard urban"
+    - "chain link fence baseball field"
+    - "chain link commercial industrial"
+    - "wrought iron fence ornate estate"
+    - "wrought iron fence garden black"
+    - "black metal fence decorative"
+    - "aluminum fence pool enclosure"
+    - "aluminum picket fence yard"
+    - "steel tube fence security"
+    - "wire mesh fence farm field"
+    - "welded wire fence garden"
+    - "barbed wire fence cattle"
+    - "electric fence rural perimeter"
+    - "composite vinyl fence panel"
+    - "PVC white fence garden"
+    - "horizontal metal slat fence modern"
+    - "glass pool fence frameless"
+    - "plastic garden border fence"
+    - "metal post rail fence ranch"
+    - "chain link fence with slats privacy"
+    - "temporary orange plastic construction fence"
+    - "snow fence plastic red"
+    - "metal industrial perimeter fence"
+    - "iron rod fence historic"
+    - "galvanized steel mesh fence"
+    - "hog wire fence modern minimalist"
+    - "farm gate metal"
+
+    # ───────────── CATEGORY 4: Masonry / stone walls (25 queries) ─────────────
+    # Solid non-fence barriers
+    - "brick wall exterior house red"
+    - "red brick wall urban"
+    - "stone wall garden natural"
+    - "dry stone wall rural england"
+    - "retaining wall stone landscape"
+    - "retaining wall concrete blocks"
+    - "concrete wall modern architecture"
+    - "cinder block wall painted"
+    - "fieldstone wall rustic cottage"
+    - "limestone wall garden edging"
+    - "granite wall facade exterior"
+    - "flagstone wall landscape"
+    - "stucco wall exterior mediterranean"
+    - "adobe wall southwestern adobe"
+    - "castle stone wall medieval"
+    - "sea wall beach concrete"
+    - "highway sound barrier wall"
+    - "retaining wall boulder large"
+    - "modular block retaining wall"
+    - "stone wall ivy covered"
+    - "brick garden wall english"
+    - "concrete block wall industrial"
+    - "pavestone wall outdoor"
+    - "gabion wall wire stone modern"
+    - "dry stack stone wall landscape"
+
+    # ───────────── CATEGORY 5: Natural fence-like (25 queries) ─────────────
+    # Plant walls — trees in rows, bamboo, tall grass
+    - "bamboo grove vertical stalks"
+    - "tall reed grass wetland"
+    - "row of cypress trees landscape"
+    - "tall boxwood hedge manicured"
+    - "privet hedge row trimmed"
+    - "cedar tree row property line"
+    - "arborvitae hedge narrow tall"
+    - "tall grass prairie wall"
+    - "hedgerow rural boundary england"
+    - "cattail reeds pond edge"
+    - "corn field stalks rows"
+    - "sunflower field rows"
+    - "wheat field tall yellow"
+    - "ornamental grass tall border"
+    - "bamboo forest dense walkway"
+    - "evergreen tree row windbreak"
+    - "fern wall forest tropical"
+    - "birch tree grove rows"
+    - "cornfield harvest tall"
+    - "prairie grass field"
+    - "sugar cane field tall"
+    - "tall sedge grass wetland"
+    - "papyrus plant wall egyptian"
+    - "ornamental grass garden border"
+    - "espalier fruit tree wall"
+
+    # ───────────── CATEGORY 6: Empty outdoor scenes (20 queries) ─────────────
+    # Spaces where you'd expect a fence but there isn't one
+    - "open suburban backyard no fence"
+    - "open country field meadow"
+    - "park open lawn green summer"
+    - "beachfront houses open"
+    - "rural property open land"
+    - "farm open pasture cattle"
+    - "ranch wide open land"
+    - "modern minimalist backyard no fence"
+    - "open pool deck patio"
+    - "golf course green fairway"
+    - "sports field open soccer"
+    - "open meadow countryside rolling"
+    - "public park wide view"
+    - "outdoor patio garden furniture open"
+    - "backyard furniture no fence"
+    - "open landscape sky horizon"
+    - "beach dunes grass wild"
+    - "countryside rolling hills green"
+    - "open savanna africa"
+    - "outdoor basketball court open"
+
+    # ───────────── CATEGORY 7: Wooden gates standalone (12 queries) ─────────────
+    # A solo wooden gate/door (NOT attached to a visible fence) — model must learn
+    # that a single panel is not a fence.
+    - "wooden garden gate standalone entrance"
+    - "rustic wooden gate countryside"
+    - "arched wooden gate stone wall"
+    - "ornate wooden gate estate entrance"
+    - "wooden driveway gate standalone"
+    - "wooden barn door sliding exterior"
+    - "wooden carriage garage door"
+    - "wooden church door entrance closeup"
+    - "wooden castle gate medieval"
+    - "Japanese torii gate wooden red"
+    - "wooden cellar door exterior"
+    - "wooden dutch door farmhouse"
+
+    # ───────────── CATEGORY 8: Wooden bridges / boardwalks / docks (12 queries) ─────────────
+    # These have fence-like railings and slats — high-confusion hard negatives.
+    - "wooden pedestrian bridge park"
+    - "wooden footbridge forest stream"
+    - "wooden boardwalk beach dune"
+    - "wooden boardwalk park wetland"
+    - "wooden dock lake marina"
+    - "wooden pier ocean sunset"
+    - "wooden walkway garden zen"
+    - "wooden trestle bridge railroad old"
+    - "wooden covered bridge rural"
+    - "wooden suspension bridge rope"
+    - "wooden jetty lake"
+    - "wooden rope bridge jungle"
+
+    # ───────────── CATEGORY 9: Isolated wooden posts (10 queries) ─────────────
+    # Single vertical wood structures — teach model 1 post ≠ fence.
+    - "wooden mailbox post rural road"
+    - "wooden sign post direction"
+    - "wooden flag pole front yard"
+    - "wooden utility pole street"
+    - "wooden lamp post garden"
+    - "wooden clothesline post backyard"
+    - "wooden single fence post no rails"
+    - "wooden gate post alone"
+    - "wooden sundial post garden"
+    - "wooden weathervane post"
+
+    # ───────────── CATEGORY 10: Slatted outdoor furniture (12 queries) ─────────────
+    # Wood slat patterns on chairs/benches look like fence panels.
+    - "adirondack chair slatted wooden backyard"
+    - "park bench wooden slats horizontal"
+    - "wooden garden bench rustic"
+    - "wooden outdoor dining chair slat back"
+    - "wooden slat outdoor lounger"
+    - "wooden swing bench slatted porch"
+    - "wooden porch swing slat"
+    - "wooden patio dining set slatted"
+    - "outdoor wooden folding chair beach"
+    - "slatted wood ottoman outdoor"
+    - "wooden park bench row"
+    - "wooden deck chair horizontal slat"
+
+quality:
+  min_width: 800
+  min_height: 600
+  max_width: 8000
+  max_height: 8000
+  min_aspect: 0.4
+  max_aspect: 2.5
+  min_bytes: 40000
+  max_bytes: 25000000
+
+dedup:
+  phash_hamming_threshold: 5
+  db_path: data_scraped_neg/dedup.sqlite  # SEPARATE dedup DB — no cross-contamination
+
+storage:
+  images_dir: data_scraped_neg/images
+  metadata_jsonl: data_scraped_neg/metadata.jsonl
+  failed_log: data_scraped_neg/failures.jsonl
+  file_extension: jpg
+
+# ───────────────────────── PAID ─────────────────────────
+
+google_cse:
+  enabled: false
+  api_key: ${GOOGLE_CSE_API_KEY}
+  cx: ${GOOGLE_CSE_CX}
+  rate_limit_per_minute: 30
+  max_concurrent: 4
+  target_images: 3000
+
+# VISION OFF FOR NEGATIVES: the labels_to_accept list (Fence, Picket fence, Wood,
+# Yard, Wall, Garden, Landscape, Outdoor) would wrongly accept many negatives as
+# positives or wrongly reject pure negatives. Rely on query specificity instead.
+# Optional post-hoc Fence-detection QA pass can be added later if needed.
+google_vision:
+  enabled: false
+  credentials_json: ${GOOGLE_APPLICATION_CREDENTIALS}
+  min_fence_confidence: 0.6
+  sample_rate: 1.0
+  batch_size: 10
+  batch_timeout_ms: 500
+  labels_to_accept:
+    - Fence
+    - Wood
+    - Garden
+    - Outdoor
+
+# ───────────────────────── FREE WITH API KEY ─────────────────────────
+
+pexels:
+  enabled: true
+  api_key: ${PEXELS_API_KEY}
+  rate_limit_per_minute: 200
+  max_concurrent: 4
+  target_images: 3000
+
+unsplash:
+  enabled: true
+  access_key: ${UNSPLASH_ACCESS_KEY}
+  rate_limit_per_minute: 50
+  max_concurrent: 2
+  target_images: 1500
+
+pixabay:
+  enabled: true
+  api_key: ${PIXABAY_API_KEY}
+  rate_limit_per_minute: 60
+  max_concurrent: 1
+  target_images: 3500
+
+flickr:
+  enabled: false
+  api_key: ${FLICKR_API_KEY}
+  rate_limit_per_minute: 120
+  max_concurrent: 4
+  target_images: 6000
+
+# ───────────────────────── FREE, NO KEY ─────────────────────────
+
+# DISABLED: wikimedia source hardcodes _BROAD_QUERIES with fence terms — using it
+# for negative scrape would inject positive-class fence photos into the neg set.
+wikimedia:
+  enabled: false
+  rate_limit_per_minute: 60
+  max_concurrent: 4
+  target_images: 1000
+
+reddit:
+  enabled: false
+  rate_limit_per_minute: 60
+  max_concurrent: 4
+  target_images: 1500
+  user_agent: "ninja-fence-scraper/0.1 by /u/yourusername"
+  client_id: ${REDDIT_CLIENT_ID}
+  client_secret: ${REDDIT_CLIENT_SECRET}
+  username: null
+  password: null
+  subreddits: []
+
+# ───────────────────────── FREE VIA PLAYWRIGHT ─────────────────────────
+
+pw_google:
+  enabled: true
+  headless: true
+  browser: chromium
+  max_scrolls: 25
+  scroll_delay_s: 1.8
+  request_timeout_s: 45
+  rate_limit_per_minute: 6
+  max_concurrent: 1
+  target_images: 1500
+
+pw_bing:
+  enabled: true
+  headless: true
+  browser: chromium
+  max_scrolls: 40
+  scroll_delay_s: 1.2
+  request_timeout_s: 30
+  rate_limit_per_minute: 5
+  max_concurrent: 1
+  target_images: 3000
+
+pw_ddg:
+  enabled: false
+  headless: true
+  browser: chromium
+  max_scrolls: 30
+  scroll_delay_s: 1.5
+  request_timeout_s: 30
+  rate_limit_per_minute: 10
+  max_concurrent: 1
+  target_images: 2500
+
+pw_pinterest:
+  enabled: true
+  headless: true
+  browser: chromium
+  max_scrolls: 30
+  scroll_delay_s: 1.4
+  request_timeout_s: 45
+  rate_limit_per_minute: 6
+  max_concurrent: 1
+  target_images: 2500
+
+pw_houzz:
+  enabled: true
+  headless: true
+  browser: chromium
+  max_scrolls: 25
+  scroll_delay_s: 1.3
+  request_timeout_s: 45
+  rate_limit_per_minute: 6
+  max_concurrent: 1
+  target_images: 1500
+
+# DISABLED: all company_sites URLs are fence-company galleries — would contaminate
+# the neg set with positives.
+company_sites:
+  enabled: false
+  rate_limit_per_minute: 30
+  max_concurrent: 2
+  target_images: 0
+  urls: []

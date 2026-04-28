@@ -1,0 +1,202 @@
+# ═════════════════════════════════════════════════════════════════════════
+# 3-CLASS ANNOTATION SCHEMA — Grounded-SAM 2 Pipeline (Stain Visualizer)
+# ═════════════════════════════════════════════════════════════════════════
+# (File name kept as "_binary" for backward compatibility, but it's actually
+# 2 real classes + background = 3 classes total. From the STAINER's perspective
+# it's still binary: class 1 stains, anything else doesn't.)
+#
+#   Class 0 (background) — undetected pixels, keep original
+#   Class 1 (fence_wood) — STAIN TARGET, apply stain color, RED in viz
+#   Class 2 (not_target) — "absorber" class: wood-like things that AREN'T a
+#                          wooden fence (siding, furniture, other-material
+#                          fences, walls, plants). Priority 60 BEATS fence_wood
+#                          at priority 50 — so when DINO ambiguously matches
+#                          both, the absorber wins and it's NOT stained.
+#
+# Why 3-class instead of pure binary:
+#   - Binary forced EVERY wood-colored DINO match to become fence_wood,
+#     painting stone walls, buildings, chairs, wire fences, etc.
+#   - The absorber class gives DINO a routing "out" for false positives
+#   - From the stainer's perspective, output is still binary: stain fence_wood,
+#     leave everything else (classes 0 and 2) alone
+#
+# Stainer logic:
+#   stain_mask = (class_map == 1)   # only fence_wood gets stained
+
+version: "3class-absorber-1.0.0"
+
+# ─────────────────────────────────────────────────────────────────────────
+# CLASS DEFINITIONS
+# Priority: higher value = wins the pixel when multiple classes detect it.
+# not_target (60) > fence_wood (50) = absorber wins on conflict.
+# ─────────────────────────────────────────────────────────────────────────
+
+classes:
+
+  - id: 1
+    name: fence_wood
+    tier: fence
+    priority: 50
+    color: [255, 0, 0]          # bright red — high-contrast for QA review
+    is_staining_target: true
+    # Unambiguous wooden-fence phrases only. Removed all loose variants
+    # ("backyard wooden fence", "residential wood fence", "old wooden fence",
+    # etc.) that caused false positives on siding, furniture, and walls.
+    # Each phrase describes a STRUCTURAL wood fence, not just "something woody".
+    prompts:
+      - "wood fence"
+      - "wooden fence"
+      - "cedar fence"
+      - "cedar privacy fence"
+      - "picket fence"
+      - "wooden privacy fence"
+      - "wooden plank fence"
+      - "wood board fence"
+      - "wooden shadowbox fence"
+      - "stockade fence"
+      - "board on board wooden fence"
+      - "horizontal slat wood fence"
+      - "vertical cedar plank privacy fence"
+      - "wooden split rail fence"
+      - "cedar picket fence"
+      - "cedar board fence"
+      - "modern horizontal cedar fence"
+      - "cedar horizontal slat fence"
+      - "wooden fence panel"
+      - "dog-ear wood fence"
+      # Posts / gates — part of the wood fence structure, same stain color
+      - "wooden fence post"
+      - "wooden fence gate"
+      - "cedar fence post"
+      - "wood gate in fence"
+    box_threshold: 0.25                # tuned for recall — recovers gate panels
+                                       # and edge fence detections that scored
+                                       # 0.25-0.29. Absorber + score margin
+                                       # still catch real false positives.
+    text_threshold: 0.20
+
+  - id: 2
+    name: not_target
+    tier: distractor
+    priority: 60                # HIGHER than fence_wood (50) — wins conflicts,
+                                # routing ambiguous matches AWAY from stain
+    color: [100, 100, 100]      # neutral gray — visible but not alarming in viz
+    is_staining_target: false
+    # Absorber class: catches things DINO might mis-match to fence_wood.
+    # Organized by category for maintainability. Each prompt's job is to
+    # give DINO a "more correct" target for the false-positive pattern.
+    prompts:
+      # ── Wood structures that AREN'T fences ──
+      - "wood siding on house"
+      - "wooden house exterior"
+      - "wooden shed wall"
+      - "wood paneling on wall"
+      - "wooden deck surface"
+      - "wooden deck railing"
+      - "wooden porch railing"
+      - "wooden balcony railing"
+      - "wooden stair railing"
+      - "wooden stairs"
+      - "wooden chair outdoor"
+      - "wooden bench"
+      - "wooden outdoor table"
+      - "wooden picnic table"
+      - "wooden pergola"
+      - "wooden arbor"
+      - "wooden gazebo"
+      - "wooden trellis"
+      - "wooden pillar column"
+      - "wooden pallet stack"
+      # ── Non-wood fences (present in images but NOT stain target) ──
+      - "vinyl fence"
+      - "white vinyl fence"
+      - "PVC fence"
+      - "plastic fence"
+      - "chain link fence"
+      - "wire mesh fence"
+      - "metal fence"
+      - "wrought iron fence"
+      - "aluminum fence"
+      - "steel fence"
+      - "barbed wire fence"
+      - "composite fence faux stone"
+      - "stone fence"
+      - "brick fence"
+      - "masonry fence"
+      - "glass pool fence"
+      - "bamboo fence"
+      - "wattle fence woven sticks"
+      # ── Walls / masonry (often mis-matched to "stone fence") ──
+      - "brick wall"
+      - "stone wall"
+      - "concrete wall"
+      - "retaining wall"
+      - "garden wall"
+      - "masonry base under fence"
+      - "stone pillar"
+      - "brick column"
+      - "stone archway"
+      # ── Buildings ──
+      - "house exterior wall"
+      - "residential house"
+      - "garage building"
+      - "garden shed"
+      - "outbuilding"
+      # ── Vegetation (when wood-colored and mis-matched) ──
+      - "bush shrub"
+      - "hedge"
+      - "tree trunk"
+      - "potted plant"
+      - "tall ornamental grass"
+      # ── Other yard objects ──
+      - "outdoor furniture"
+      - "patio furniture set"
+      - "flower pot large"
+      - "bird feeder"
+      - "bird cage outdoor"
+      - "garden statue"
+      - "lamp post"
+    box_threshold: 0.25                # moderately permissive — we WANT this
+                                       # class to fire on ambiguous cases and
+                                       # absorb them away from fence_wood
+    text_threshold: 0.20
+
+# Class ID 0 is BACKGROUND (reserved) — everything that wasn't detected.
+
+# ─────────────────────────────────────────────────────────────────────────
+# PIPELINE HYPERPARAMETERS
+# ─────────────────────────────────────────────────────────────────────────
+
+pipeline:
+  grounding_dino:
+    model: "IDEA-Research/grounding-dino-base"
+    max_text_prompt_length: 256
+    batch_prompts_per_call: 4
+
+  sam2:
+    model: "facebook/sam2.1-hiera-large"
+    points_per_batch: 64
+    multimask_output: true
+    mask_threshold: 0.0
+
+  # Filtering
+  min_mask_area_pixels: 256
+  min_mask_area_ratio: 0.0005            # slightly stricter than binary's
+                                         # 0.0001 — tiny detections are more
+                                         # likely FPs when we have the absorber
+  max_boxes_per_class_per_image: 50
+
+  # Fusion
+  iou_merge_threshold: 0.80
+  overlap_priority_strategy: "winner_takes_pixel"
+
+# ─────────────────────────────────────────────────────────────────────────
+# QA CONFIDENCE THRESHOLDS — calibrated for this schema's score distribution
+# ─────────────────────────────────────────────────────────────────────────
+
+qa:
+  min_overall_confidence: 0.25
+  min_fence_wood_confidence_for_positives: 0.22
+  flag_no_detections: true
+  flag_if_fence_wood_missing_in_positive: true
+  sample_rate_for_qa: 0.10

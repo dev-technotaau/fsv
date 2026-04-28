@@ -1,0 +1,32 @@
+# Core deps for Grounded-SAM 2 annotation pipeline
+# Install into the same `ml` conda env used by the scraper.
+#
+# GPU install (recommended — ~0.3s/image on A100):
+#   pip install -r annotation/requirements.txt
+#   pip install 'git+https://github.com/facebookresearch/sam2.git'
+#
+# CPU-only install (~5-15s/image, fine for smoke tests):
+#   (same as above — torch will fall back to CPU automatically)
+#
+# If you see CUDA OOM errors, switch to smaller variants:
+#   schema.yaml → grounding_dino.model = "IDEA-Research/grounding-dino-tiny"
+#   schema.yaml → sam2.model = "facebook/sam2-hiera-small"
+
+# Numerical / imaging
+numpy>=1.24,<3.0
+Pillow>=10.0,<12.0
+pyyaml>=6.0
+
+# PyTorch (CPU + CUDA autodetect; install matching CUDA build via pip if needed)
+torch>=2.3,<3.0
+torchvision>=0.18,<1.0
+
+# Grounding DINO via HuggingFace transformers
+transformers>=4.40,<5.0
+timm>=0.9,<2.0
+accelerate>=0.28,<2.0
+safetensors>=0.4
+
+# SAM 2 is installed separately from Meta's git repo (not on PyPI at time of writing):
+#   pip install 'git+https://github.com/facebookresearch/sam2.git'
+# Alternative (once available): pip install sam-2

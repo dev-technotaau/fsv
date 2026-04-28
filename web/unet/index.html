@@ -1,0 +1,663 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VisionGuard - Fence Detection & Recoloring</title>
+    <style>
+        /* ... (same CSS as before) ... */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            max-width: 1200px;
+            width: 100%;
+            padding: 40px;
+        }
+
+        h1 {
+            text-align: center;
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 2.5em;
+        }
+
+        .subtitle {
+            text-align: center;
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 1.1em;
+        }
+
+        .upload-section {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .upload-btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 15px 40px;
+            border: none;
+            border-radius: 50px;
+            font-size: 1.1em;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        .upload-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.6);
+        }
+
+        #file-input {
+            display: none;
+        }
+
+        .controls {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        label {
+            font-weight: 600;
+            color: #333;
+            font-size: 0.9em;
+        }
+
+        select, input[type="color"] {
+            padding: 10px;
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+            font-size: 1em;
+        }
+
+        input[type="color"] {
+            height: 50px;
+            cursor: pointer;
+        }
+
+        .btn-group {
+            display: flex;
+            gap: 15px;
+            justify-content: center;
+            margin-bottom: 30px;
+            flex-wrap: wrap;
+        }
+
+        .action-btn {
+            padding: 12px 30px;
+            border: none;
+            border-radius: 10px;
+            font-size: 1em;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-weight: 600;
+        }
+
+        .btn-detect {
+            background: #4CAF50;
+            color: white;
+        }
+
+        .btn-detect:hover {
+            background: #45a049;
+        }
+
+        .btn-recolor {
+            background: #2196F3;
+            color: white;
+        }
+
+        .btn-recolor:hover {
+            background: #0b7dda;
+        }
+
+        .btn-download {
+            background: #FF9800;
+            color: white;
+        }
+
+        .btn-download:hover {
+            background: #e68900;
+        }
+
+        .btn-reset {
+            background: #f44336;
+            color: white;
+        }
+
+        .btn-reset:hover {
+            background: #da190b;
+        }
+
+        .action-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .canvas-container {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+
+        .canvas-wrapper {
+            background: #f5f5f5;
+            border-radius: 15px;
+            padding: 20px;
+            text-align: center;
+        }
+
+        .canvas-wrapper h3 {
+            color: #333;
+            margin-bottom: 15px;
+            font-size: 1.2em;
+        }
+
+        canvas {
+            max-width: 100%;
+            border-radius: 10px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            background: white;
+        }
+
+        .status {
+            text-align: center;
+            padding: 15px;
+            background: #e3f2fd;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            font-size: 1em;
+            color: #1976d2;
+            font-weight: 600;
+        }
+
+        .status.loading {
+            background: #fff3e0;
+            color: #f57c00;
+        }
+
+        .status.success {
+            background: #e8f5e9;
+            color: #2e7d32;
+        }
+
+        .status.error {
+            background: #ffebee;
+            color: #c62828;
+        }
+
+        .loader {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 15px;
+            display: none;
+        }
+
+        .loader.active {
+            display: block;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .error-details {
+            background: #fff;
+            border: 2px solid #f44336;
+            border-radius: 10px;
+            padding: 20px;
+            margin: 20px 0;
+            display: none;
+        }
+
+        .error-details.show {
+            display: block;
+        }
+
+        .error-details h4 {
+            color: #f44336;
+            margin-bottom: 10px;
+        }
+
+        .error-details pre {
+            background: #f5f5f5;
+            padding: 10px;
+            border-radius: 5px;
+            overflow-x: auto;
+            font-size: 0.9em;
+        }
+
+        .info-box {
+            background: #f0f4ff;
+            border-left: 4px solid #667eea;
+            padding: 15px;
+            border-radius: 5px;
+            margin-top: 20px;
+        }
+
+        .info-box h4 {
+            color: #667eea;
+            margin-bottom: 10px;
+        }
+
+        .info-box ul {
+            margin-left: 20px;
+            color: #555;
+        }
+
+        .info-box li {
+            margin-bottom: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🏡 VisionGuard Fence Detector</h1>
+        <p class="subtitle">AI-Powered Fence Detection & Recoloring Tool</p>
+
+        <div class="upload-section">
+            <button class="upload-btn" onclick="document.getElementById('file-input').click()">
+                📁 Upload Fence Image
+            </button>
+            <input type="file" id="file-input" accept="image/*">
+        </div>
+
+        <div class="controls">
+            <div class="control-group">
+                <label for="color-picker">🎨 Fence Color</label>
+                <input type="color" id="color-picker" value="#8B4513">
+            </div>
+            <div class="control-group">
+                <label for="blend-mode">🖌️ Blend Mode</label>
+                <select id="blend-mode">
+                    <option value="multiply">Multiply (Natural)</option>
+                    <option value="overlay">Overlay (Vibrant)</option>
+                    <option value="screen">Screen (Light)</option>
+                    <option value="color">Color (Pure)</option>
+                </select>
+            </div>
+            <div class="control-group">
+                <label for="opacity">💧 Opacity: <span id="opacity-value">80%</span></label>
+                <input type="range" id="opacity" min="0" max="100" value="80" 
+                       style="width: 100%; padding: 0;">
+            </div>
+        </div>
+
+        <div class="loader" id="loader"></div>
+        <div class="status" id="status">Initializing...</div>
+
+        <div class="error-details" id="error-details">
+            <h4>⚠️ Setup Instructions</h4>
+            <p><strong>The model file cannot be loaded because you're not using a web server.</strong></p>
+            <p>To fix this, run one of these commands in your project directory:</p>
+            <pre><code># Option 1: Python
+python3 -m http.server 8000
+
+# Option 2: Node.js
+npx serve -p 8000</code></pre>
+            <p>Then open: <strong>http://localhost:8000</strong></p>
+            <p><strong>Current directory should contain:</strong></p>
+            <ul>
+                <li>✓ index.html</li>
+                <li>✓ fence_model_unet.onnx</li>
+                <li>✓ fence_model_unet.onnx.data</li>
+            </ul>
+        </div>
+
+        <div class="btn-group">
+            <button class="action-btn btn-detect" id="detect-btn" disabled>
+                🔍 Detect Fence
+            </button>
+            <button class="action-btn btn-recolor" id="recolor-btn" disabled>
+                🎨 Recolor Fence
+            </button>
+            <button class="action-btn btn-download" id="download-btn" disabled>
+                💾 Download Result
+            </button>
+            <button class="action-btn btn-reset" id="reset-btn" disabled>
+                🔄 Reset
+            </button>
+        </div>
+
+        <div class="canvas-container">
+            <div class="canvas-wrapper">
+                <h3>📷 Original Image</h3>
+                <canvas id="original-canvas"></canvas>
+            </div>
+            <div class="canvas-wrapper">
+                <h3>🎯 Detected Mask</h3>
+                <canvas id="mask-canvas"></canvas>
+            </div>
+            <div class="canvas-wrapper">
+                <h3>🌈 Recolored Result</h3>
+                <canvas id="result-canvas"></canvas>
+            </div>
+        </div>
+
+        <div class="info-box">
+            <h4>ℹ️ How to Use</h4>
+            <ul>
+                <li>Upload a fence image using the button above</li>
+                <li>Click "Detect Fence" to segment the fence using AI</li>
+                <li>Choose a color and blend mode for recoloring</li>
+                <li>Click "Recolor Fence" to apply the new color</li>
+                <li>Download your result or reset to try again</li>
+            </ul>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js"></script>
+    <script>
+        // Global variables
+        let session = null;
+        let originalImage = null;
+        let maskData = null;
+        
+        const fileInput = document.getElementById('file-input');
+        const originalCanvas = document.getElementById('original-canvas');
+        const maskCanvas = document.getElementById('mask-canvas');
+        const resultCanvas = document.getElementById('result-canvas');
+        const colorPicker = document.getElementById('color-picker');
+        const blendMode = document.getElementById('blend-mode');
+        const opacity = document.getElementById('opacity');
+        const opacityValue = document.getElementById('opacity-value');
+        const status = document.getElementById('status');
+        const loader = document.getElementById('loader');
+        const errorDetails = document.getElementById('error-details');
+        
+        const detectBtn = document.getElementById('detect-btn');
+        const recolorBtn = document.getElementById('recolor-btn');
+        const downloadBtn = document.getElementById('download-btn');
+        const resetBtn = document.getElementById('reset-btn');
+
+        // Initialize
+        async function init() {
+            updateStatus('Initializing AI model...', 'loading');
+            loader.classList.add('active');
+            
+            try {
+                // Try to load model
+                session = await ort.InferenceSession.create('../../models/onnx/fence_model_unet_browser.onnx');
+                updateStatus('✅ AI model loaded successfully!', 'success');
+                errorDetails.classList.remove('show');
+                console.log('Model loaded:', session);
+            } catch (error) {
+                console.error('Model loading error:', error);
+                
+                if (error.message.includes('fetch') || error.message.includes('404')) {
+                    updateStatus('❌ Model file not found. Please start a web server!', 'error');
+                    errorDetails.classList.add('show');
+                } else {
+                    updateStatus('❌ Failed to load AI model: ' + error.message, 'error');
+                }
+            } finally {
+                loader.classList.remove('active');
+            }
+        }
+
+        // Event listeners
+        fileInput.addEventListener('change', handleImageUpload);
+        detectBtn.addEventListener('click', detectFence);
+        recolorBtn.addEventListener('click', recolorFence);
+        downloadBtn.addEventListener('click', downloadResult);
+        resetBtn.addEventListener('click', reset);
+        opacity.addEventListener('input', () => {
+            opacityValue.textContent = opacity.value + '%';
+        });
+
+        // Image upload
+        function handleImageUpload(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const img = new Image();
+                img.onload = () => {
+                    originalImage = img;
+                    drawOriginalImage();
+                    detectBtn.disabled = !session;
+                    resetBtn.disabled = false;
+                    updateStatus(session ? '✅ Image loaded! Click "Detect Fence".' : '⚠️ Model not loaded yet', session ? 'success' : 'error');
+                };
+                img.src = e.target.result;
+            };
+            reader.readAsDataURL(file);
+        }
+
+        function drawOriginalImage() {
+            originalCanvas.width = originalImage.width;
+            originalCanvas.height = originalImage.height;
+            const ctx = originalCanvas.getContext('2d');
+            ctx.drawImage(originalImage, 0, 0);
+        }
+
+        // Fence detection
+        async function detectFence() {
+            if (!originalImage || !session) return;
+
+            updateStatus('🔍 Detecting fence...', 'loading');
+            loader.classList.add('active');
+            detectBtn.disabled = true;
+
+            try {
+                const tensor = preprocessImage(originalImage);
+                const feeds = { input: tensor };
+                const results = await session.run(feeds);
+                const output = results.output;
+
+                maskData = postprocessMask(output, originalImage.width, originalImage.height);
+                drawMask(maskData);
+
+                updateStatus('✅ Fence detected successfully!', 'success');
+                recolorBtn.disabled = false;
+            } catch (error) {
+                updateStatus('❌ Detection failed: ' + error.message, 'error');
+                console.error('Detection error:', error);
+            } finally {
+                loader.classList.remove('active');
+                detectBtn.disabled = false;
+            }
+        }
+
+        function preprocessImage(img) {
+            const canvas = document.createElement('canvas');
+            canvas.width = 512;
+            canvas.height = 512;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0, 512, 512);
+
+            const imageData = ctx.getImageData(0, 0, 512, 512);
+            const data = imageData.data;
+
+            const float32Data = new Float32Array(3 * 512 * 512);
+            for (let i = 0; i < 512 * 512; i++) {
+                float32Data[i] = data[i * 4] / 255.0;
+                float32Data[512 * 512 + i] = data[i * 4 + 1] / 255.0;
+                float32Data[2 * 512 * 512 + i] = data[i * 4 + 2] / 255.0;
+            }
+
+            return new ort.Tensor('float32', float32Data, [1, 3, 512, 512]);
+        }
+
+        function postprocessMask(output, width, height) {
+            const maskData = output.data;
+            const mask = new Float32Array(width * height);
+
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    const srcX = Math.floor((x / width) * 512);
+                    const srcY = Math.floor((y / height) * 512);
+                    const srcIdx = srcY * 512 + srcX;
+                    mask[y * width + x] = maskData[srcIdx];
+                }
+            }
+
+            return mask;
+        }
+
+        function drawMask(mask) {
+            const width = originalImage.width;
+            const height = originalImage.height;
+
+            maskCanvas.width = width;
+            maskCanvas.height = height;
+            const ctx = maskCanvas.getContext('2d');
+            const imageData = ctx.createImageData(width, height);
+
+            for (let i = 0; i < mask.length; i++) {
+                const value = Math.floor(mask[i] * 255);
+                imageData.data[i * 4] = value;
+                imageData.data[i * 4 + 1] = value;
+                imageData.data[i * 4 + 2] = value;
+                imageData.data[i * 4 + 3] = 255;
+            }
+
+            ctx.putImageData(imageData, 0, 0);
+        }
+
+        // Fence recoloring
+        function recolorFence() {
+            if (!originalImage || !maskData) return;
+
+            updateStatus('🎨 Recoloring fence...', 'loading');
+
+            const width = originalImage.width;
+            const height = originalImage.height;
+
+            resultCanvas.width = width;
+            resultCanvas.height = height;
+            const ctx = resultCanvas.getContext('2d');
+
+            ctx.drawImage(originalImage, 0, 0);
+            const imageData = ctx.getImageData(0, 0, width, height);
+            const data = imageData.data;
+
+            const hexColor = colorPicker.value;
+            const rgb = hexToRgb(hexColor);
+            const blendModeValue = blendMode.value;
+            const opacityValue = parseFloat(opacity.value) / 100;
+
+            for (let i = 0; i < maskData.length; i++) {
+                if (maskData[i] > 0.5) {
+                    const idx = i * 4;
+                    const r = data[idx];
+                    const g = data[idx + 1];
+                    const b = data[idx + 2];
+
+                    const blended = applyBlendMode(r, g, b, rgb.r, rgb.g, rgb.b, blendModeValue);
+
+                    data[idx] = r + (blended.r - r) * opacityValue;
+                    data[idx + 1] = g + (blended.g - g) * opacityValue;
+                    data[idx + 2] = b + (blended.b - b) * opacityValue;
+                }
+            }
+
+            ctx.putImageData(imageData, 0, 0);
+            updateStatus('✅ Recoloring complete!', 'success');
+            downloadBtn.disabled = false;
+        }
+
+        function applyBlendMode(r, g, b, cr, cg, cb, mode) {
+            switch (mode) {
+                case 'multiply':
+                    return {
+                        r: (r / 255) * (cr / 255) * 255,
+                        g: (g / 255) * (cg / 255) * 255,
+                        b: (b / 255) * (cb / 255) * 255
+                    };
+                case 'overlay':
+                    return {
+                        r: r < 128 ? 2 * r * cr / 255 : 255 - 2 * (255 - r) * (255 - cr) / 255,
+                        g: g < 128 ? 2 * g * cg / 255 : 255 - 2 * (255 - g) * (255 - cg) / 255,
+                        b: b < 128 ? 2 * b * cb / 255 : 255 - 2 * (255 - b) * (255 - cb) / 255
+                    };
+                case 'screen':
+                    return {
+                        r: 255 - (255 - r) * (255 - cr) / 255,
+                        g: 255 - (255 - g) * (255 - cg) / 255,
+                        b: 255 - (255 - b) * (255 - cb) / 255
+                    };
+                case 'color':
+                    return { r: cr, g: cg, b: cb };
+                default:
+                    return { r, g, b };
+            }
+        }
+
+        function hexToRgb(hex) {
+            const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+            return result ? {
+                r: parseInt(result[1], 16),
+                g: parseInt(result[2], 16),
+                b: parseInt(result[3], 16)
+            } : null;
+        }
+
+        // Download & reset
+        function downloadResult() {
+            const link = document.createElement('a');
+            link.download = 'fence_recolored.png';
+            link.href = resultCanvas.toDataURL();
+            link.click();
+            updateStatus('✅ Image downloaded!', 'success');
+        }
+
+        function reset() {
+            originalImage = null;
+            maskData = null;
+            fileInput.value = '';
+            
+            const contexts = [originalCanvas, maskCanvas, resultCanvas].map(c => c.getContext('2d'));
+            contexts.forEach(ctx => ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height));
+
+            detectBtn.disabled = true;
+            recolorBtn.disabled = true;
+            downloadBtn.disabled = true;
+            resetBtn.disabled = true;
+
+            updateStatus(session ? 'Upload an image to begin' : '⚠️ Model not loaded', session ? '' : 'error');
+        }
+
+        function updateStatus(message, type = '') {
+            status.textContent = message;
+            status.className = 'status ' + type;
+        }
+
+        window.addEventListener('load', init);
+    </script>
+</body>
+</html>

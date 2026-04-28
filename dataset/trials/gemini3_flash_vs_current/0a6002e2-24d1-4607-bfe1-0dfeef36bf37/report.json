@@ -1,0 +1,36 @@
+{
+  "image_id": "0a6002e2-24d1-4607-bfe1-0dfeef36bf37",
+  "source_image": "data_scraped\\images\\pw_bing__wooden_privacy_fence_original__b522171a.jpg",
+  "resolution": [
+    1024,
+    768
+  ],
+  "model": "gemini-3-flash-preview",
+  "vertex_project": "gen-lang-client-0219777911",
+  "vertex_location": "global",
+  "gemini": {
+    "latency_s": 34.449,
+    "has_fence": true,
+    "n_raw_polygons": 1,
+    "n_refined_polygons": 1
+  },
+  "current_method": {
+    "mask_path": "dataset\\annotations_v1\\masks\\0a6002e2-24d1-4607-bfe1-0dfeef36bf37.png",
+    "fence_class_id": 1,
+    "fence_pixel_count": 178650
+  },
+  "agreement_metrics_treating_current_as_reference": {
+    "iou": 0.7522,
+    "dice": 0.8586,
+    "precision_vs_reference": 0.8005,
+    "recall_vs_reference": 0.9257,
+    "pixel_agreement": 0.9307,
+    "pred_coverage_pct": 26.27,
+    "ref_coverage_pct": 22.717,
+    "tp": 165381,
+    "fp": 41211,
+    "fn": 13269,
+    "tn": 566571
+  },
+  "note": "There is no human-labeled ground truth for this image. Metrics describe agreement between Gemini's mask and the current-method (Grounded-SAM 2) fence_wood mask, not absolute accuracy."
+}

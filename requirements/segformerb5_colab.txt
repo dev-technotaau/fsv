@@ -1,0 +1,241 @@
+# SegFormer-B5 Google Colab Training Requirements
+# ================================================================
+# Optimized for Google Colab T4 GPU (16GB VRAM)
+# Python 3.10+ (Colab default)
+# ================================================================
+
+# ============================================================================
+# CORE DEEP LEARNING FRAMEWORK
+# ============================================================================
+
+# PyTorch with CUDA 12.1 support (pre-installed on Colab, but listing for reference)
+torch>=2.1.0
+torchvision>=0.16.0
+torchaudio>=2.1.0
+
+# ============================================================================
+# TRANSFORMERS & HUGGINGFACE ECOSYSTEM
+# ============================================================================
+
+# HuggingFace Transformers (for SegFormer-B5)
+transformers>=4.35.0
+
+# HuggingFace Hub for model downloads
+huggingface-hub>=0.19.0
+
+# Accelerate for optimized training
+accelerate>=0.25.0
+
+# Datasets library (optional, for advanced data handling)
+datasets>=2.15.0
+
+# ============================================================================
+# COMPUTER VISION & IMAGE PROCESSING
+# ============================================================================
+
+# OpenCV for image operations
+opencv-python>=4.8.1.78
+opencv-contrib-python>=4.8.1.78
+
+# Albumentations for advanced augmentation
+albumentations>=1.3.1
+
+# Pillow for PIL image handling
+Pillow>=10.1.0
+
+# scikit-image for additional image processing
+scikit-image>=0.22.0
+
+# ============================================================================
+# NUMERICAL & SCIENTIFIC COMPUTING
+# ============================================================================
+
+# NumPy for array operations
+numpy>=1.24.0,<2.0.0
+
+# SciPy for scientific computing
+scipy>=1.11.0
+
+# ============================================================================
+# PROGRESS BARS & VISUALIZATION
+# ============================================================================
+
+# tqdm for progress bars
+tqdm>=4.66.0
+
+# matplotlib for visualization
+matplotlib>=3.8.0
+
+# seaborn for enhanced plotting
+seaborn>=0.13.0
+
+# ============================================================================
+# LOGGING & MONITORING
+# ============================================================================
+
+# TensorBoard for training monitoring
+tensorboard>=2.15.0
+
+# Weights & Biases (optional, for experiment tracking)
+# wandb>=0.16.0
+
+# ============================================================================
+# DATA HANDLING & UTILITIES
+# ============================================================================
+
+# pandas for data manipulation
+pandas>=2.1.0
+
+# scikit-learn for metrics and utilities
+scikit-learn>=1.3.0
+
+# ============================================================================
+# MODEL EXPORT & DEPLOYMENT
+# ============================================================================
+
+# ONNX for model export
+onnx>=1.15.0
+
+# ONNX Runtime for CPU inference
+onnxruntime>=1.16.0
+
+# ONNX Runtime GPU for GPU inference
+onnxruntime-gpu>=1.16.0
+
+# ============================================================================
+# GOOGLE COLAB SPECIFIC
+# ============================================================================
+
+# Google Colab utilities (pre-installed, but listing for reference)
+google-colab
+
+# ============================================================================
+# OPTIONAL ADVANCED FEATURES
+# ============================================================================
+
+# timm for additional vision models (optional)
+timm>=0.9.12
+
+# einops for tensor operations (optional)
+einops>=0.7.0
+
+# ============================================================================
+# INSTALLATION INSTRUCTIONS FOR GOOGLE COLAB
+# ============================================================================
+
+# STEP 1: Upload this requirements file to Colab
+# -----------------------------------------------
+# from google.colab import files
+# uploaded = files.upload()  # Upload requirements_segformerb5_colab.txt
+
+# STEP 2: Install all requirements
+# ---------------------------------
+# !pip install -r requirements_segformerb5_colab.txt
+
+# STEP 3: Verify PyTorch CUDA installation
+# ----------------------------------------
+# import torch
+# print(f"PyTorch Version: {torch.__version__}")
+# print(f"CUDA Available: {torch.cuda.is_available()}")
+# print(f"CUDA Version: {torch.version.cuda}")
+# print(f"GPU Name: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'No GPU'}")
+# print(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.2f} GB")
+
+# STEP 4: Verify key libraries
+# ----------------------------
+# import transformers
+# import albumentations
+# import cv2
+# print(f"Transformers: {transformers.__version__}")
+# print(f"Albumentations: {albumentations.__version__}")
+# print(f"OpenCV: {cv2.__version__}")
+
+# ============================================================================
+# GOOGLE COLAB T4 GPU SPECIFICATIONS
+# ============================================================================
+# GPU: NVIDIA Tesla T4
+# VRAM: 16 GB GDDR6
+# CUDA Cores: 2560
+# Tensor Cores: 320 (Mixed Precision)
+# Compute Capability: 7.5
+# FP32 Performance: 8.1 TFLOPS
+# FP16 Performance: 65 TFLOPS (with Tensor Cores)
+# Memory Bandwidth: 320 GB/s
+
+# ============================================================================
+# EXPECTED TRAINING PERFORMANCE ON T4
+# ============================================================================
+# Configuration:
+# - SegFormer-B5 (84.6M parameters)
+# - Input Size: 640x640 (native resolution)
+# - Batch Size: 4
+# - Gradient Accumulation: 4 steps
+# - Effective Batch: 16
+# - Mixed Precision: FP16 (AMP enabled)
+# - 100 Epochs
+#
+# Expected Training Time: ~2-3 hours
+# Expected Speed: ~15-20 seconds/epoch
+# Expected Memory Usage: ~12-14 GB VRAM
+# Expected Best IoU: >0.90
+
+# ============================================================================
+# DATASET UPLOAD TO COLAB
+# ============================================================================
+# Option 1: Upload ZIP file
+# -------------------------
+# from google.colab import files
+# uploaded = files.upload()  # Upload dataset.zip
+# !unzip -q dataset.zip -d ./data
+
+# Option 2: Mount Google Drive
+# ----------------------------
+# from google.colab import drive
+# drive.mount('/content/drive')
+# !cp -r /content/drive/MyDrive/fence_dataset/* ./data/
+
+# Option 3: Download from cloud storage
+# -------------------------------------
+# !wget -q https://your-storage-url/dataset.zip
+# !unzip -q dataset.zip -d ./data
+
+# ============================================================================
+# DOWNLOAD TRAINED MODEL FROM COLAB
+# ============================================================================
+# After training completes, download the best model:
+#
+# from google.colab import files
+# import shutil
+#
+# # Zip the best model
+# shutil.make_archive('segformer_b5_best_model', 'zip', './checkpoints/segformerb5_colab/best_model')
+#
+# # Download
+# files.download('segformer_b5_best_model.zip')
+
+# ============================================================================
+# TROUBLESHOOTING
+# ============================================================================
+# 
+# Issue: "CUDA out of memory"
+# Solution: Reduce BATCH_SIZE from 4 to 2 in Config class
+#
+# Issue: "Runtime disconnected"
+# Solution: Keep browser tab active, use periodic checkpoint saving
+#
+# Issue: "Slow data loading"
+# Solution: Reduce NUM_WORKERS from 4 to 2 in Config class
+#
+# Issue: "Disk space full"
+# Solution: Reduce KEEP_LAST_N_CHECKPOINTS from 3 to 1 in Config class
+
+# ============================================================================
+# RECOMMENDED COLAB SETTINGS
+# ============================================================================
+# Runtime Type: GPU (T4)
+# Runtime Shape: Standard
+# RAM: 12.7 GB (standard)
+# Disk: 78 GB (standard)
+# Session Duration: Up to 12 hours
+# 
+# Note: For longer training (>12 hours), consider Colab Pro

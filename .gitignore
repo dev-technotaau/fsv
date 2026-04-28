@@ -1,0 +1,237 @@
+# ════════════════════════════════════════════════════════════════════════
+# .gitignore — fence segmentation pipeline
+# ════════════════════════════════════════════════════════════════════════
+
+# ───── Python ─────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+*.egg
+build/
+dist/
+.eggs/
+.venv/
+venv/
+venv_detectron2/
+unetplusplus_env/
+env/
+ENV/
+*.env
+.env
+.env.local
+!.env.example
+
+# ───── Secrets / credentials (defensive) ─────
+*.pem
+*.key
+*.crt
+*.p12
+service-account*.json
+service_account*.json
+credentials.json
+client_secret*.json
+gcp-key.json
+google-credentials.json
+.huggingface/token
+.netrc
+
+# ───── Training outputs (the v2 pipeline) ─────
+outputs/
+checkpoints/
+logs/
+training_visualizations/
+onnx_models/
+models/onnx/*.onnx.data
+runs/
+lightning_logs/
+wandb/
+mlruns/
+tensorboard/
+tb_logs/
+val_samples/
+
+# ───── Model weight files (any format) ─────
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.safetensors
+*.h5
+*.tflite
+*.onnx
+*.onnx.data
+*.engine
+*.trt
+*.pb
+*.pkl
+*.pickle
+# NOTE: do NOT track any *.pt / *.pth in git. GitHub hard-limits files at
+# 100 MB and our trained models are 100 MB - 4 GB. Use HF Hub or Git LFS
+# instead if you need to ship them.
+models/pytorch/
+models/onnx/
+
+# ───── HuggingFace + model caches ─────
+.cache/
+.huggingface/
+hf_cache/
+torch_hub/
+
+# ───── Data (too large for git; tracked via DVC if at all) ─────
+data/images/
+data/masks/
+data/no_fence_images/
+data/mask_overlays/
+data/*.log
+data/*.json
+
+# Scraped dataset — DVC-tracked binaries, never commit to git directly.
+# The .dvc pointer files ARE committed; the real image dirs are not.
+data_scraped/images/
+data_scraped/rejected/
+data_scraped_neg/images/
+data_scraped_neg/rejected/
+data_scraped_dryrun/
+data_scraped_test/
+
+# Scrape ephemeral state (regeneratable from manifest.jsonl)
+data_scraped/scraper.log.jsonl
+data_scraped_neg/scraper.log.jsonl
+data_scraped/vision_qa_processed.txt
+data_scraped_neg/vision_qa_processed.txt
+data_scraped/dedup.sqlite
+data_scraped_neg/dedup.sqlite
+
+# ───── dataset/ (training data — fence images, masks, augmentation pools) ─────
+# Track only small JSONL splits/manifests; exclude all heavy binaries.
+dataset/golden_set/images/
+dataset/occluders/
+dataset/hard_negatives/
+dataset/_coco_cache/
+# Annotation outputs (review state, not source data) — too large to track
+dataset/annotations_v1/
+dataset/images/
+dataset/masks/
+dataset/raw/
+dataset/processed/
+dataset/**/*.png
+dataset/**/*.jpg
+dataset/**/*.jpeg
+dataset/**/*.webp
+dataset/**/*.bmp
+dataset/**/*.tif
+dataset/**/*.tiff
+dataset/**/*.npy
+dataset/**/*.npz
+dataset/**/*.tmp
+dataset/**/*.sqlite
+dataset/**/*.db
+# Small JSONL split + manifest files ARE tracked (un-ignore below)
+!dataset/splits/*.jsonl
+!dataset/manifest*.jsonl
+!dataset/**/*.json
+
+# ───── Metadata backups ─────
+*.jsonl.bak
+*.jsonl.tmp
+*.json.tmp
+*.bak
+*.swp
+*~
+
+# ───── DVC ─────
+.dvc/tmp/
+.dvc/cache/
+
+# ───── Web frontend (fence-staining-visualizer/) ─────
+node_modules/
+.next/
+.nuxt/
+.svelte-kit/
+.vite/
+.parcel-cache/
+.turbo/
+out/
+build/
+*.tsbuildinfo
+.npm/
+.yarn/
+.pnp.*
+package-lock.json.bak
+yarn-error.log
+npm-debug.log*
+
+# ───── IDE / editor ─────
+.vscode/
+.idea/
+.cursor/
+.windsurf/
+*.code-workspace
+*.iml
+.project
+.classpath
+.settings/
+
+# ───── Claude / AI assistant local state ─────
+.claude/
+.aider*
+.continue/
+
+# ───── OS ─────
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# ───── Test artifacts ─────
+tests/reports/*.json
+test_checkpoint_*.pth
+test_*.png
+
+# ───── Exports / build outputs ─────
+export/
+
+# ───── Jupyter ─────
+.ipynb_checkpoints/
+*.ipynb_meta
+
+# ───── pytest / coverage ─────
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# ───── Local scratch / diagnostic scripts ─────
+_diag.py
+_smoke_*.py
+_check_*.py
+_count_*.py
+scratch_*.py
+tmp_*.py
+
+# ───── Logs ─────
+*.log
+*.log.gz
+*.log.*
+
+# ───── Misc large binaries ─────
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+*.rar
+*.iso
+*.dmg
+*.exe
+*.dll
+*.so
+*.dylib

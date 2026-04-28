@@ -1,0 +1,1800 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ninja Fence Staining - AI Fence Visualizer</title>
+    <link rel="icon" type="image/x-icon" href="./ninja_logo.png">
+    <link rel="shortcut icon" type="image/x-icon" href="./ninja_logo.png">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --primary: #C06B1A;
+            --primary-dark: #A05815;
+            --secondary: #000000;
+            --success: #10b981;
+            --warning: #f59e0b;
+            --error: #ef4444;
+            --dark: #000000;
+            --light: #FFFFFF;
+            --border: #e2e8f0;
+            --shadow: 0 10px 40px rgba(0,0,0,0.1);
+            --shadow-lg: 0 25px 50px -12px rgba(0,0,0,0.25);
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: linear-gradient(135deg, #C06B1A 0%, #000000 100%);
+            background-size: 200% 200%;
+            animation: gradientShift 15s ease infinite;
+            min-height: 100vh;
+            padding: 20px;
+            position: relative;
+            overflow-x: hidden;
+        }
+
+        @keyframes gradientShift {
+            0%, 100% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+        }
+
+        body::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: 
+                radial-gradient(ellipse at top left, rgba(192, 107, 26, 0.4), transparent 50%),
+                radial-gradient(ellipse at bottom right, rgba(0, 0, 0, 0.4), transparent 50%);
+            pointer-events: none;
+            animation: float 20s ease-in-out infinite;
+        }
+
+        @keyframes float {
+            0%, 100% { opacity: 0.3; }
+            50% { opacity: 0.6; }
+        }
+
+        .container {
+            background: #ffffff;
+            border-radius: 32px;
+            box-shadow: 
+                0 50px 100px -20px rgba(0, 0, 0, 0.3),
+                0 30px 60px -30px rgba(99, 102, 241, 0.5),
+                inset 0 1px 0 rgba(255, 255, 255, 1);
+            max-width: 1600px;
+            margin: 20px auto;
+            padding: 0;
+            overflow: hidden;
+            position: relative;
+            border: 1px solid rgba(255, 255, 255, 0.5);
+        }
+
+        .header {
+            background: linear-gradient(135deg, #C06B1A 0%, #000000 100%);
+            padding: 60px 48px 80px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .header::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            right: -10%;
+            width: 800px;
+            height: 800px;
+            background: radial-gradient(circle, rgba(255,255,255,0.15) 0%, transparent 70%);
+            border-radius: 50%;
+            animation: headerPulse 8s ease-in-out infinite;
+        }
+
+        .header::after {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.5), transparent);
+        }
+
+        .logo {
+            height: 115px;
+            width: auto;
+            vertical-align: middle;
+            margin-right: 20px;
+            filter: drop-shadow(0 2px 8px rgba(0,0,0,0.3));
+            transition: transform 0.3s;
+        }
+
+        .logo:hover {
+            transform: scale(1.05);
+        }
+
+        @keyframes headerPulse {
+            0%, 100% { transform: scale(1) translateY(0); opacity: 0.15; }
+            50% { transform: scale(1.1) translateY(-20px); opacity: 0.25; }
+        }
+
+        .header-content {
+            position: relative;
+            z-index: 1;
+        }
+
+        h1 {
+            text-align: center;
+            color: white;
+            margin-bottom: 16px;
+            font-size: 3.5em;
+            font-weight: 900;
+            letter-spacing: -0.03em;
+            text-shadow: 
+                0 2px 20px rgba(0,0,0,0.3),
+                0 4px 40px rgba(0,0,0,0.2);
+            position: relative;
+            z-index: 2;
+            animation: titleSlideIn 0.8s cubic-bezier(0.34, 1.56, 0.64, 1);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        @keyframes titleSlideIn {
+            from {
+                opacity: 0;
+                transform: translateY(-30px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .subtitle {
+            text-align: center;
+            color: rgba(255,255,255,0.98);
+            margin-bottom: 0;
+            font-size: 1.25em;
+            font-weight: 400;
+            letter-spacing: 0.02em;
+            position: relative;
+            z-index: 2;
+            animation: subtitleFadeIn 1s ease 0.3s both;
+        }
+
+        @keyframes subtitleFadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .main-content {
+            padding: 48px;
+            background: #fafbfc;
+        }
+
+        .upload-section {
+            text-align: center;
+            margin-bottom: 40px;
+            padding: 60px 48px;
+            border: 3px dashed #cbd5e1;
+            border-radius: 20px;
+            background: #ffffff;
+            transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+            cursor: pointer;
+            position: relative;
+        }
+
+        .upload-section::before {
+            content: '\f3e2';
+            font-family: 'bootstrap-icons';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 8em;
+            color: var(--primary);
+            opacity: 0.05;
+            transition: all 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+            z-index: 0;
+        }
+
+        .upload-section > * {
+            position: relative;
+            z-index: 1;
+        }
+
+        .upload-section:hover {
+            border-color: var(--primary);
+            background: #f8f9ff;
+            transform: translateY(-4px);
+            box-shadow: 0 12px 32px rgba(99, 102, 241, 0.15);
+        }
+
+        .upload-section:hover::before {
+            transform: translate(-50%, -50%) scale(1.1);
+            opacity: 0.08;
+        }
+
+        .upload-section.drag-over {
+            border-color: var(--success);
+            border-style: solid;
+            background: #f0fdf4;
+            transform: scale(1.02);
+            box-shadow: 0 15px 40px rgba(16, 185, 129, 0.2);
+        }
+
+        .upload-section.drag-over::before {
+            content: '\f26b';
+            color: var(--success);
+            opacity: 0.15;
+        }
+
+        .upload-section h3 {
+            color: var(--dark);
+            font-size: 1.3em;
+            font-weight: 600;
+            margin-bottom: 16px;
+            margin-top: 0;
+        }
+
+        .upload-btn {
+            background: linear-gradient(135deg, #C06B1A 0%, #000000 100%);
+            color: white;
+            padding: 18px 56px;
+            border: none;
+            border-radius: 14px;
+            font-size: 1.1em;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            box-shadow: 
+                0 6px 20px rgba(192, 107, 26, 0.4),
+                0 2px 4px rgba(0,0,0,0.1);
+            position: relative;
+            overflow: hidden;
+            letter-spacing: 0.02em;
+        }
+
+        .upload-btn::before {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 0;
+            height: 0;
+            border-radius: 50%;
+            background: rgba(255,255,255,0.25);
+            transform: translate(-50%, -50%);
+            transition: width 0.6s ease, height 0.6s ease;
+        }
+
+        .upload-btn::after {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: linear-gradient(45deg, transparent, rgba(255,255,255,0.1), transparent);
+            transform: translateX(-100%);
+            transition: transform 0.6s;
+        }
+
+        .upload-btn:hover::before {
+            width: 400px;
+            height: 400px;
+        }
+
+        .upload-btn:hover::after {
+            transform: translateX(100%);
+        }
+
+        .upload-btn:hover {
+            transform: translateY(-3px);
+            box-shadow: 
+                0 10px 30px rgba(192, 107, 26, 0.5),
+                0 4px 8px rgba(0,0,0,0.15);
+        }
+
+        .upload-btn:active {
+            transform: translateY(-1px);
+        }
+
+        #file-input {
+            display: none;
+        }
+
+        .controls {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 24px;
+            margin-bottom: 32px;
+        }
+
+        .control-group {
+            background: #ffffff;
+            padding: 28px;
+            border-radius: 16px;
+            border: 2px solid #e2e8f0;
+            transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+        }
+
+        .control-group:hover {
+            border-color: var(--primary);
+            box-shadow: 
+                0 8px 24px rgba(99, 102, 241, 0.12),
+                0 4px 12px rgba(0,0,0,0.06);
+            transform: translateY(-4px);
+            background: #ffffff;
+        }
+
+        .control-group label {
+            font-weight: 600;
+            color: var(--dark);
+            font-size: 0.95em;
+            display: block;
+            margin-bottom: 12px;
+            letter-spacing: -0.01em;
+        }
+
+        /* Custom Color Picker Button */
+        .color-picker-button {
+            width: 100%;
+            height: 56px;
+            border: 2px solid var(--border);
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s;
+            background: white;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 16px;
+            font-weight: 500;
+            color: var(--dark);
+        }
+
+        .color-picker-button:hover {
+            border-color: var(--primary);
+            transform: scale(1.02);
+        }
+
+        .current-color-display {
+            width: 32px;
+            height: 32px;
+            border-radius: 6px;
+            border: 2px solid #e2e8f0;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        /* Color Picker Modal */
+        .color-picker-modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.6);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 10000;
+            backdrop-filter: blur(4px);
+        }
+
+        .color-picker-modal.active {
+            display: flex;
+        }
+
+        .color-picker-dialog {
+            background: white;
+            border-radius: 20px;
+            padding: 32px;
+            max-width: 600px;
+            width: 90%;
+            max-height: 80vh;
+            overflow-y: auto;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+            position: relative;
+        }
+
+        .color-picker-dialog h3 {
+            margin: 0 0 24px 0;
+            color: var(--dark);
+            font-size: 1.5em;
+            font-weight: 700;
+        }
+
+        .color-picker-close {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: none;
+            border: none;
+            font-size: 2em;
+            cursor: pointer;
+            color: #64748b;
+            transition: all 0.3s;
+            width: 40px;
+            height: 40px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 8px;
+        }
+
+        .color-picker-close:hover {
+            background: #f1f5f9;
+            color: var(--error);
+            transform: rotate(90deg);
+        }
+
+        .color-picker-grid {
+            display: grid;
+            grid-template-columns: repeat(5, 1fr);
+            gap: 12px;
+        }
+
+        .color-option {
+            width: 100%;
+            aspect-ratio: 1;
+            border-radius: 10px;
+            cursor: pointer;
+            border: 3px solid transparent;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+            position: relative;
+        }
+
+        .color-option:hover {
+            transform: scale(1.1);
+            box-shadow: 0 6px 16px rgba(0,0,0,0.25);
+        }
+
+        .color-option.selected {
+            border-color: var(--primary);
+            transform: scale(1.05);
+            box-shadow: 0 6px 16px rgba(192, 107, 26, 0.5);
+        }
+
+        .color-option.selected::after {
+            content: '✓';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-size: 1.5em;
+            font-weight: bold;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.5);
+        }
+
+        .color-option-name {
+            text-align: center;
+            font-size: 0.8em;
+            color: #64748b;
+            margin-top: 6px;
+            font-weight: 500;
+        }
+
+        input[type="range"] {
+            width: 100%;
+            margin-top: 8px;
+            height: 6px;
+            border-radius: 3px;
+            background: linear-gradient(to right, #C06B1A, #000000);
+            outline: none;
+            -webkit-appearance: none;
+            appearance: none;
+        }
+
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: white;
+            cursor: pointer;
+            box-shadow: 0 2px 8px rgba(99, 102, 241, 0.4);
+            border: 2px solid var(--primary);
+            transition: all 0.2s;
+        }
+
+        input[type="range"]::-webkit-slider-thumb:hover {
+            transform: scale(1.2);
+            box-shadow: 0 4px 12px rgba(99, 102, 241, 0.6);
+        }
+
+        input[type="range"]::-moz-range-thumb {
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: white;
+            cursor: pointer;
+            box-shadow: 0 2px 8px rgba(99, 102, 241, 0.4);
+            border: 2px solid var(--primary);
+        }
+
+        input[type="color"] {
+            width: 100%;
+            height: 56px;
+            border: 2px solid var(--border);
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        input[type="color"]:hover {
+            border-color: var(--primary);
+            transform: scale(1.02);
+        }
+
+        select {
+            width: 100%;
+            padding: 12px 16px;
+            border: 2px solid var(--border);
+            border-radius: 8px;
+            font-size: 0.95em;
+            background: white;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-weight: 500;
+        }
+
+        select:hover {
+            border-color: var(--primary);
+        }
+
+        select:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
+        }
+
+        .value-display {
+            display: inline-block;
+            color: var(--primary);
+            font-weight: 700;
+            float: right;
+            font-size: 0.9em;
+        }
+
+        .btn-group {
+            display: flex;
+            gap: 15px;
+            justify-content: center;
+            margin-bottom: 30px;
+            flex-wrap: wrap;
+        }
+
+        .action-btn {
+            padding: 12px 30px;
+            border: none;
+            border-radius: 10px;
+            font-size: 1em;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-weight: 600;
+        }
+
+        .btn-detect {
+            background: #C06B1A;
+            color: white;
+        }
+
+        .btn-detect:hover:not(:disabled) {
+            background: #A05815;
+        }
+
+        .btn-recolor {
+            background: #C06B1A;
+            color: white;
+        }
+
+        .btn-recolor:hover:not(:disabled) {
+            background: #A05815;
+        }
+
+        .btn-download {
+            background: #C06B1A;
+            color: white;
+        }
+
+        .btn-download:hover:not(:disabled) {
+            background: #A05815;
+        }
+
+        .btn-reset {
+            background: #C06B1A;
+            color: white;
+        }
+
+        .btn-reset:hover:not(:disabled) {
+            background: #A05815;
+        }
+
+        .action-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .canvas-container {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 32px;
+            margin-bottom: 32px;
+        }
+
+        .canvas-wrapper {
+            background: #ffffff;
+            border-radius: 20px;
+            padding: 32px;
+            text-align: center;
+            box-shadow: 
+                0 4px 20px rgba(0,0,0,0.08),
+                0 1px 3px rgba(0,0,0,0.05);
+            border: 2px solid #e2e8f0;
+            transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .canvas-wrapper:hover {
+            box-shadow: 
+                0 12px 40px rgba(0,0,0,0.12),
+                0 6px 20px rgba(99,102,241,0.08);
+            transform: translateY(-8px);
+            border-color: var(--primary);
+        }
+
+        .canvas-wrapper h3 {
+            color: var(--dark);
+            margin-bottom: 16px;
+            font-size: 1.1em;
+            font-weight: 600;
+            padding-bottom: 12px;
+            border-bottom: 2px solid var(--border);
+        }
+
+        canvas {
+            max-width: 100%;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            background: white;
+        }
+
+        .status {
+            text-align: center;
+            padding: 16px 24px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            font-size: 1em;
+            font-weight: 500;
+            animation: fadeIn 0.3s;
+            background: linear-gradient(135deg, rgba(192, 107, 26, 0.1) 0%, rgba(0, 0, 0, 0.1) 100%);
+            color: var(--primary);
+            border: 1px solid rgba(192, 107, 26, 0.3);
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(-10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .status.loading {
+            background: linear-gradient(135deg, rgba(245, 158, 11, 0.1) 0%, rgba(251, 191, 36, 0.1) 100%);
+            color: var(--warning);
+            border: 1px solid rgba(245, 158, 11, 0.3);
+        }
+
+        .status.success {
+            background: linear-gradient(135deg, rgba(16, 185, 129, 0.1) 0%, rgba(52, 211, 153, 0.1) 100%);
+            color: var(--success);
+            border: 1px solid rgba(16, 185, 129, 0.3);
+        }
+
+        .status.error {
+            background: linear-gradient(135deg, rgba(239, 68, 68, 0.1) 0%, rgba(248, 113, 113, 0.1) 100%);
+            color: var(--error);
+            border: 1px solid rgba(239, 68, 68, 0.3);
+        }
+
+        .loader {
+            border: 4px solid var(--border);
+            border-top: 4px solid var(--primary);
+            border-radius: 50%;
+            width: 48px;
+            height: 48px;
+            animation: spin 1s linear infinite;
+            margin: 32px auto;
+            display: none;
+        }
+
+        .loader.active {
+            display: block;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        /* Loading Overlay */
+        .loading-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.7);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 9999;
+            backdrop-filter: blur(4px);
+        }
+
+        .loading-overlay.active {
+            display: flex;
+        }
+
+        .loading-content {
+            text-align: center;
+            color: white;
+        }
+
+        .loading-spinner {
+            border: 6px solid rgba(255, 255, 255, 0.3);
+            border-top: 6px solid #C06B1A;
+            border-radius: 50%;
+            width: 80px;
+            height: 80px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+
+        .loading-text {
+            font-size: 1.2em;
+            font-weight: 600;
+            color: white;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.5);
+        }
+
+        .info-box {
+            background: linear-gradient(135deg, rgba(192, 107, 26, 0.05) 0%, rgba(0, 0, 0, 0.05) 100%);
+            border-left: 4px solid var(--primary);
+            padding: 24px 28px;
+            border-radius: 12px;
+            margin-top: 32px;
+            box-shadow: 0 2px 8px rgba(192, 107, 26, 0.08);
+        }
+
+        .info-box h4 {
+            color: var(--primary);
+            margin-bottom: 16px;
+            margin-top: 0;
+            font-size: 1.15em;
+            font-weight: 700;
+        }
+
+        .info-box ul {
+            list-style: none;
+            padding-left: 0;
+            margin: 0;
+        }
+
+        .info-box li {
+            padding: 8px 0;
+            color: var(--text);
+            line-height: 1.6;
+        }
+
+        .info-box li:before {
+            content: "✓ ";
+            color: var(--primary);
+            font-weight: bold;
+            margin-right: 8px;
+        }
+        @media (max-width: 768px) {
+            .header {
+                padding: 32px 24px 48px;
+            }
+
+            .logo {
+                height: 45px;
+                margin-right: 12px;
+            }
+
+            .main-content {
+                padding: 24px;
+            }
+
+            .header h1 {
+                font-size: 2em;
+                flex-direction: column;
+            }
+
+            .controls {
+                grid-template-columns: 1fr;
+            }
+
+            .canvas-container {
+                grid-template-columns: 1fr;
+                gap: 24px;
+            }
+
+            .action-buttons {
+                flex-direction: column;
+            }
+
+            .action-btn {
+                min-width: 100%;
+            }
+        }
+
+        @media (max-width: 480px) {
+            body {
+                padding: 0;
+            }
+            .header h1 {
+                font-size: 1.75em;
+                margin-bottom: 20px;
+            }
+
+            .subtitle {
+                font-size: 1em;
+            }
+
+            .logo {
+                height: 75px;
+            }
+
+            .upload-section {
+                padding: 32px 24px;
+            }
+
+            .control-group {
+                padding: 20px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- Loading Overlay -->
+    <div class="loading-overlay" id="loading-overlay">
+        <div class="loading-content">
+            <div class="loading-spinner"></div>
+            <div class="loading-text" id="loading-text">Processing...</div>
+        </div>
+    </div>
+
+    <!-- Color Picker Modal -->
+    <div class="color-picker-modal" id="color-picker-modal">
+        <div class="color-picker-dialog">
+            <button class="color-picker-close" id="color-picker-close">&times;</button>
+            <h3><i class="bi bi-palette-fill"></i> Choose Your Stain Color</h3>
+            <div class="color-picker-grid" id="color-picker-grid"></div>
+        </div>
+    </div>
+
+    <div class="header">
+        <h1><img src="ninja_logo_light.png.webp" alt="Ninja Fence Staining Logo" class="logo">Ninja Fence Visualizer</h1>
+        <p class="subtitle"><i class="bi bi-robot"></i> AI-Powered Fence Detection & Recoloring</p>
+    </div>
+
+    <div class="main-content">
+        <!-- Upload Section -->
+        <div class="upload-section" id="upload-section">
+            <h3><i class="bi bi-cloud-upload"></i> Upload or Drag & Drop Image</h3>
+            <input type="file" id="file-input" accept="image/*" style="display: none;">
+            <button class="upload-btn" onclick="document.getElementById('file-input').click()">
+                <i class="bi bi-images"></i> Choose Image
+            </button>
+            <p style="margin-top: 16px; color: #64748b; font-size: 0.9em;">
+                <i class="bi bi-info-circle"></i> Supported formats: JPG, PNG, WebP • Maximum file size: 10MB
+            </p>
+        </div>
+
+        <!-- Status -->
+        <div class="loader" id="loader"></div>
+        <div class="status" id="status">Initializing model...</div>
+
+        <!-- Controls -->
+        <div class="controls">
+            <div class="control-group">
+                <label>
+                    Fence Color
+                    <span class="value-display" id="color-name-display">Cedar</span>
+                </label>
+                <button class="color-picker-button" id="color-picker-button">
+                    <span>Choose Color</span>
+                    <div class="current-color-display" id="current-color-display" style="background: #8B4513;"></div>
+                </button>
+            </div>
+            <div class="control-group">
+                <label>Blend Mode</label>
+                <select id="blend-mode">
+                    <option value="normal">Normal</option>
+                    <option value="multiply" selected>Multiply (Realistic)</option>
+                    <option value="overlay">Overlay</option>
+                    <option value="screen">Screen</option>
+                </select>
+            </div>
+            <div class="control-group">
+                <label>
+                    Opacity
+                    <span class="value-display" id="opacity-value">80%</span>
+                </label>
+                <input type="range" id="opacity" min="0" max="100" value="80">
+            </div>
+            <div class="control-group" style="display: none;">
+                <label>
+                    Detection Threshold
+                    <span class="value-display" id="threshold-value">0.6</span>
+                </label>
+                <input type="range" id="threshold" min="0.1" max="0.9" step="0.01" value="0.6">
+            </div>
+            <div class="control-group" style="display: none;">
+                <label>
+                    Edge Smoothing
+                    <span class="value-display" id="smoothing-value">Medium</span>
+                </label>
+                <input type="range" id="edge-smoothing" min="1" max="5" step="1" value="3">
+            </div>
+        </div>
+
+        <!-- Action Buttons -->
+        <div class="btn-group">
+            <button class="action-btn btn-detect" id="detect-btn" disabled>
+                <i class="bi bi-search"></i> Detect Fence
+            </button>
+            <button class="action-btn btn-recolor" id="recolor-btn" disabled>
+                <i class="bi bi-palette"></i> Recolor Fence
+            </button>
+            <button class="action-btn btn-download" id="download-btn" disabled>
+                <i class="bi bi-download"></i> Download Result
+            </button>
+            <button class="action-btn btn-reset" id="reset-btn" disabled>
+                <i class="bi bi-arrow-clockwise"></i> Reset
+            </button>
+        </div>
+
+        <!-- Canvas Display -->
+        <div class="canvas-container">
+            <div class="canvas-wrapper">
+                <h3><i class="bi bi-image"></i> Original Image</h3>
+                <canvas id="original-canvas"></canvas>
+            </div>
+            <div class="canvas-wrapper">
+                <h3><i class="bi bi-bullseye"></i> Fence Detection Mask</h3>
+                <canvas id="mask-canvas"></canvas>
+            </div>
+            <div class="canvas-wrapper">
+                <h3><i class="bi bi-stars"></i> Recolored Result</h3>
+                <canvas id="result-canvas"></canvas>
+            </div>
+        </div>
+
+        <!-- Info Boxes -->
+        <div class="info-box">
+            <h4><i class="bi bi-list-check"></i> How to Use</h4>
+            <ul>
+                <li>Upload a photo of a fence (JPG, PNG, WEBP)</li>
+                <li>Click "Detect Fence" to run AI detection</li>
+                <li>Choose your desired fence color</li>
+                <li>Click "Recolor Fence" to apply the new color</li>
+                <li>Download your recolored image</li>
+            </ul>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js"></script>
+    <script>
+        // ============================================================================
+        // UNET++ CONFIGURATION
+        // ============================================================================
+        const CONFIG = {
+            MODEL_PATH: './fence_model_unet_browser.onnx',
+            INPUT_SIZE: 512,
+            NUM_CLASSES: 2
+        };
+
+        // ============================================================================
+        // GLOBAL VARIABLES
+        // ============================================================================
+        let session = null;
+        let originalImage = null;
+        let maskData = null;
+        
+        const fileInput = document.getElementById('file-input');
+        const uploadSection = document.getElementById('upload-section');
+        const originalCanvas = document.getElementById('original-canvas');
+        const maskCanvas = document.getElementById('mask-canvas');
+        const resultCanvas = document.getElementById('result-canvas');
+        const colorPickerButton = document.getElementById('color-picker-button');
+        const colorPickerModal = document.getElementById('color-picker-modal');
+        const colorPickerClose = document.getElementById('color-picker-close');
+        const colorPickerGrid = document.getElementById('color-picker-grid');
+        const currentColorDisplay = document.getElementById('current-color-display');
+        const colorNameDisplay = document.getElementById('color-name-display');
+        const blendMode = document.getElementById('blend-mode');
+        const opacity = document.getElementById('opacity');
+        const threshold = document.getElementById('threshold');
+        const edgeSmoothing = document.getElementById('edge-smoothing');
+        const status = document.getElementById('status');
+        const loader = document.getElementById('loader');
+        const loadingOverlay = document.getElementById('loading-overlay');
+        const loadingText = document.getElementById('loading-text');
+        
+        const detectBtn = document.getElementById('detect-btn');
+        const recolorBtn = document.getElementById('recolor-btn');
+        const downloadBtn = document.getElementById('download-btn');
+        const resetBtn = document.getElementById('reset-btn');
+
+        // Predefined Ninja Staining Colors
+        const ninjaColors = [
+            { name: 'Cedar', color: '#8B4513' },
+            { name: 'Mahogany', color: '#7B3F3F' },
+            { name: 'Walnut', color: '#6B4226' },
+            { name: 'Oak', color: '#A0826D' },
+            { name: 'Cherry', color: '#9B4444' },
+            { name: 'Pine', color: '#C19A6B' },
+            { name: 'Redwood', color: '#A45A52' },
+            { name: 'Espresso', color: '#5C4033' },
+            { name: 'Driftwood', color: '#9B8B7E' },
+            { name: 'Hickory', color: '#8D6346' },
+            { name: 'Chestnut', color: '#954535' },
+            { name: 'Teak', color: '#B8860B' },
+            { name: 'Ebony', color: '#3D3635' },
+            { name: 'Maple', color: '#D4A574' },
+            { name: 'Natural', color: '#C9A882' },
+            { name: 'Gray', color: '#707070' },
+            { name: 'Charcoal', color: '#4A4A4A' },
+            { name: 'White Oak', color: '#E8D5C4' },
+            { name: 'Rustic', color: '#8B6F47' },
+            { name: 'Slate', color: '#5F6A6A' }
+        ];
+
+        let selectedColor = '#8B4513'; // Default color
+        let selectedColorName = 'Cedar'; // Default color name
+
+        // Helper functions for loading overlay
+        function showLoading(message) {
+            loadingText.textContent = message;
+            loadingOverlay.classList.add('active');
+        }
+
+        function hideLoading() {
+            loadingOverlay.classList.remove('active');
+        }
+
+        // Initialize custom color picker
+        function initColorPicker() {
+            ninjaColors.forEach((item, index) => {
+                const colorWrapper = document.createElement('div');
+                
+                const colorDiv = document.createElement('div');
+                colorDiv.className = 'color-option';
+                colorDiv.style.backgroundColor = item.color;
+                colorDiv.title = item.name;
+                
+                if (item.color === selectedColor) {
+                    colorDiv.classList.add('selected');
+                }
+                
+                colorDiv.addEventListener('click', () => {
+                    // Remove selected class from all options
+                    document.querySelectorAll('.color-option').forEach(opt => {
+                        opt.classList.remove('selected');
+                    });
+                    
+                    // Add selected class to clicked option
+                    colorDiv.classList.add('selected');
+                    
+                    // Update selected color
+                    selectedColor = item.color;
+                    selectedColorName = item.name;
+                    
+                    // Update color display
+                    currentColorDisplay.style.backgroundColor = item.color;
+                    colorNameDisplay.textContent = item.name;
+                    
+                    // Close modal
+                    colorPickerModal.classList.remove('active');
+                });
+                
+                colorWrapper.appendChild(colorDiv);
+                
+                const colorName = document.createElement('div');
+                colorName.className = 'color-option-name';
+                colorName.textContent = item.name;
+                colorWrapper.appendChild(colorName);
+                
+                colorPickerGrid.appendChild(colorWrapper);
+            });
+        }
+
+        // Open color picker modal
+        colorPickerButton.addEventListener('click', () => {
+            colorPickerModal.classList.add('active');
+        });
+
+        // Close color picker modal
+        colorPickerClose.addEventListener('click', () => {
+            colorPickerModal.classList.remove('active');
+        });
+
+        // Close modal when clicking outside
+        colorPickerModal.addEventListener('click', (e) => {
+            if (e.target === colorPickerModal) {
+                colorPickerModal.classList.remove('active');
+            }
+        });
+
+        // ============================================================================
+        // INITIALIZE
+        // ============================================================================
+        async function init() {
+            updateStatus('Loading model...', 'loading');
+            loader.classList.add('active');
+            
+            try {
+                // Suppress ONNX Runtime warnings
+                ort.env.logLevel = 'error';
+                
+                // Configure WASM paths and settings for better Safari compatibility
+                ort.env.wasm.numThreads = 1; // Single thread for better Safari compatibility
+                ort.env.wasm.simd = false; // Disable SIMD for older Safari versions
+                
+                // Set execution providers with fallback order
+                const sessionOptions = {
+                    executionProviders: ['wasm'],
+                    graphOptimizationLevel: 'basic'
+                };
+                
+                session = await ort.InferenceSession.create(CONFIG.MODEL_PATH, sessionOptions);
+                updateStatus(' Model loaded successfully!', 'success');
+                console.log('Model loaded:', session);
+            } catch (error) {
+                updateStatus(' Failed to load model: ' + error.message, 'error');
+                console.error('Model loading error:', error);
+                
+                // Show user-friendly error for Safari
+                if (error.message.includes('Out of memory') || error.message.includes('no available backend')) {
+                    updateStatus(' Safari compatibility issue detected. Please try using Chrome or reduce image size.', 'error');
+                }
+            } finally {
+                loader.classList.remove('active');
+            }
+        }
+
+        // ============================================================================
+        // EVENT LISTENERS
+        // ============================================================================
+        fileInput.addEventListener('change', handleImageUpload);
+        detectBtn.addEventListener('click', detectFence);
+        recolorBtn.addEventListener('click', recolorFence);
+        downloadBtn.addEventListener('click', downloadResult);
+        resetBtn.addEventListener('click', reset);
+        
+        opacity.addEventListener('input', () => {
+            document.getElementById('opacity-value').textContent = opacity.value + '%';
+        });
+        
+        threshold.addEventListener('input', () => {
+            document.getElementById('threshold-value').textContent = threshold.value;
+            // Re-detect if mask exists
+            if (maskData) {
+                detectFence();
+            }
+        });
+        
+        edgeSmoothing.addEventListener('input', () => {
+            const labels = ['None', 'Light', 'Medium', 'Strong', 'Maximum'];
+            document.getElementById('smoothing-value').textContent = labels[edgeSmoothing.value - 1];
+        });
+        
+        // Drag and drop
+        uploadSection.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadSection.classList.add('drag-over');
+        });
+        
+        uploadSection.addEventListener('dragleave', () => {
+            uploadSection.classList.remove('drag-over');
+        });
+        
+        uploadSection.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadSection.classList.remove('drag-over');
+            const file = e.dataTransfer.files[0];
+            if (file && file.type.startsWith('image/')) {
+                handleImageFile(file);
+            }
+        });
+
+        // ============================================================================
+        // IMAGE UPLOAD
+        // ============================================================================
+        function handleImageUpload(event) {
+            const file = event.target.files[0];
+            if (file) {
+                handleImageFile(file);
+            }
+        }
+        
+        function handleImageFile(file) {
+            if (file.size > 10 * 1024 * 1024) {
+                updateStatus('File too large! Max 10MB', 'error');
+                return;
+            }
+            
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const img = new Image();
+                img.onload = () => {
+                    originalImage = img;
+                    drawOriginalImage();
+                    detectBtn.disabled = false;
+                    resetBtn.disabled = false;
+                    updateStatus('Image loaded! Click "Detect Fence" to analyze.', 'success');
+                };
+                img.src = e.target.result;
+            };
+            reader.readAsDataURL(file);
+        }
+
+        function drawOriginalImage() {
+            originalCanvas.width = originalImage.width;
+            originalCanvas.height = originalImage.height;
+            const ctx = originalCanvas.getContext('2d');
+            ctx.drawImage(originalImage, 0, 0);
+        }
+
+        // ============================================================================
+        // UNET++ PREPROCESSING (Simple 0-1 Normalization)
+        // ============================================================================
+        function preprocessImage(img) {
+            const canvas = document.createElement('canvas');
+            canvas.width = CONFIG.INPUT_SIZE;
+            canvas.height = CONFIG.INPUT_SIZE;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0, CONFIG.INPUT_SIZE, CONFIG.INPUT_SIZE);
+            
+            const imageData = ctx.getImageData(0, 0, CONFIG.INPUT_SIZE, CONFIG.INPUT_SIZE);
+            const data = imageData.data;
+            
+            // UNet++ uses simple 0-1 normalization (pixel / 255)
+            const float32Data = new Float32Array(3 * CONFIG.INPUT_SIZE * CONFIG.INPUT_SIZE);
+            
+            for (let i = 0; i < CONFIG.INPUT_SIZE * CONFIG.INPUT_SIZE; i++) {
+                float32Data[i] = data[i * 4] / 255.0;  // R
+                float32Data[CONFIG.INPUT_SIZE * CONFIG.INPUT_SIZE + i] = data[i * 4 + 1] / 255.0;  // G
+                float32Data[2 * CONFIG.INPUT_SIZE * CONFIG.INPUT_SIZE + i] = data[i * 4 + 2] / 255.0;  // B
+            }
+            
+            return new ort.Tensor('float32', float32Data, [1, 3, CONFIG.INPUT_SIZE, CONFIG.INPUT_SIZE]);
+        }
+
+        // ============================================================================
+        // FENCE DETECTION (UNet++)
+        // ============================================================================
+        async function detectFence() {
+            if (!originalImage || !session) return;
+            
+            showLoading('Detecting fence...');
+            updateStatus('Detecting fence...', 'loading');
+            detectBtn.disabled = true;
+            
+            try {
+                // Use setTimeout to allow UI to update
+                await new Promise(resolve => setTimeout(resolve, 100));
+                
+                const tensor = preprocessImage(originalImage);
+                
+                // UNet++ model input name
+                const feeds = { input: tensor };
+                const results = await session.run(feeds);
+                
+                // Get output (use .output directly)
+                const output = results.output;
+                
+                console.log('UNet++ output:', output.dims);
+                
+                // Postprocess with edge smoothing
+                const smoothingKernel = parseInt(edgeSmoothing.value);
+                const thresholdValue = parseFloat(threshold.value);
+                maskData = postprocessMask(output, originalImage.width, originalImage.height, smoothingKernel, thresholdValue);
+                drawMask(maskData);
+                
+                updateStatus('Fence detected successfully!', 'success');
+                recolorBtn.disabled = false;
+            } catch (error) {
+                console.error('Detection error:', error);
+                updateStatus('Detection failed: ' + error.message, 'error');
+            } finally {
+                hideLoading();
+                detectBtn.disabled = false;
+            }
+        }
+
+        // ============================================================================
+        // UNET++ POSTPROCESSING
+        // ============================================================================
+        function postprocessMask(output, width, height, smoothingKernel = 2, thresholdValue = 0.5) {
+            const maskData = output.data;
+            
+            // Step 1: Bilinear interpolation for smoother edges
+            let mask = bilinearResize(maskData, 512, 512, width, height);
+            
+            // Step 2: Enhance contrast before filtering
+            mask = enhanceContrast(mask, width, height, 1.5);
+            
+            // Step 3: Gaussian blur to reduce noise
+            mask = gaussianBlur(mask, width, height, 1.2);
+            
+            // Step 4: Bilateral filter for edge-preserving smoothing
+            mask = bilateralFilter(mask, width, height, 5, 0.1, 0.1);
+            
+            // Step 5: Apply morphological operations if needed
+            if (smoothingKernel > 1) {
+                mask = morphologicalClose(mask, width, height, smoothingKernel);
+            }
+            
+            // Step 6: Apply threshold to remove background
+            mask = applyThreshold(mask, width, height, thresholdValue);
+            
+            // Step 7: Edge enhancement using unsharp masking
+            mask = unsharpMask(mask, width, height, 1.2, 0.6);
+            
+            return mask;
+        }
+        
+        
+        // Enhance contrast to separate fence from background
+        function enhanceContrast(src, width, height, factor) {
+            const result = new Float32Array(width * height);
+            
+            // Find min and max values
+            let minVal = 1, maxVal = 0;
+            for (let i = 0; i < src.length; i++) {
+                minVal = Math.min(minVal, src[i]);
+                maxVal = Math.max(maxVal, src[i]);
+            }
+            
+            // Apply contrast stretching
+            const range = maxVal - minVal;
+            if (range > 0) {
+                for (let i = 0; i < src.length; i++) {
+                    let normalized = (src[i] - minVal) / range;
+                    // Apply power law transformation for contrast
+                    normalized = Math.pow(normalized, 1.0 / factor);
+                    result[i] = normalized;
+                }
+            } else {
+                return src;
+            }
+            
+            return result;
+        }
+        
+        // Apply threshold with soft transition
+        function applyThreshold(src, width, height, thresholdValue) {
+            const result = new Float32Array(width * height);
+            const softness = 0.1; // Soft transition range
+            
+            for (let i = 0; i < src.length; i++) {
+                const value = src[i];
+                
+                if (value < thresholdValue - softness) {
+                    result[i] = 0;
+                } else if (value > thresholdValue + softness) {
+                    result[i] = value;
+                } else {
+                    // Smooth transition
+                    const t = (value - (thresholdValue - softness)) / (2 * softness);
+                    result[i] = value * t;
+                }
+            }
+            
+            return result;
+        }
+        
+        // Gaussian blur for noise reduction
+        function gaussianBlur(src, width, height, sigma) {
+            const kernelSize = Math.ceil(sigma * 3) * 2 + 1;
+            const kernel = generateGaussianKernel(kernelSize, sigma);
+            const halfKernel = Math.floor(kernelSize / 2);
+            const result = new Float32Array(width * height);
+            
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    let sum = 0;
+                    let weightSum = 0;
+                    
+                    for (let ky = -halfKernel; ky <= halfKernel; ky++) {
+                        for (let kx = -halfKernel; kx <= halfKernel; kx++) {
+                            const ny = Math.max(0, Math.min(height - 1, y + ky));
+                            const nx = Math.max(0, Math.min(width - 1, x + kx));
+                            const weight = kernel[(ky + halfKernel) * kernelSize + (kx + halfKernel)];
+                            sum += src[ny * width + nx] * weight;
+                            weightSum += weight;
+                        }
+                    }
+                    
+                    result[y * width + x] = sum / weightSum;
+                }
+            }
+            
+            return result;
+        }
+        
+        function generateGaussianKernel(size, sigma) {
+            const kernel = new Float32Array(size * size);
+            const center = Math.floor(size / 2);
+            const sigma2 = 2 * sigma * sigma;
+            
+            for (let y = 0; y < size; y++) {
+                for (let x = 0; x < size; x++) {
+                    const dx = x - center;
+                    const dy = y - center;
+                    kernel[y * size + x] = Math.exp(-(dx * dx + dy * dy) / sigma2);
+                }
+            }
+            
+            return kernel;
+        }
+        
+        // Bilateral filter for edge-preserving smoothing
+        function bilateralFilter(src, width, height, diameter, sigmaColor, sigmaSpace) {
+            const result = new Float32Array(width * height);
+            const radius = Math.floor(diameter / 2);
+            
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    let sum = 0;
+                    let weightSum = 0;
+                    const centerValue = src[y * width + x];
+                    
+                    for (let dy = -radius; dy <= radius; dy++) {
+                        for (let dx = -radius; dx <= radius; dx++) {
+                            const ny = Math.max(0, Math.min(height - 1, y + dy));
+                            const nx = Math.max(0, Math.min(width - 1, x + dx));
+                            const neighborValue = src[ny * width + nx];
+                            
+                            // Spatial weight
+                            const spatialDist = dx * dx + dy * dy;
+                            const spatialWeight = Math.exp(-spatialDist / (2 * sigmaSpace * sigmaSpace));
+                            
+                            // Color weight
+                            const colorDist = (centerValue - neighborValue) * (centerValue - neighborValue);
+                            const colorWeight = Math.exp(-colorDist / (2 * sigmaColor * sigmaColor));
+                            
+                            const weight = spatialWeight * colorWeight;
+                            sum += neighborValue * weight;
+                            weightSum += weight;
+                        }
+                    }
+                    
+                    result[y * width + x] = sum / weightSum;
+                }
+            }
+            
+            return result;
+        }
+        
+        // Unsharp masking for edge enhancement
+        function unsharpMask(src, width, height, sigma, amount) {
+            // Create blurred version
+            const blurred = gaussianBlur(src, width, height, sigma);
+            const result = new Float32Array(width * height);
+            
+            // Subtract blurred from original and add back with strength
+            for (let i = 0; i < src.length; i++) {
+                const detail = src[i] - blurred[i];
+                result[i] = Math.max(0, Math.min(1, src[i] + detail * amount));
+            }
+            
+            return result;
+        }
+        
+        // Bilinear interpolation for high-quality resizing
+        function bilinearResize(src, srcW, srcH, dstW, dstH) {
+            const dst = new Float32Array(dstW * dstH);
+            const xRatio = srcW / dstW;
+            const yRatio = srcH / dstH;
+            
+            for (let y = 0; y < dstH; y++) {
+                for (let x = 0; x < dstW; x++) {
+                    const srcX = x * xRatio;
+                    const srcY = y * yRatio;
+                    
+                    const x1 = Math.floor(srcX);
+                    const y1 = Math.floor(srcY);
+                    const x2 = Math.min(x1 + 1, srcW - 1);
+                    const y2 = Math.min(y1 + 1, srcH - 1);
+                    
+                    const dx = srcX - x1;
+                    const dy = srcY - y1;
+                    
+                    const v11 = src[y1 * srcW + x1];
+                    const v21 = src[y1 * srcW + x2];
+                    const v12 = src[y2 * srcW + x1];
+                    const v22 = src[y2 * srcW + x2];
+                    
+                    // Bilinear interpolation formula
+                    const value = v11 * (1 - dx) * (1 - dy) +
+                                  v21 * dx * (1 - dy) +
+                                  v12 * (1 - dx) * dy +
+                                  v22 * dx * dy;
+                    
+                    dst[y * dstW + x] = value;
+                }
+            }
+            
+            return dst;
+        }
+        
+        // Morphological closing (dilation followed by erosion) to clean edges
+        function morphologicalClose(mask, width, height, kernelSize) {
+            // Dilate to fill small holes
+            const dilated = dilate(mask, width, height, kernelSize);
+            // Erode to restore original size while smoothing edges
+            const eroded = erode(dilated, width, height, kernelSize);
+            return eroded;
+        }
+        
+        function dilate(mask, width, height, kernelSize) {
+            const result = new Float32Array(width * height);
+            const halfKernel = Math.floor(kernelSize / 2);
+            
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    let maxVal = 0;
+                    
+                    for (let ky = -halfKernel; ky <= halfKernel; ky++) {
+                        for (let kx = -halfKernel; kx <= halfKernel; kx++) {
+                            const ny = Math.max(0, Math.min(height - 1, y + ky));
+                            const nx = Math.max(0, Math.min(width - 1, x + kx));
+                            maxVal = Math.max(maxVal, mask[ny * width + nx]);
+                        }
+                    }
+                    
+                    result[y * width + x] = maxVal;
+                }
+            }
+            
+            return result;
+        }
+        
+        function erode(mask, width, height, kernelSize) {
+            const result = new Float32Array(width * height);
+            const halfKernel = Math.floor(kernelSize / 2);
+            
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    let minVal = 1;
+                    
+                    for (let ky = -halfKernel; ky <= halfKernel; ky++) {
+                        for (let kx = -halfKernel; kx <= halfKernel; kx++) {
+                            const ny = Math.max(0, Math.min(height - 1, y + ky));
+                            const nx = Math.max(0, Math.min(width - 1, x + kx));
+                            minVal = Math.min(minVal, mask[ny * width + nx]);
+                        }
+                    }
+                    
+                    result[y * width + x] = minVal;
+                }
+            }
+            
+            return result;
+        }
+
+        function drawMask(mask) {
+            const width = originalImage.width;
+            const height = originalImage.height;
+
+            maskCanvas.width = width;
+            maskCanvas.height = height;
+            const ctx = maskCanvas.getContext('2d');
+            const imageData = ctx.createImageData(width, height);
+
+            for (let i = 0; i < mask.length; i++) {
+                const value = Math.floor(mask[i] * 255);
+                imageData.data[i * 4] = value;
+                imageData.data[i * 4 + 1] = value;
+                imageData.data[i * 4 + 2] = value;
+                imageData.data[i * 4 + 3] = 255;
+            }
+
+            ctx.putImageData(imageData, 0, 0);
+        }
+
+        // ============================================================================
+        // FENCE RECOLORING
+        // ============================================================================
+        async function recolorFence() {
+            if (!originalImage || !maskData) return;
+            
+            showLoading('Recoloring fence...');
+            updateStatus('Recoloring fence...', 'loading');
+            
+            try {
+                // Use setTimeout to allow UI to update
+                await new Promise(resolve => setTimeout(resolve, 50));
+                
+                resultCanvas.width = originalImage.width;
+                resultCanvas.height = originalImage.height;
+                const ctx = resultCanvas.getContext('2d');
+                
+                ctx.drawImage(originalImage, 0, 0);
+                const imageData = ctx.getImageData(0, 0, originalImage.width, originalImage.height);
+                const data = imageData.data;
+                
+                const rgb = hexToRgb(selectedColor);
+                const alpha = parseInt(opacity.value) / 100;
+                const mode = blendMode.value;
+                
+                for (let i = 0; i < maskData.length; i++) {
+                    if (maskData[i] > 0.1) {  // Lower threshold since mask is already filtered
+                        const idx = i * 4;
+                        const r = data[idx];
+                        const g = data[idx + 1];
+                        const b = data[idx + 2];
+
+                        const blended = applyBlendMode(r, g, b, rgb.r, rgb.g, rgb.b, mode);
+                        
+                        // Use mask value as alpha multiplier for smooth edges
+                        const maskAlpha = Math.min(1, maskData[i] * 2);
+                        const finalAlpha = alpha * maskAlpha;
+
+                        data[idx] = r + (blended.r - r) * finalAlpha;
+                        data[idx + 1] = g + (blended.g - g) * finalAlpha;
+                        data[idx + 2] = b + (blended.b - b) * finalAlpha;
+                    }
+                }
+                
+                ctx.putImageData(imageData, 0, 0);
+                downloadBtn.disabled = false;
+                updateStatus('Recoloring complete!', 'success');
+            } finally {
+                hideLoading();
+            }
+        }
+
+        function applyBlendMode(r, g, b, cr, cg, cb, mode) {
+            switch (mode) {
+                case 'multiply':
+                    return {
+                        r: (r / 255) * (cr / 255) * 255,
+                        g: (g / 255) * (cg / 255) * 255,
+                        b: (b / 255) * (cb / 255) * 255
+                    };
+                case 'overlay':
+                    return {
+                        r: r < 128 ? 2 * r * cr / 255 : 255 - 2 * (255 - r) * (255 - cr) / 255,
+                        g: g < 128 ? 2 * g * cg / 255 : 255 - 2 * (255 - g) * (255 - cg) / 255,
+                        b: b < 128 ? 2 * b * cb / 255 : 255 - 2 * (255 - b) * (255 - cb) / 255
+                    };
+                case 'screen':
+                    return {
+                        r: 255 - (255 - r) * (255 - cr) / 255,
+                        g: 255 - (255 - g) * (255 - cg) / 255,
+                        b: 255 - (255 - b) * (255 - cb) / 255
+                    };
+                case 'color':
+                    return { r: cr, g: cg, b: cb };
+                default:
+                    return { r, g, b };
+            }
+        }
+
+        function hexToRgb(hex) {
+            const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+            return result ? {
+                r: parseInt(result[1], 16),
+                g: parseInt(result[2], 16),
+                b: parseInt(result[3], 16)
+            } : { r: 139, g: 69, b: 19 };
+        }
+
+        // ============================================================================
+        // DOWNLOAD & RESET
+        // ============================================================================
+        async function downloadResult() {
+            showLoading('Preparing download...');
+            
+            try {
+                await new Promise(resolve => setTimeout(resolve, 300));
+                const link = document.createElement('a');
+                link.download = 'fence_stained.png';
+                link.href = resultCanvas.toDataURL();
+                link.click();
+                updateStatus('Downloaded!', 'success');
+            } finally {
+                hideLoading();
+            }
+        }
+
+        async function reset() {
+            showLoading('Resetting...');
+            
+            try {
+                await new Promise(resolve => setTimeout(resolve, 200));
+                
+                originalImage = null;
+                maskData = null;
+                
+                // Properly reset canvases to default empty state
+                const ctx1 = originalCanvas.getContext('2d');
+                const ctx2 = maskCanvas.getContext('2d');
+                const ctx3 = resultCanvas.getContext('2d');
+                
+                // Clear any existing content
+                ctx1.clearRect(0, 0, originalCanvas.width, originalCanvas.height);
+                ctx2.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+                ctx3.clearRect(0, 0, resultCanvas.width, resultCanvas.height);
+                
+                // Reset to default canvas size (matches initial page load)
+                originalCanvas.width = 300;
+                originalCanvas.height = 200;
+                maskCanvas.width = 300;
+                maskCanvas.height = 200;
+                resultCanvas.width = 300;
+                resultCanvas.height = 200;
+                
+                // Clear the canvases again after resizing
+                ctx1.clearRect(0, 0, originalCanvas.width, originalCanvas.height);
+                ctx2.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+                ctx3.clearRect(0, 0, resultCanvas.width, resultCanvas.height);
+                
+                detectBtn.disabled = true;
+                recolorBtn.disabled = true;
+                downloadBtn.disabled = true;
+                resetBtn.disabled = true;
+                fileInput.value = '';
+                updateStatus(session ? 'Ready! Upload an image to begin.' : 'Model not loaded', session ? 'success' : 'error');
+            } finally {
+                hideLoading();
+            }
+        }
+
+        function updateStatus(message, type = '') {
+            status.textContent = message;
+            status.className = 'status ' + type;
+        }
+
+        // ============================================================================
+        // INITIALIZE ON LOAD
+        // ============================================================================
+        window.addEventListener('load', () => {
+            init();
+            initColorPicker();
+        });
+    </script>
+    </div> <!-- Close main-content -->
+</body>
+</html>

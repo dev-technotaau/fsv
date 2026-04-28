@@ -1,0 +1,26 @@
+# DVC ignores — files in DVC-tracked dirs that shouldn't be versioned as data
+
+# Dev / debug artifacts
+*.bak
+*.tmp
+*.log.jsonl
+*.log
+__pycache__/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# OS cruft
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Ephemeral scrape outputs (regeneratable)
+data_scraped/scraper.log.jsonl
+data_scraped_neg/scraper.log.jsonl
+data_scraped/vision_qa_processed.txt
+data_scraped_neg/vision_qa_processed.txt
+
+# SQLite writers (regenerated from metadata.jsonl)
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm

@@ -1,0 +1,320 @@
+# Fence scraper config. Env-var substitution via ${VAR_NAME}.
+#
+# Set API keys in env vars before running, e.g.:
+#   export PEXELS_API_KEY=...
+#   export GOOGLE_CSE_API_KEY=...
+#   export GOOGLE_CSE_CX=...
+#   export UNSPLASH_ACCESS_KEY=...
+#   export PIXABAY_API_KEY=...
+#   export FLICKR_API_KEY=...
+#   export GEMINI_API_KEY=...
+#   export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
+
+runtime:
+  target_total_images: 17000
+  download_workers: 16
+  download_timeout_s: 15            # fail fast on stalled downloads (was 30)
+  max_retries: 2                    # 2 attempts max (was 3) — keep workers moving
+  progress_interval_s: 5.0
+  output_root: data_scraped
+  # --- hardening ---
+  dry_run: false
+  log_level: INFO                            # DEBUG | INFO | WARN | ERROR
+  log_file: data_scraped/scraper.log.jsonl
+  log_format: plain                          # plain | json
+  min_free_disk_gb: 2.0
+  disk_check_interval_s: 30.0
+  max_image_megapixels: 100                  # PIL decompression bomb cap
+
+# --- Proxy rotation (optional) ---
+# Set env var SCRAPER_PROXIES=http://p1,http://p2 OR list below.
+proxy:
+  enabled: false
+  proxies: []
+  failure_cool_down_s: 300.0
+
+# --- Circuit breaker (per host) ---
+circuit_breaker:
+  enabled: true
+  failure_threshold: 5
+  cool_down_s: 60.0
+
+# --- Content filter (title/URL blocklist) ---
+content_filter:
+  enabled: true
+  extra_block_keywords: []
+  extra_block_domains: []
+
+# --- Query priority scheduler (boost undersaturated queries) ---
+query_priority:
+  enabled: true
+  target_per_query: 80
+
+# --- Distributed coordination via Redis (optional) ---
+distributed:
+  enabled: false
+  redis_url: ${REDIS_URL}
+  key_prefix: "fence_scraper:"
+
+# --- Batched SQLite writer ---
+batched_writer:
+  enabled: true
+  batch_size: 50
+  flush_interval_s: 0.5
+
+queries:
+  use_static: true
+  use_gemini_expansion: true               # ON — uses ${GEMINI_API_KEY}
+  gemini_api_key: ${GEMINI_API_KEY}
+  gemini_target_extra: 150
+  custom:
+    # Cedar-focused specifics (project priority per project_overview.md)
+    - "cedar fence stained dark mahogany"
+    - "cedar fence natural weathered grey"
+    - "cedar fence freshly built lighter tone"
+    - "cedar horizontal slat fence modern house"
+    - "cedar board on board privacy fence backyard"
+    - "cedar shadowbox fence with cap rail"
+    - "western red cedar fence Pacific Northwest"
+    - "cedar fence Texas Hill Country landscaping"
+    - "cedar picket fence garden cottage"
+    - "cedar fence with lattice top pergola"
+    - "cedar fence repair rotten post replacement"
+    - "cedar fence staining application brush"
+    - "cedar fence transition to vinyl corner"
+    # Occlusion edge cases (multi-class training gold)
+    - "cedar fence behind climbing roses"
+    - "cedar fence with hostas planted in front"
+    - "cedar fence branches hanging over from tree"
+    - "cedar fence ivy covering partially"
+    - "cedar fence snow on top winter"
+    # Similar-wood-material distractors
+    - "cedar fence next to cedar shingle house siding"
+    - "cedar fence with cedar pergola and deck"
+    - "cedar fence and wooden garden shed"
+    - "cedar fence corner with wooden utility pole"
+
+quality:
+  min_width: 800
+  min_height: 600
+  max_width: 8000
+  max_height: 8000
+  min_aspect: 0.4
+  max_aspect: 2.5
+  min_bytes: 40000
+  max_bytes: 25000000
+
+dedup:
+  phash_hamming_threshold: 5
+  db_path: data_scraped/dedup.sqlite
+
+storage:
+  images_dir: data_scraped/images
+  metadata_jsonl: data_scraped/metadata.jsonl
+  failed_log: data_scraped/failures.jsonl
+  file_extension: jpg
+
+# ---------- PAID ----------
+
+google_cse:
+  enabled: false
+  api_key: ${GOOGLE_CSE_API_KEY}
+  cx: ${GOOGLE_CSE_CX}
+  rate_limit_per_minute: 30          # conservative; 100/day free, then $5/1000
+  max_concurrent: 4
+  target_images: 3000
+
+google_vision:
+  enabled: true                     # flip to true if you want post-download verification
+  credentials_json: ${GOOGLE_APPLICATION_CREDENTIALS}
+  min_fence_confidence: 0.6
+  # Cost control: 1.0 verifies every image (~$1.50/1000),
+  # 0.2 verifies 20% of images (~$0.30/1000), 0.0 disables.
+  # Deterministic per-image — re-runs don't re-bill already-checked images.
+  sample_rate: 1.0
+  # Batching: groups up to N images per Vision API call → 10× fewer HTTP RTTs.
+  # Partial batches flush after batch_timeout_ms if they haven't filled.
+  batch_size: 10                     # max 16 per Google's batch_annotate_images
+  batch_timeout_ms: 500              # ms before flushing a partial batch
+  labels_to_accept:
+    - Fence
+    - Picket fence
+    - Wood
+    - Home fencing
+    - Yard
+    - Wall
+    - Garden
+    - Landscape
+    - Outdoor
+
+# ---------- FREE WITH API KEY ----------
+
+pexels:
+  enabled: true
+  api_key: ${PEXELS_API_KEY}
+  rate_limit_per_minute: 200         # 200/hour actual — budget lower per-minute
+  max_concurrent: 4
+  target_images: 3500
+
+unsplash:
+  enabled: true
+  access_key: ${UNSPLASH_ACCESS_KEY}
+  rate_limit_per_minute: 50          # 50/hour demo tier
+  max_concurrent: 2
+  target_images: 1500
+
+pixabay:
+  enabled: true
+  api_key: ${PIXABAY_API_KEY}
+  rate_limit_per_minute: 60          # 100/60s actual (API side)
+  max_concurrent: 1                  # CDN 429s at 2+ parallel; single-file avoids the 30s cool loop
+  target_images: 7000                # raised — Pixabay catalog is large
+
+flickr:
+  enabled: false
+  api_key: ${FLICKR_API_KEY}
+  rate_limit_per_minute: 120
+  max_concurrent: 4
+  target_images: 6000                # raised — CC catalog has millions
+
+# ---------- FREE, NO KEY ----------
+
+wikimedia:
+  enabled: true
+  rate_limit_per_minute: 60
+  max_concurrent: 4
+  target_images: 1000
+
+reddit:
+  enabled: false
+  # Unauthenticated rate is ~10/min per IP; OAuth raises to 60/min per account.
+  # Set client_id/client_secret to enable OAuth — create a "script" app at
+  # https://www.reddit.com/prefs/apps
+  rate_limit_per_minute: 60          # will be respected only if OAuth is configured
+  max_concurrent: 4
+  target_images: 1500
+  user_agent: "ninja-fence-scraper/0.1 by /u/yourusername"
+  client_id: ${REDDIT_CLIENT_ID}
+  client_secret: ${REDDIT_CLIENT_SECRET}
+  # Optional — only needed if you want user-scope actions (we don't).
+  # For script apps using client-credentials flow, leave blank.
+  username: null
+  password: null
+  subreddits:
+    - Fencing
+    - Homestead
+    - Landscaping
+    - Gardening
+    - BackyardDesign
+    - LandscapingTips
+    - pics
+    - FindTheRealImages
+    - f150hrc
+
+# ---------- FREE VIA PLAYWRIGHT (ToS-risky; enable with caution) ----------
+
+pw_google:
+  # ╔═══════════════════════════════════════════════════════════════════════╗
+  # ║ DO NOT ENABLE. Scraping google.com violates their Terms of Service.   ║
+  # ║ This source exists only as emergency fallback when CSE quota is 0 and ║
+  # ║ you've accepted the legal/ban risk. For production use google_cse.    ║
+  # ║ Expect IP bans, CAPTCHAs, and unstable selectors.                     ║
+  # ╚═══════════════════════════════════════════════════════════════════════╝
+  enabled: true
+  headless: true                     # imgurl-parse strategy works fine headless; stealth patches handle detection
+  browser: chromium
+  max_scrolls: 25
+  scroll_delay_s: 1.8                # was 2.5 — still well above human-like
+  request_timeout_s: 45
+  rate_limit_per_minute: 6           # was 3 — doubled, still conservative vs ToS ban risk
+  max_concurrent: 1
+  target_images: 2500
+
+pw_bing:
+  enabled: true
+  headless: true
+  browser: chromium
+  max_scrolls: 40
+  scroll_delay_s: 1.2
+  request_timeout_s: 30
+  rate_limit_per_minute: 5
+  max_concurrent: 1
+  target_images: 7000
+
+pw_ddg:
+  enabled: false                      # DDG is more permissive
+  headless: true
+  browser: chromium
+  max_scrolls: 30
+  scroll_delay_s: 1.5
+  request_timeout_s: 30
+  rate_limit_per_minute: 10
+  max_concurrent: 1
+  target_images: 2500
+
+pw_pinterest:
+  enabled: true
+  headless: true
+  browser: chromium
+  max_scrolls: 30                     # each scroll loads ~10-20 more pins
+  scroll_delay_s: 1.4
+  request_timeout_s: 45
+  rate_limit_per_minute: 6            # conservative; Pinterest tolerates scraping but bans on abuse
+  max_concurrent: 1
+  target_images: 4000                 # Pinterest is pin-rich for fence/staining content
+
+pw_houzz:
+  enabled: true
+  headless: true
+  browser: chromium
+  max_scrolls: 25
+  scroll_delay_s: 1.3
+  request_timeout_s: 45
+  rate_limit_per_minute: 6
+  max_concurrent: 1
+  target_images: 3000                 # Houzz has many fence project photos w/ before/after
+
+# ---------- DIRECT COMPANY WEBSITES ----------
+# Verified live URLs (GET 200 + HTML + image tags present as of scrape date).
+# Sorted by image-tag count — high-yield sources first. ~1,500 image tags total
+# across these 30 sites; after quality/Vision filters expect ~400-800 saves.
+company_sites:
+  enabled: true
+  rate_limit_per_minute: 30           # gentle on individual sites
+  max_concurrent: 2
+  target_images: 2000
+  urls:
+    # High-yield general galleries
+    - "https://fenceanddecksupply.com/photos/fence-photos/"           # 279 imgs
+    - "https://www.fencedefenseplano.com/wood-staining-picture-gallery/"  # 265
+    - "https://smuckerfence.com/gallery/wood-fence-gallery"            # 108
+    - "https://www.ricksfencing.com/privacy-fence-ideas-for-pacific-northwest-homes/"  # 83
+    - "https://www.aaronsdeckstaining.com/before-and-after-photos/"    # 79
+    - "https://www.texasselectfencing.com/"                            # 67
+    - "https://mitfence.com/fence-idea-gallery/wood-fence-gallery/"    # 63
+    - "https://abetterfencecompany.com/wood-fences/privacy-wood-fences/"  # 58
+    - "https://tsfencing.com/fences/staining/"                         # 55
+    # Cedar / wood fence installers (regional specialists)
+    - "https://cedarcreekfences.com/gallery"                           # 50
+    - "https://www.illinoisfencing.com/wood-fence-pictures-cedar-fencing"  # 49
+    - "https://www.arrowfenceco.com/cedar-privacy-fence-photo-gallery/"    # 43
+    - "https://www.bakkenfence.com/gallery/wood-fence.php"                 # 26
+    - "https://www.arrowfenceco.com/cedar-decorative-fence-photo-gallery/" # 21
+    - "https://www.superiorfenceandrail.com/fence-types/cedar-fence/cedar-fence-gallery/"  # 15
+    - "https://www.cedarfencedeck.com/portfolio"                           # 15
+    - "https://cedarrustic.com/gallery"                                    # 14
+    - "https://ntfencedeck.com/gallery/"                                   # 11
+    - "https://www.northwestcedarproducts.com/gallery/"                    # 3
+    # Staining & sealing specialists
+    - "https://www.robinsonfencestain.com/gallery/"                        # 38
+    - "https://chambleefence.com/fence-stain-before-and-after/"            # 19
+    - "https://fencemakeovers.com/fence-staining-gallery/"                 # 17
+    - "https://fencemakeovers.com/fence-staining-gallery/fence-staining-before-and-after/"  # 15
+    - "https://twodaypainting.com/services/decks-and-fences/"              # 14
+    - "https://bluepainting.com/exterior-painting-services/deck-fence-staining/"  # 14
+    - "https://fencemakeovers.com/fence-staining-gallery/new-fences/"      # 8
+    # Pacific Northwest / West coast
+    - "https://www.outdoorfence.com/"                                      # 9
+    - "https://tcfence.us/"                                                # 5
+    - "https://www.cbfencecompany.com/"                                    # 5
+    - "https://fwfence.com/commercial-fence-canby-oregon/"                 # 5

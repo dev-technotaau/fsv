@@ -1,0 +1,154 @@
+# ============================================================
+# Phase 1: 512px on FULL dataset
+# ============================================================
+# Strategy: train backbone + head end-to-end on the full 33K dataset
+# at moderate resolution. Maximizes data exposure; the resulting
+# weights are the starting point for Phase 2 fine-tuning.
+# ============================================================
+
+model:
+  # DINOv3 H+ (~840M) — gated on HF, run `huggingface-cli login` once.
+  # Drop to dinov3-vitl16-pretrain-lvd1689m (~300M) if VRAM-limited,
+  # or fall back to facebook/dinov2-large for unrestricted access.
+  backbone_name: "facebook/dinov3-vith16plus-pretrain-lvd1689m"
+  backbone_freeze_first_n_layers: 0
+  backbone_drop_path_rate: 0.1
+  # Multi-block aggregation (DINOv3 paper: fusing last 4 blocks meaningfully
+  # improves dense-prediction quality vs using only the final block)
+  multi_block_n: 4
+  aggregation_type: "weighted_sum"   # 'sum' | 'concat_proj' | 'weighted_sum'
+  # Pixel decoder: 'msdeform' = real M2F (deformable encoder, HF impl).
+  # Falls back to 'fpn' for the lighter convolutional decoder.
+  pixel_decoder_type: "msdeform"
+  pixel_decoder_layers: 9              # was 6
+  pixel_decoder_heads: 8
+  pixel_decoder_ffn_dim: 2048           # 4x decoder_dim (standard ratio)
+  decoder_type: "mask2former"
+  decoder_dim: 512                      # was 256 — 4x more decoder capacity
+  decoder_num_queries: 32               # was 16
+  decoder_num_layers: 9                 # was 6
+  decoder_dropout: 0.0
+  use_masked_attention: true          # Mask2Former's defining feature
+  use_global_tokens: true             # CLS + register tokens as decoder memory
+  mask_attention_threshold: 0.5
+  num_classes: 1
+  output_logit: true
+  use_refinement_head: true
+  refinement_channels: 64               # was 32 — bigger refinement UNet
+  refinement_num_blocks: 4              # was 3
+  refinement_use_decoder_features: true # A: feed pixel decoder features into UNet
+  refinement_decoder_feature_channels: 64
+  refinement_use_edge_head: true        # B: predict edges as side task
+  refinement_iterations: 2              # C: run UNet twice, detach between
+  refinement_use_y_coord: true          # depth-lite: y-position cue (FREE)
+  refinement_use_depth: true           # frozen DPT teacher; opt-in (+25% train cost)
+  depth_model_name: "Intel/dpt-hybrid-midas"
+  gradient_checkpointing: true   # critical for H+ backbone — halves activation mem
+  torch_compile: false           # turn on if PyTorch 2.4+ + Triton works smoothly
+  torch_compile_mode: "default"
+
+loss:
+  bce_weight: 1.0
+  dice_weight: 1.0
+  boundary_weight: 0.5
+  lovasz_weight: 0.5            # ON — direct IoU surrogate
+  tversky_weight: 0.5           # ON — recall-friendly (don't miss fence pixels)
+  tversky_alpha: 0.7            # FN penalty (higher = more recall focus)
+  tversky_beta: 0.3             # FP penalty
+  connectivity_weight: 0.0
+  use_pos_weight: true
+  pos_weight: null
+  focal_gamma: 2.0              # focal BCE — focus on hard pixels (look-alikes)
+  ohem_top_k_ratio: 0.0         # OHEM off by default (PointRend already covers)
+  boundary_kernel_size: 5
+  dice_smooth: 1.0
+  weight_by_review_source: true
+  deep_supervision_weight: 1.0       # M2F-style aux losses on each decoder layer
+  # PointRend importance sampling — real M2F training-time loss.
+  use_pointrend: true
+  pointrend_n_points: 12544          # 112^2 — Mask2Former default
+  pointrend_oversample_ratio: 3.0
+  pointrend_importance_ratio: 0.75
+  edge_loss_weight: 0.5              # B: refinement edge head supervision
+  edge_loss_dilate: 3
+  edge_loss_pos_weight: 8.0
+  refinement_iter_aux_weight: 0.5    # C: aux loss on non-final iterations
+
+optim:
+  optimizer: "adamw"
+  base_lr: 3.0e-4               # head LR
+  backbone_lr: 1.0e-5           # backbone LR (lower so we don't destroy DINOv2)
+  backbone_lr_decay: 0.9        # layer-wise LR decay multiplier
+  weight_decay: 0.05
+  betas: [0.9, 0.999]
+  warmup_epochs: 5                # was 2 — bigger model + 9-layer decoder benefits from longer warmup
+  warmup_lr: 1.0e-7
+  lr_min: 1.0e-7
+  schedule: "cosine"
+  grad_clip_norm: 1.0
+  grad_accumulation_steps: 4     # effective batch = batch_size * accum_steps  (4 * 4 = 16)
+  use_amp: true
+  amp_dtype: "bf16"
+
+train:
+  epochs: 100                  # was 60 — bigger heads + deep supervision needs more epochs
+  batch_size: 4                # dinov3-H+ at 512^2 needs ~16-22GB; reduce to 2 if OOM
+  val_batch_size: 8
+  num_workers: 6
+  pin_memory: true
+  persistent_workers: true
+  val_every_n_epochs: 1
+  val_inference_size: 0
+  multi_scale_train: true
+  multi_scale_min_factor: 0.75
+  multi_scale_max_factor: 1.25
+  use_ema: true
+  ema_decay: 0.9999
+  ema_warmup_steps: 1000
+  seed: 42
+  deterministic: false
+  init_from: null
+  use_tta: false                     # off during per-epoch val (slow)
+  tta_scales: [0.75, 1.0, 1.25]      # used at FINAL test eval if tta_at_final_test
+  tta_flip: true                     # used at FINAL test eval if tta_at_final_test
+  tta_at_final_test: true            # auto-enable TTA for the post-training test eval
+  skip_step_on_nonfinite_loss: true
+  log_grad_norm: true
+  early_stop_patience: 0          # 0 = disabled; set e.g. 8 for early stop
+  early_stop_min_delta: 1.0e-4
+  run_test_eval_on_finish: true
+
+data:
+  splits_dir: "dataset/splits"
+  image_size: 512
+  train_split: "train"
+  val_split: "val"
+  test_split: "test"
+
+post:
+  enabled: true                 # ON for the final test eval after training
+  use_morphology: true
+  morphology_kernel: 3
+  use_guided_filter: true
+  guided_filter_radius: 4
+  guided_filter_eps: 1.0e-4
+  use_dense_crf: true           # sharpens fence-vs-grass/sky edges (needs pydensecrf)
+  crf_iterations: 5
+  crf_bilateral_sxy: 50         # fence-tuned (was 80)
+  crf_bilateral_srgb: 10        # tighter color similarity (was 13)
+  crf_bilateral_compat: 12
+
+log:
+  log_dir: "outputs/training_v2"
+  run_name: "phase1"
+  log_every_n_steps: 50
+  use_tensorboard: true
+  save_sample_predictions: 8
+
+ckpt:
+  save_every_n_epochs: 5
+  save_best_metric: "val_iou"
+  save_best_mode: "max"
+  keep_last_n: 3
+  save_optimizer_state: true
+  resume_from: null

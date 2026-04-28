@@ -1,0 +1,16 @@
+# ONNX Export Requirements
+# Install with: pip install -r requirements_onnx_export.txt
+
+# Core dependencies
+torch>=2.0.0
+transformers>=4.30.0
+onnx>=1.14.0
+onnxruntime>=1.15.0
+safetensors>=0.3.0
+
+# Optional for optimization
+onnxruntime-tools>=1.7.0
+
+# For validation
+numpy>=1.24.0
+pillow>=9.5.0
