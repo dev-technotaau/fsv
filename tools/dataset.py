@@ -54,6 +54,7 @@ DESIGN NOTES
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -148,6 +149,7 @@ class FenceDataset(Dataset):
         transform: Optional[Callable] = None,
         weight_by_review_source: bool = False,
         custom_weights: Optional[dict[str, float]] = None,
+        max_load_retries: int = 5,
     ) -> None:
         self.img_jsonl = Path(img_jsonl)
         self.mask_jsonl = Path(mask_jsonl)
@@ -165,11 +167,21 @@ class FenceDataset(Dataset):
         self.transform = transform
         self.weight_by_review_source = weight_by_review_source
         self.weights = (custom_weights or REVIEW_SOURCE_WEIGHTS)
+        # Retry budget for transient I/O / PIL decode failures (corrupt or
+        # truncated JPEGs, flaky disks, network shares). After max_load_retries
+        # failed attempts on a sample, we fall back to the next sample (modulo
+        # dataset length) so the training step never crashes from a single
+        # bad file. See __getitem__ for details.
+        self.max_load_retries = max(1, int(max_load_retries))
 
     def __len__(self) -> int:
         return len(self.img_rows)
 
-    def __getitem__(self, idx: int) -> dict[str, Any]:
+    def _load_sample_raw(self, idx: int
+                          ) -> tuple[np.ndarray, np.ndarray, dict, dict]:
+        """Load + decode + tri-class-normalize one sample. Raises on any I/O
+        or PIL decode error (caught + handled by __getitem__'s retry loop).
+        Returns: (image_HWC_RGB, mask_HW_uint8_binary, img_row, mask_row)."""
         img_row = self.img_rows[idx]
         m = self.masks[img_row["id"]]
 
@@ -199,6 +211,69 @@ class FenceDataset(Dataset):
         else:
             mask = (mask == 1).astype(np.uint8)       # tri-class {0, 1, 2}
 
+        return image, mask, img_row, m
+
+    def __getitem__(self, idx: int) -> dict[str, Any]:
+        """Load sample at idx, with retry-on-corruption + fallback to neighbors.
+
+        Behavior on PIL decode failure / missing file / transient I/O error:
+          1. Retry the same idx up to `self.max_load_retries` times. (Helps
+             when the disk is flaky or files are on a slow network share.)
+          2. If all retries fail, advance to idx = (idx + 1) % len(self) and
+             try that sample. (One bad sample never crashes a training step.)
+          3. After 2 * max_load_retries fallback samples ALSO fail, raise a
+             clear RuntimeError — the dataset is critically broken (e.g. the
+             entire data dir is unreadable), no point silently looping.
+
+        Each failed attempt prints a one-line warning to stderr in the format
+        `Corrupt sample idx=N (attempt M/K): {path} — {error}` so DataLoader
+        worker output is visible in the main training log.
+        """
+        original_idx = idx
+        n_fallbacks = 0
+        max_fallbacks = 2 * self.max_load_retries
+        last_err: Optional[Exception] = None
+
+        while True:
+            success = False
+            for attempt in range(1, self.max_load_retries + 1):
+                try:
+                    image, mask, img_row, m = self._load_sample_raw(idx)
+                    success = True
+                    break
+                except Exception as e:
+                    last_err = e
+                    # Resolve the failing path for the warning message.
+                    path = "?"
+                    if 0 <= idx < len(self.img_rows):
+                        path = self.img_rows[idx].get("path", "?")
+                    # Prefer stderr + flush so it appears in main-process log
+                    # even from PyTorch DataLoader worker subprocesses.
+                    print(
+                        f"Corrupt sample idx={idx} "
+                        f"(attempt {attempt}/{self.max_load_retries}): "
+                        f"{path} — {e}",
+                        file=sys.stderr, flush=True,
+                    )
+            if success:
+                break
+            # All retries exhausted on this idx — fall back to the next sample.
+            n_fallbacks += 1
+            if n_fallbacks > max_fallbacks:
+                raise RuntimeError(
+                    f"FenceDataset: failed to load any usable sample after "
+                    f"{max_fallbacks} fallbacks starting from idx={original_idx}. "
+                    f"Last error: {type(last_err).__name__}: {last_err}. "
+                    f"Check that the dataset image directory is readable."
+                )
+            print(
+                f"  -> idx={idx} unreadable after {self.max_load_retries} "
+                f"attempts; falling back to idx={(idx + 1) % len(self)}",
+                file=sys.stderr, flush=True,
+            )
+            idx = (idx + 1) % len(self)
+
+        # Apply augmentation transform (image + mask in lockstep)
         if self.transform is not None:
             out = self.transform(image=image, mask=mask)
             image, mask = out["image"], out["mask"]
