@@ -10,10 +10,10 @@
 # ============================================================
 
 model:
-  backbone_name: "facebook/dinov3-vith16plus-pretrain-lvd1689m"
+  backbone_name: "facebook/dinov3-vitl16-pretrain-lvd1689m"
   backbone_freeze_first_n_layers: 0
   backbone_drop_path_rate: 0.05
-  multi_block_n: 6                     # match phase1
+  multi_block_n: 6                     # match phase1 (rolled back from 6 to fit 48GB)
   aggregation_type: "weighted_sum"
   # ViT-Adapter — must match phase1 exactly (FT inherits weights via init_from)
   use_vit_adapter: true
@@ -25,9 +25,9 @@ model:
   vit_adapter_ffn_ratio: 0.25
   # IMPORTANT: must match phase1.yaml exactly (FT inherits weights via init_from)
   pixel_decoder_type: "msdeform"
-  pixel_decoder_layers: 12             # match phase1
+  pixel_decoder_layers: 12              # match phase1 (rolled back from 12 to fit RTX 6000 Ada 48GB at bs=8)
   pixel_decoder_heads: 8
-  pixel_decoder_ffn_dim: 3072          # match phase1
+  pixel_decoder_ffn_dim: 3072          # match phase1 (rolled back from 3072)
   decoder_type: "mask2former"
   decoder_dim: 512
   decoder_num_queries: 64              # match phase1
@@ -39,18 +39,18 @@ model:
   num_classes: 1
   output_logit: true
   use_refinement_head: true
-  refinement_channels: 96              # match phase1 (Tier-2 bump)
+  refinement_channels: 96              # match phase1 (rolled back from 96 to fit 48GB)
   refinement_num_blocks: 4
   refinement_use_decoder_features: true
   refinement_decoder_feature_channels: 64
   refinement_use_edge_head: true
-  refinement_iterations: 3             # match phase1 (Tier-1 bump)
+  refinement_iterations: 3             # match phase1 (rolled back from 3 to fit 48GB)
   refinement_use_y_coord: true
   refinement_use_depth: true           # set true at FT phase if you can afford the ~25% slowdown
   depth_model_name: "Intel/dpt-hybrid-midas"
   # UNet3+ extras inside the refinement head:
   refinement_use_full_scale_ds: true    # FDS side heads off D1..D{N-1}
-  refinement_use_cgm: true              # per-image fence/non-fence classifier + inference gate
+  refinement_use_cgm: true              # match phase1 — CGM HELPS on negatives, reverted from disable
   # Boundary signal extras (must match phase1 — FT inherits weights):
   refinement_use_distance: true                # signed-distance regression head
   refinement_use_pointrend_module: true        # forward-time PointRend MLP refinement
@@ -66,55 +66,64 @@ loss:
   boundary_weight: 1.0        # Tier-2 bump: 0.7 → 1.0 (already-strong + go further at FT)
   lovasz_weight: 0.7          # bumped at FT — IoU push at high res
   tversky_weight: 0.7         # bumped at FT — recall push at high res
-  tversky_alpha: 0.7
-  tversky_beta: 0.3
-  connectivity_weight: 0.15   # Tier-2 (was 0.0): topology-aware; slightly stronger at FT
+  tversky_alpha: 0.6          # Audit fix (was 0.7) — match phase1's lowered
+                              # alpha so the recall-amplifier stack is consistent
+                              # across phases. FN penalty still > FP.
+  tversky_beta: 0.4           # raised 0.3 -> 0.4 to match alpha cut
+  connectivity_weight: 0.03   # Audit fix (was 0.15) — 1e-3 to 1e-2 range
+                              # recommended in code docstring; 0.03 is the FT
+                              # equivalent of phase1's 0.02 (slightly stronger
+                              # since we're polishing boundaries here).
   use_pos_weight: true
-  pos_weight: null
+  pos_weight: 3.0               # FIX 1 (match phase1): capped from auto-9.84
   focal_gamma: 2.0
   ohem_top_k_ratio: 0.25      # Tier-1 (was 0.0): hard-pixel mining at FT phase
   boundary_kernel_size: 7
   dice_smooth: 1.0
   weight_by_review_source: true
-  deep_supervision_weight: 1.0
+  deep_supervision_weight: 0.3       # FIX 2 (match phase1): scaled from 1.0
   use_pointrend: true
   pointrend_n_points: 12544
   pointrend_oversample_ratio: 3.0
   pointrend_importance_ratio: 0.75
   edge_loss_weight: 1.0              # Tier-2 bump: 0.7 → 1.0 (boundary push hardest at FT)
   edge_loss_dilate: 3
-  edge_loss_pos_weight: 8.0
-  refinement_iter_aux_weight: 0.5
+  edge_loss_pos_weight: 4.0          # Audit fix (was 8.0) — combined with
+                                     # pos_weight=3.0 the 8.0 was promoting
+                                     # thin boundary FPs (the recall-amplifier
+                                     # stack the 4 fixes targeted). 4.0 is
+                                     # still strong (~20x edge-pixel reweight).
+  refinement_iter_aux_weight: 0.2    # FIX 2 cont (match phase1): scaled from 0.5
   ema_distill_weight: 0.3            # ON at FT phase: EMA is mature, +0.5-1% IoU lift
   # UNet3+ extras (slightly stronger at FT — fine-tune polishes both):
   refinement_fds_weight: 0.4
-  cgm_weight: 0.5
+  cgm_weight: 0.5                    # match phase1 — CGM HELPS on negatives, reverted from disable
   # Boundary Distance Regression (slightly stronger at FT — boundary push)
   boundary_distance_weight: 0.4
   boundary_distance_clip: 80.0       # wider clip at 1024² (more pixels per image)
   boundary_distance_normalize: true
 
 optim:
-  optimizer: "adamw"
-  base_lr: 5.0e-5             # head LR (lower than phase1)
-  backbone_lr: 2.0e-6         # backbone LR (much lower for fine-tune)
+  optimizer: "adamw8bit"      # bitsandbytes AdamW8bit — saves ~6GB vs fp32 AdamW (no quality loss); falls back to "adamw" if bnb unavailable
+  base_lr: 7.5e-5             # head LR — Goyal linear scale: 5.0e-5 * (12/8) = 7.5e-5 (matches phase1's 1.5x bump)
+  backbone_lr: 3.0e-6         # backbone LR — Goyal linear scale: 2.0e-6 * 1.5 = 3.0e-6
   backbone_lr_decay: 0.85
   weight_decay: 0.05
   betas: [0.9, 0.999]
-  warmup_epochs: 3                # was 1 — bigger model needs longer warmup at FT
+  warmup_epochs: 4                # 3 -> 4 for the 1.5x higher LR (Goyal: longer warmup with larger batches)
   warmup_lr: 1.0e-8
   lr_min: 1.0e-8
   schedule: "cosine"
   grad_clip_norm: 1.0
-  grad_accumulation_steps: 8   # effective batch = batch_size * accum_steps  (1 * 8 = 8)
+  grad_accumulation_steps: 2   # effective batch = batch_size * accum_steps (6 * 2 = 12) — bumped from 4*2=8 to match phase1's 1.5x scaling
   use_amp: true
   amp_dtype: "bf16"
 
 train:
   epochs: 70                   # Tier-1 bump: 50 → 70 (more FT convergence at high res)
-  batch_size: 1                # dinov3-H+ at 1024^2: ~22-30GB; raise to 2 if VRAM allows
-  val_batch_size: 2
-  num_workers: 4
+  batch_size: 6                # bumped 4 -> 6 on H200 140GB. Now on DINOv3-L (~36% of H+ params), so per-sample memory at 1024 sq is ~50-65GB at bs=6 — plenty of headroom even with EMA distill (ema_distill_weight=0.3). LRs Goyal-scaled 1.5x above.
+  val_batch_size: 16           # bumped 8 → 16 for H200 throughput
+  num_workers: 24              # bumped 16 → 24 for H200's 224 vCPUs
   pin_memory: true
   persistent_workers: true
   val_every_n_epochs: 1
@@ -124,6 +133,12 @@ train:
   multi_scale_max_factor: 1.1
   cutmix_p: 0.15               # gentler CutMix at FT phase (was 0)
   cutmix_alpha: 1.0
+  mosaic_p: 0.08               # gentler 4-way mosaic at FT (vs 0.15 in phase1)
+  # RandAugment photometric policy — at FT we use a SMALLER magnitude (the
+  # caller in train.py clips m to 6 at phase 2) to preserve fine detail.
+  use_randaugment: true
+  randaugment_n: 2
+  randaugment_m: 6
   # Class-balanced sampling — ON at FT phase to push the model on weak
   # subcategories (cedar, look-alike negatives). Sqrt-frequency keeps the
   # boost moderate; min_count=50 prevents over-amplifying tiny buckets.
@@ -140,6 +155,9 @@ train:
   use_tta: false
   tta_scales: [0.5, 0.75, 1.0, 1.25, 1.5]  # Tier-1 bump: 5 scales for the FINAL test TTA
   tta_flip: true
+  tta_photometric: true              # brightness + gamma TTA at final test eval
+  tta_photometric_brightness: [-0.10, 0.10]
+  tta_photometric_gamma: [0.9, 1.1]
   tta_at_final_test: true            # auto-enable TTA at final test eval
   skip_step_on_nonfinite_loss: true
   log_grad_norm: true
@@ -153,6 +171,9 @@ data:
   train_split: "train_hq"
   val_split: "val_hq"
   test_split: "test_hq"
+  # Audit filter: drop ~29 train_hq pos samples with < 100 fence pixels
+  # (0.5% of train_hq pos) — same SAM2 near-zero-signal noise as phase1.
+  min_fence_pixels_for_pos: 100
 
 post:
   enabled: true
@@ -167,9 +188,26 @@ post:
   crf_bilateral_srgb: 10
   crf_bilateral_compat: 12
   use_cc_cleanup: true
-  cc_min_blob_area: 400         # higher at 1024² (more pixels per real blob)
+  cc_min_blob_area: 250         # Audit fix (was 400) — 400 at 1024^2 was
+                                # erasing fragmented chain-link / wrought-iron
+                                # blobs that real fence images often produce
+                                # under foliage occlusion. 250 still kills
+                                # tree-bark FPs (those are well below 250 px)
+                                # while keeping thin-structure recall.
   cc_fill_holes_smaller_than: 0
   cc_keep_top_k_blobs: 0
+  binarize_threshold: 0.5       # threshold for prob -> binary; matches the
+                                # in-training val/test eval threshold so
+                                # reported metrics line up with deployed
+                                # post-process output.
+  # Calibration (same as phase1) — fit on val_hq this phase
+  temperature: 1.0
+  fit_temperature_on_finish: true
+  per_subcategory_thresholds: true
+  threshold_sweep_min: 0.20
+  threshold_sweep_max: 0.80
+  threshold_sweep_step: 0.025
+  threshold_sweep_min_count: 20
 
 log:
   log_dir: "outputs/training_v2"

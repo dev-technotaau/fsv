@@ -1014,12 +1014,106 @@
     <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js"></script>
     <script>
         // ============================================================================
-        // UNET++ CONFIGURATION
+        // SEGFORMER-B3 CONFIGURATION (ninja_v2)
         // ============================================================================
+        // Model: smp.Segformer(encoder_name="mit_b3", classes=1)
+        // Trained: epoch 18, best_iou 0.4550 (training-time metric, EMA weights used)
+        // Output: sigmoid probabilities BAKED INTO the graph — values are [0, 1].
+        // Preprocessing: ImageNet normalization (NOT plain /255 like the old UNet++ model).
         const CONFIG = {
-            MODEL_PATH: './fence_model_unet_browser.onnx',
+            MODEL_PATH: './fence_model_segformer.onnx',
             INPUT_SIZE: 512,
-            NUM_CLASSES: 2
+            // ImageNet normalization (RGB order, matches PyTorch torchvision standard)
+            IMAGENET_MEAN: [0.485, 0.456, 0.406],
+            IMAGENET_STD:  [0.229, 0.224, 0.225],
+            // Sigmoid is baked into the ONNX graph — output already in [0, 1].
+            // No need to apply sigmoid client-side.
+            SIGMOID_BAKED_IN: true,
+            // Default binarize threshold; the UI threshold slider overrides.
+            DEFAULT_THRESHOLD: 0.5,
+
+            // ── Connected-component cleanup (drop spurious isolated blobs) ──
+            // The model occasionally lights up small non-fence regions (dirt
+            // patches, wood furniture, bark texture) that aren't connected
+            // to the main fence area. Drop any blob below this % of the image.
+            // 2.0% is conservative; in practice fence images have one big blob
+            // that dwarfs everything else.
+            CC_MIN_BLOB_AREA_PCT: 2.0,
+            // KEEP only the K largest blobs (0 = unlimited, 1 = only the
+            // dominant fence). Default 0 = keep ALL blobs that pass the
+            // min-area filter, so genuinely-disconnected fence sections
+            // (front fence + fence behind a tree, sunlit + shaded segments
+            // of the same fence the model split into two components) are
+            // both kept. The 2% min-area floor is enough to suppress
+            // spurious dirt-patch / furniture detections without dropping
+            // real fence regions. Switch to 1 only if your photos always
+            // have a single dominant fence and CC=2% isn't catching enough.
+            CC_KEEP_TOP_K_BLOBS: 0,
+            // Erode the binary mask by N pixels at full resolution. Default
+            // 1 = breaks any thin pixel-chain bridges between the main fence
+            // and spurious noise (so CC cleanup can split + drop them) AND
+            // tightens the over-prediction boundary by 1 px. Bump to 2-3 if
+            // the model is still bleeding into background.
+            POST_ERODE_PX: 1,
+
+            // ── SOFT MASK MODE (uses model confidence as alpha multiplier) ──
+            // Binary thresholding throws away the model's calibrated uncertainty:
+            // a pixel with prob=0.51 gets the SAME alpha as one with prob=0.99.
+            // Soft mode preserves the full heatmap as the recolor alpha so:
+            //   - prob >= SOFT_MASK_HIGH (0.7): full confidence, pixel-perfect
+            //   - SOFT_MASK_LOW <= prob < HIGH: smooth anti-aliased transition
+            //   - prob <  SOFT_MASK_LOW  (0.5): zero (suppress foggy bleed)
+            // Result mimics a hand-painted alpha channel — sharp where the model
+            // is sure, fading where it's uncertain, clean elsewhere.
+            //
+            // SOFT_MASK_LOW: 0.7 is fairly aggressive — suppresses anything
+            // below 70% model confidence. Trunks usually sit in 0.5-0.7
+            // confidence range so this drops them. Trade-off: fence anti-
+            // aliasing band shrinks. Dial back to 0.6 if boundary looks too
+            // tight on other images.
+            USE_SOFT_MASK: true,
+            SOFT_MASK_LOW: 0.42,
+            SOFT_MASK_HIGH: 0.78,
+
+            // ── Vegetation / occluder color filter ──────────────────────
+            // The model sometimes includes pixels where TREES occlude the
+            // fence (it learned "fence at this 2D location" but trees are in
+            // front of it). For staining we don't want to stain trees, so we
+            // zero out mask pixels where the ORIGINAL IMAGE is green-dominant
+            // (G - max(R,B) > threshold).
+            //
+            // Wood/cedar/gray/white fences have R >= G, so they always pass.
+            // Foliage has G > R+B, so it gets filtered out.
+            // EDGE CASE: green-painted fences would also get filtered — for
+            // a fence STAINING tool this is fine (green fences are uncommon
+            // staining candidates). Set FILTER_VEGETATION=false to disable.
+            FILTER_VEGETATION: true,
+            // Higher = filters more aggressively (catches darker foliage)
+            // Lower = filters less (preserves edge cases)
+            // 25 is balanced for typical sunlit + shaded foliage.
+            VEGETATION_GREEN_DOMINANCE: 25,
+
+            // ── Bark filter (tree TRUNKS, complementary to vegetation filter) ─
+            // Tree bark shares brown/gray with cedar wood, so green-dominance
+            // can't catch it. But bark tends to be LESS SATURATED than wood
+            // (gray-brown vs warm-orange). This filter drops mask pixels where:
+            //   - Saturation in HSV < BARK_MAX_SATURATION (default 0.22)
+            //   - AND brightness is in BARK_BRIGHT_RANGE (default [40, 140])
+            // i.e., dim and grayish — the classic bark signature.
+            //
+            // EDGE CASES this can wrongly hit:
+            //   - Gray-painted fences (low saturation + medium brightness → filtered)
+            //   - Fence in very deep shadow (very dark, but brightness > 40)
+            //   - Black/charcoal stained fences (typically brightness < 40, safe)
+            // Set FILTER_BARK=false (default) if your photos have gray/painted
+            // fences. Set true if you see tree TRUNKS in the stained output.
+            // DISABLED: filter color band overlaps weathered cedar boards, so
+            // it can eat fence pixels. SegFormer's soft mask alone separates
+            // most trunks cleanly; bark filter adds more risk than benefit.
+            FILTER_BARK: false,
+            BARK_MAX_SATURATION: 0.22,
+            BARK_BRIGHTNESS_MIN: 40,
+            BARK_BRIGHTNESS_MAX: 140
         };
 
         // ============================================================================
@@ -1275,61 +1369,88 @@
         }
 
         // ============================================================================
-        // UNET++ PREPROCESSING (Simple 0-1 Normalization)
+        // SEGFORMER-B3 PREPROCESSING (ImageNet normalization)
         // ============================================================================
+        // Input pipeline (matches training):
+        //   1. Resize image to INPUT_SIZE x INPUT_SIZE (HIGH-quality bilinear)
+        //   2. Convert canvas RGBA pixels to float32 in [0, 1]
+        //   3. Apply ImageNet normalization: (pixel - mean) / std
+        //   4. Reshape to NCHW (1, 3, H, W) — channels first
+        //
+        // Layout: planar — R-channel block, then G-channel block, then B-channel block.
         function preprocessImage(img) {
             const canvas = document.createElement('canvas');
             canvas.width = CONFIG.INPUT_SIZE;
             canvas.height = CONFIG.INPUT_SIZE;
             const ctx = canvas.getContext('2d');
+            // Force HIGH-quality bilinear interpolation. Browser default is 'low'
+            // which can use nearest-neighbor when shrinking large images, producing
+            // aliased input that hurts inference accuracy.
+            ctx.imageSmoothingEnabled = true;
+            ctx.imageSmoothingQuality = 'high';
             ctx.drawImage(img, 0, 0, CONFIG.INPUT_SIZE, CONFIG.INPUT_SIZE);
-            
+
             const imageData = ctx.getImageData(0, 0, CONFIG.INPUT_SIZE, CONFIG.INPUT_SIZE);
             const data = imageData.data;
-            
-            // UNet++ uses simple 0-1 normalization (pixel / 255)
-            const float32Data = new Float32Array(3 * CONFIG.INPUT_SIZE * CONFIG.INPUT_SIZE);
-            
-            for (let i = 0; i < CONFIG.INPUT_SIZE * CONFIG.INPUT_SIZE; i++) {
-                float32Data[i] = data[i * 4] / 255.0;  // R
-                float32Data[CONFIG.INPUT_SIZE * CONFIG.INPUT_SIZE + i] = data[i * 4 + 1] / 255.0;  // G
-                float32Data[2 * CONFIG.INPUT_SIZE * CONFIG.INPUT_SIZE + i] = data[i * 4 + 2] / 255.0;  // B
+
+            const N = CONFIG.INPUT_SIZE * CONFIG.INPUT_SIZE;
+            const float32Data = new Float32Array(3 * N);
+
+            const meanR = CONFIG.IMAGENET_MEAN[0], meanG = CONFIG.IMAGENET_MEAN[1], meanB = CONFIG.IMAGENET_MEAN[2];
+            const stdR  = CONFIG.IMAGENET_STD[0],  stdG  = CONFIG.IMAGENET_STD[1],  stdB  = CONFIG.IMAGENET_STD[2];
+
+            for (let i = 0; i < N; i++) {
+                const r = data[i * 4]     / 255.0;
+                const g = data[i * 4 + 1] / 255.0;
+                const b = data[i * 4 + 2] / 255.0;
+                float32Data[i]         = (r - meanR) / stdR;     // R plane
+                float32Data[N + i]     = (g - meanG) / stdG;     // G plane
+                float32Data[2 * N + i] = (b - meanB) / stdB;     // B plane
             }
-            
+
             return new ort.Tensor('float32', float32Data, [1, 3, CONFIG.INPUT_SIZE, CONFIG.INPUT_SIZE]);
         }
 
         // ============================================================================
-        // FENCE DETECTION (UNet++)
+        // FENCE DETECTION (SegFormer-B3, sigmoid baked into ONNX graph)
         // ============================================================================
         async function detectFence() {
             if (!originalImage || !session) return;
-            
+
             showLoading('Detecting fence...');
             updateStatus('Detecting fence...', 'loading');
             detectBtn.disabled = true;
-            
+
             try {
                 // Use setTimeout to allow UI to update
                 await new Promise(resolve => setTimeout(resolve, 100));
-                
+
                 const tensor = preprocessImage(originalImage);
-                
-                // UNet++ model input name
+
+                // ONNX I/O names (kept identical to old model for compatibility):
+                //   input  : (1, 3, 512, 512) float32, ImageNet-normalized
+                //   output : (1, 1, 512, 512) float32 sigmoid probabilities
                 const feeds = { input: tensor };
                 const results = await session.run(feeds);
-                
-                // Get output (use .output directly)
+
                 const output = results.output;
-                
-                console.log('UNet++ output:', output.dims);
-                
-                // Postprocess with edge smoothing
+                console.log('SegFormer-B3 output dims:', output.dims);
+
+                // Postprocess: bilinear upsample to original res + edge smoothing + threshold.
+                // Output is ALREADY sigmoid (baked in), so values are in [0, 1] —
+                // no extra activation needed.
+                // Also extract the ORIGINAL IMAGE pixel data so postprocess can
+                // run color-aware filtering (drop tree/foliage pixels by green
+                // dominance).
                 const smoothingKernel = parseInt(edgeSmoothing.value);
                 const thresholdValue = parseFloat(threshold.value);
-                maskData = postprocessMask(output, originalImage.width, originalImage.height, smoothingKernel, thresholdValue);
+                const origImageData = getOriginalImagePixelData(originalImage);
+                maskData = postprocessMask(
+                    output, originalImage.width, originalImage.height,
+                    smoothingKernel, thresholdValue, origImageData
+                );
                 drawMask(maskData);
-                
+
                 updateStatus('Fence detected successfully!', 'success');
                 recolorBtn.disabled = false;
             } catch (error) {
@@ -1342,35 +1463,292 @@
         }
 
         // ============================================================================
-        // UNET++ POSTPROCESSING
+        // POSTPROCESSING (correct minimal pipeline for calibrated sigmoid output)
         // ============================================================================
-        function postprocessMask(output, width, height, smoothingKernel = 2, thresholdValue = 0.5) {
-            const maskData = output.data;
-            
-            // Step 1: Bilinear interpolation for smoother edges
-            let mask = bilinearResize(maskData, 512, 512, width, height);
-            
-            // Step 2: Enhance contrast before filtering
-            mask = enhanceContrast(mask, width, height, 1.5);
-            
-            // Step 3: Gaussian blur to reduce noise
-            mask = gaussianBlur(mask, width, height, 1.2);
-            
-            // Step 4: Bilateral filter for edge-preserving smoothing
-            mask = bilateralFilter(mask, width, height, 5, 0.1, 0.1);
-            
-            // Step 5: Apply morphological operations if needed
-            if (smoothingKernel > 1) {
-                mask = morphologicalClose(mask, width, height, smoothingKernel);
+        // The ONNX model outputs CALIBRATED sigmoid probabilities in [0, 1] —
+        // sigmoid is BAKED INTO the graph. The right operations are:
+        //   1. Hole-fill at MODEL resolution via morphological close (cheap +
+        //      avoids picket-gap erosion at high res)
+        //   2. Bilinear upsample from 512x512 to ORIGINAL image resolution
+        //   3. Hard threshold at the slider value (0.5 default)
+        //   4. (Output retains [0, 1] mask values: 1.0 = fence, 0.0 = bg)
+        //
+        // What was REMOVED vs the prior version (which was tuned for the OLD UNet++):
+        //   - enhanceContrast (min-max + power) — distorted calibrated probs,
+        //     inflated near-zero probs into the threshold band → false positives
+        //   - gaussianBlur sigma=1.2 — wiped out 1-2 px fence details
+        //   - bilateralFilter — slow + marginal benefit on calibrated output
+        //   - unsharpMask — introduced ringing at edges
+        //   - "soft threshold" — kept partial probs that bypassed the user's
+        //     threshold setting and bled through into the recolor step
+        //
+        // Edge softening for VISUAL blending is now done in recolorFence() via
+        // a small alpha-band falloff, NOT by distorting the segmentation mask.
+        // Draw original image to an offscreen canvas to get RGBA pixel data
+        // at the full image resolution. Used by the vegetation filter so it
+        // can read the actual pixel color at each mask location.
+        function getOriginalImagePixelData(img) {
+            const c = document.createElement('canvas');
+            c.width = img.naturalWidth || img.width;
+            c.height = img.naturalHeight || img.height;
+            const ctx = c.getContext('2d');
+            ctx.imageSmoothingEnabled = true;
+            ctx.imageSmoothingQuality = 'high';
+            ctx.drawImage(img, 0, 0);
+            return ctx.getImageData(0, 0, c.width, c.height).data;
+        }
+
+        // Color-aware BARK filter — drops mask pixels that look like tree
+        // trunks. Bark is typically gray-brown (LOW saturation) at medium
+        // brightness, vs warm-saturated wood (HIGHER saturation). Specifically
+        // targets the trunks/bark that the green-dominance filter can't catch
+        // (since bark shares brown with wood).
+        // Computes HSV saturation and brightness inline for speed; doesn't
+        // need a full RGB→HSV library call.
+        function filterBark(mask, pixelData, width, height, maxSat, brightMin, brightMax) {
+            const N = width * height;
+            const out = new Float32Array(N);
+            let dropped = 0;
+            for (let i = 0; i < N; i++) {
+                if (mask[i] > 0) {
+                    const r = pixelData[i * 4];
+                    const g = pixelData[i * 4 + 1];
+                    const b = pixelData[i * 4 + 2];
+                    const max = Math.max(r, g, b);
+                    const min = Math.min(r, g, b);
+                    // Saturation in [0, 1]: 0 = gray, 1 = pure color.
+                    const sat = max > 0 ? (max - min) / max : 0;
+                    // Use mean as brightness proxy (cheaper than HSV V)
+                    const bright = (r + g + b) / 3;
+                    // Bark signature: low saturation in mid-brightness band
+                    if (sat < maxSat && bright >= brightMin && bright <= brightMax) {
+                        out[i] = 0;
+                        dropped++;
+                    } else {
+                        out[i] = mask[i];
+                    }
+                }
             }
-            
-            // Step 6: Apply threshold to remove background
-            mask = applyThreshold(mask, width, height, thresholdValue);
-            
-            // Step 7: Edge enhancement using unsharp masking
-            mask = unsharpMask(mask, width, height, 1.2, 0.6);
-            
+            console.log(`[bark-filter] dropped ${dropped} low-sat mid-bright px ` +
+                        `(sat < ${maxSat}, bright in [${brightMin}, ${brightMax}])`);
+            return out;
+        }
+
+        // Color-aware vegetation filter — drops mask pixels where the original
+        // image is green-dominant (likely a tree/leaf/bush occluding the fence).
+        // Preserves the soft mask value where pixels are wood/gray/white/etc.
+        // No-op for pixels where mask[i] == 0 (already excluded).
+        function filterVegetation(mask, pixelData, width, height, threshold) {
+            const N = width * height;
+            const out = new Float32Array(N);
+            let dropped = 0;
+            for (let i = 0; i < N; i++) {
+                if (mask[i] > 0) {
+                    const r = pixelData[i * 4];
+                    const g = pixelData[i * 4 + 1];
+                    const b = pixelData[i * 4 + 2];
+                    // Pixel is "vegetation-colored" if green is more than
+                    // `threshold` units higher than both red and blue.
+                    if (g - Math.max(r, b) > threshold) {
+                        out[i] = 0;
+                        dropped++;
+                    } else {
+                        out[i] = mask[i];
+                    }
+                }
+            }
+            console.log(`[veg-filter] dropped ${dropped} green-dominant px ` +
+                        `(threshold G - max(R,B) > ${threshold})`);
+            return out;
+        }
+
+        function postprocessMask(output, width, height, smoothingKernel = 1, thresholdValue = 0.5, origPixelData = null) {
+            const probData = output.data;
+            const ms = CONFIG.INPUT_SIZE;
+
+            // Step 1: Optional morphological close at MODEL resolution (cheaper +
+            // avoids destroying thin fence structures at high res). Kernel 1 = no-op.
+            let mask512 = probData;
+            if (smoothingKernel > 1) {
+                mask512 = morphologicalClose(probData, ms, ms, smoothingKernel);
+            }
+
+            // Step 2: Bilinear upsample to original image resolution
+            const maskOrig = bilinearResize(mask512, ms, ms, width, height);
+
+            // Step 3: Build mask. Two modes:
+            //   HARD:  binary {0, 1} thresholding (legacy behavior)
+            //   SOFT:  keep model confidence as alpha, suppress foggy regions
+            //          → recolor uses mask value directly as alpha multiplier
+            //          → preserves the pixel-perfect quality visible in the heatmap
+            const useSoftMask = (CONFIG.USE_SOFT_MASK !== false);
+            const softLow = (CONFIG.SOFT_MASK_LOW != null) ? CONFIG.SOFT_MASK_LOW : 0.3;
+            const softHigh = (CONFIG.SOFT_MASK_HIGH != null) ? CONFIG.SOFT_MASK_HIGH : 0.7;
+            let mask = new Float32Array(width * height);
+            if (useSoftMask) {
+                // SOFT: clip-low + linear ramp + as-is above HIGH
+                //   p <= LOW           → 0.0  (suppress fog)
+                //   p >= HIGH          → p    (keep full confidence)
+                //   LOW < p < HIGH     → p * t  where t = (p-LOW)/(HIGH-LOW)
+                //   → smooth, anti-aliased boundary; pixel-perfect cores
+                const range = Math.max(1e-6, softHigh - softLow);
+                for (let i = 0; i < maskOrig.length; i++) {
+                    const p = maskOrig[i];
+                    if (p <= softLow) {
+                        mask[i] = 0.0;
+                    } else if (p >= softHigh) {
+                        mask[i] = p;
+                    } else {
+                        const t = (p - softLow) / range;
+                        mask[i] = p * t;
+                    }
+                }
+            } else {
+                // HARD: legacy binary threshold (sharp visible edges; loses
+                // confidence info; can look chunky at the boundaries)
+                for (let i = 0; i < maskOrig.length; i++) {
+                    mask[i] = maskOrig[i] >= thresholdValue ? 1.0 : 0.0;
+                }
+            }
+
+            // Step 4-5: Erode + CC cleanup. These operate on a BINARY view of
+            // the mask (any value > 0 = "fence"), but for soft mode we then
+            // ZERO OUT pixels NOT in the kept set while PRESERVING the soft
+            // values inside kept components.
+            const erodePx = CONFIG.POST_ERODE_PX || 0;
+            const ccMinPct = CONFIG.CC_MIN_BLOB_AREA_PCT || 0;
+            const ccTopK = CONFIG.CC_KEEP_TOP_K_BLOBS || 0;
+            if (erodePx > 0 || ccMinPct > 0 || ccTopK > 0) {
+                let keep = new Float32Array(width * height);
+                for (let i = 0; i < mask.length; i++) {
+                    keep[i] = mask[i] > 0 ? 1.0 : 0.0;
+                }
+                if (erodePx > 0) {
+                    keep = erode(keep, width, height, 2 * erodePx + 1);
+                }
+                if (ccMinPct > 0 || ccTopK > 0) {
+                    const minArea = Math.max(1, Math.floor(width * height * ccMinPct / 100.0));
+                    keep = connectedComponentClean(keep, width, height, minArea, ccTopK);
+                }
+                for (let i = 0; i < mask.length; i++) {
+                    if (keep[i] < 0.5) mask[i] = 0.0;
+                }
+            }
+
+            // Step 6: Vegetation / occluder color filter — drop mask pixels
+            // where the ORIGINAL IMAGE is green-dominant. Targets LEAVES.
+            // No-op if pixelData not provided (graceful fallback).
+            if (CONFIG.FILTER_VEGETATION && origPixelData) {
+                const greenThr = (CONFIG.VEGETATION_GREEN_DOMINANCE != null)
+                    ? CONFIG.VEGETATION_GREEN_DOMINANCE : 25;
+                mask = filterVegetation(mask, origPixelData, width, height, greenThr);
+            }
+
+            // Step 7: Bark filter — drops mask pixels where the original image
+            // is desaturated mid-brightness (tree TRUNKS). Targets bark that
+            // the green filter can't catch.
+            if (CONFIG.FILTER_BARK && origPixelData) {
+                const maxSat = (CONFIG.BARK_MAX_SATURATION != null)
+                    ? CONFIG.BARK_MAX_SATURATION : 0.22;
+                const brightMin = (CONFIG.BARK_BRIGHTNESS_MIN != null)
+                    ? CONFIG.BARK_BRIGHTNESS_MIN : 40;
+                const brightMax = (CONFIG.BARK_BRIGHTNESS_MAX != null)
+                    ? CONFIG.BARK_BRIGHTNESS_MAX : 140;
+                mask = filterBark(mask, origPixelData, width, height,
+                                    maxSat, brightMin, brightMax);
+            }
+
             return mask;
+        }
+
+        // ============================================================================
+        // CONNECTED-COMPONENT CLEANUP
+        // ============================================================================
+        // Two-pass union-find labeling: identifies all 4-connected white regions
+        // in a binary mask, computes their pixel areas, then KEEPS only those
+        // whose area is >= minArea (and optionally only the top-K largest).
+        // O(N) time, O(N) space. N ≈ image pixel count.
+        function connectedComponentClean(mask, width, height, minArea, keepTopK) {
+            const N = width * height;
+            const labels = new Int32Array(N);     // 0 = background / unlabeled
+            // Union-find parent array (sized for max possible labels = N/2)
+            const maxLabels = (N >> 1) + 2;
+            const parent = new Int32Array(maxLabels);
+            let nextLabel = 1;
+
+            const find = (x) => {
+                while (parent[x] !== x) {
+                    parent[x] = parent[parent[x]];   // path compression
+                    x = parent[x];
+                }
+                return x;
+            };
+            const union = (a, b) => {
+                const ra = find(a), rb = find(b);
+                if (ra !== rb) parent[Math.max(ra, rb)] = Math.min(ra, rb);
+            };
+
+            // Pass 1: assign provisional labels with 4-connectivity
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    const idx = y * width + x;
+                    if (mask[idx] < 0.5) continue;          // background
+                    const left = (x > 0) ? labels[idx - 1] : 0;
+                    const up   = (y > 0) ? labels[idx - width] : 0;
+                    if (left === 0 && up === 0) {
+                        labels[idx] = nextLabel;
+                        parent[nextLabel] = nextLabel;
+                        nextLabel++;
+                    } else if (left !== 0 && up === 0) {
+                        labels[idx] = left;
+                    } else if (left === 0 && up !== 0) {
+                        labels[idx] = up;
+                    } else {
+                        labels[idx] = Math.min(left, up);
+                        if (left !== up) union(left, up);
+                    }
+                }
+            }
+
+            // Pass 2: compute area per ROOT label
+            const areas = new Map();   // root -> pixel count
+            for (let i = 0; i < N; i++) {
+                if (labels[i] === 0) continue;
+                const root = find(labels[i]);
+                areas.set(root, (areas.get(root) || 0) + 1);
+            }
+
+            // Decide which roots to keep
+            let keepSet;
+            if (keepTopK > 0) {
+                const sorted = [...areas.entries()].sort((a, b) => b[1] - a[1]);
+                keepSet = new Set(sorted.slice(0, keepTopK)
+                                          .filter(([_, a]) => a >= minArea)
+                                          .map(([r, _]) => r));
+            } else {
+                keepSet = new Set([...areas.entries()]
+                                    .filter(([_, a]) => a >= minArea)
+                                    .map(([r, _]) => r));
+            }
+
+            // Pass 3: rebuild output mask, keeping only labeled-and-kept pixels
+            const out = new Float32Array(N);
+            for (let i = 0; i < N; i++) {
+                if (labels[i] === 0) continue;
+                const root = find(labels[i]);
+                if (keepSet.has(root)) out[i] = 1.0;
+            }
+
+            // Logging — useful for debugging "model detected wrong region" cases
+            const totalBlobs = areas.size;
+            const keptBlobs = keepSet.size;
+            const droppedArea = [...areas.entries()]
+                .filter(([r, _]) => !keepSet.has(r))
+                .reduce((s, [_, a]) => s + a, 0);
+            console.log(`[CC] blobs found=${totalBlobs}  kept=${keptBlobs}  ` +
+                        `dropped_area=${droppedArea} px (min=${minArea})`);
+
+            return out;
         }
         
         
@@ -1657,21 +2035,28 @@
                 const rgb = hexToRgb(selectedColor);
                 const alpha = parseInt(opacity.value) / 100;
                 const mode = blendMode.value;
-                
+
+                // Mask is in [0.0, 1.0]. In HARD mode it's {0, 1} (binary).
+                // In SOFT mode (default), mask values BETWEEN 0 and 1 represent
+                // model confidence — used as alpha multiplier for natural
+                // anti-aliased staining that mirrors the heatmap quality.
                 for (let i = 0; i < maskData.length; i++) {
-                    if (maskData[i] > 0.1) {  // Lower threshold since mask is already filtered
+                    const maskVal = maskData[i];
+                    if (maskVal > 0) {
                         const idx = i * 4;
                         const r = data[idx];
                         const g = data[idx + 1];
                         const b = data[idx + 2];
 
                         const blended = applyBlendMode(r, g, b, rgb.r, rgb.g, rgb.b, mode);
-                        
-                        // Use mask value as alpha multiplier for smooth edges
-                        const maskAlpha = Math.min(1, maskData[i] * 2);
-                        const finalAlpha = alpha * maskAlpha;
 
-                        data[idx] = r + (blended.r - r) * finalAlpha;
+                        // alpha = user's opacity * model's confidence at this pixel.
+                        // HARD mode: maskVal is 0 or 1 → finalAlpha is 0 or alpha
+                        //   (legacy behavior preserved).
+                        // SOFT mode: maskVal in [0, 1] → finalAlpha proportional
+                        //   to confidence → pixel-perfect blending.
+                        const finalAlpha = alpha * maskVal;
+                        data[idx]     = r + (blended.r - r) * finalAlpha;
                         data[idx + 1] = g + (blended.g - g) * finalAlpha;
                         data[idx + 2] = b + (blended.b - b) * finalAlpha;
                     }

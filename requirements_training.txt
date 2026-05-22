@@ -57,6 +57,7 @@ onnx==1.19.1
 onnxscript==0.7.0                # required by torch.onnx.export(opset>=17)
 onnxruntime==1.23.2              # CPU runtime for parity validation after export
 onnxruntime-gpu==1.24.4          # optional: GPU runtime for fast ONNX inference
+onnxconverter-common==1.16.0     # required for fp16 quantization in train_web_deployable.py
 
 # ───── rembg (tools/build_occluder_pool.py --from-images mode) ─────
 # Only needed if you extract occluder cutouts from your own photos.

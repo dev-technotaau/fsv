@@ -86,14 +86,25 @@ class BCELoss(nn.Module):
             shape = (-1,) + (1,) * (loss.dim() - 1)
             loss = loss * sample_weight.view(*shape)
 
-        # OHEM: per-image, keep only the top-K% highest losses
+        # OHEM: per-image, keep only the top-K% highest losses.
+        # IMPORTANT: we divide by total pixel count (not just by k) so the
+        # loss SCALE matches dense BCE — otherwise `top_losses.mean()` over
+        # only top-k pixels gives each retained pixel ~(1/k) gradient
+        # weight where dense BCE gives (1/n), inflating the effective
+        # bce_weight by n/k (e.g. 4x at top_k_ratio=0.25). That silent
+        # amplification compounds with pos_weight to push recall too hard.
+        # Sum-of-top-k / total_pixels preserves the original loss scale.
         if self.ohem_top_k_ratio > 0:
             B = loss.shape[0]
             flat = loss.reshape(B, -1)
             n = flat.shape[1]
             k = max(1, int(n * self.ohem_top_k_ratio))
             top_losses, _ = flat.topk(k, dim=1, sorted=False)
-            return top_losses.mean()
+            # Per-image average preserving dense-BCE scale: sum the hard
+            # pixel losses over k, divide by n (total pixels), then mean
+            # over batch. Equivalent to "zero-out the easy pixels and take
+            # the dense average".
+            return (top_losses.sum(dim=1) / float(n)).mean()
 
         return loss.mean()
 
@@ -696,10 +707,18 @@ class CombinedLoss(nn.Module):
         # UNet3+ Classification-Guided Module: BCE on the per-image fence/non-
         # fence classifier. Target = is_positive (caller builds this from
         # batch metadata's `class` field). Skipped if either is missing.
+        # Per-sample weight is applied here too so unreviewed/auto labels
+        # contribute less to the CGM gate's learning (CGM is the inference-time
+        # blob-bias suppressor — we don't want noisy labels training its gate).
         cgm_w = float(getattr(self.cfg, "cgm_weight", 0.0))
         if (cgm_w > 0 and cgm_logit is not None and is_positive is not None):
             cgm_target = is_positive.float().to(cgm_logit.device).view_as(cgm_logit)
-            cgm_loss = F.binary_cross_entropy_with_logits(cgm_logit, cgm_target)
+            cgm_raw = F.binary_cross_entropy_with_logits(
+                cgm_logit, cgm_target, reduction="none",
+            )                                               # (B, 1)
+            if sample_weight is not None:
+                cgm_raw = cgm_raw * sample_weight.view(-1, 1).to(cgm_raw.dtype)
+            cgm_loss = cgm_raw.mean()
             components["cgm"] = cgm_loss.detach()
             total = total + cgm_w * cgm_loss.float()
 
@@ -715,6 +734,7 @@ class CombinedLoss(nn.Module):
                 target_mask=targets,
                 clip=float(getattr(self.cfg, "boundary_distance_clip", 50.0)),
                 normalize=bool(getattr(self.cfg, "boundary_distance_normalize", True)),
+                sample_weight=sample_weight,
             )
             components["boundary_distance"] = bdr_loss.detach()
             total = total + bdr_w * bdr_loss.float()
@@ -758,14 +778,28 @@ class CombinedLoss(nn.Module):
     def _boundary_distance_loss(self, pred_distance: torch.Tensor,
                                   target_mask: torch.Tensor,
                                   clip: float = 50.0,
-                                  normalize: bool = True) -> torch.Tensor:
+                                  normalize: bool = True,
+                                  sample_weight: Optional[torch.Tensor] = None,
+                                  ) -> torch.Tensor:
         """L1 loss between predicted signed distance and GT signed distance.
         Both clipped to ±clip pixels. Optionally normalized by clip so the
-        loss is in [0, 1] regardless of image resolution."""
+        loss is in [0, 1] regardless of image resolution.
+
+        `sample_weight`: (B,) per-image weight from review provenance. When
+        provided, each sample's L1 contribution is scaled — keeps the
+        boundary-distance signal aligned with the rest of the loss stack
+        when training on mixed-quality (manual + auto-Gemini) labels.
+        """
         gt = self._compute_signed_distance(target_mask)              # (B, 1, H, W)
         gt = gt.clamp(-clip, clip)
         pred = pred_distance.clamp(-clip, clip)
         if normalize:
             pred = pred / clip
             gt = gt / clip
-        return F.l1_loss(pred, gt)
+        if sample_weight is None:
+            return F.l1_loss(pred, gt)
+        # Per-sample L1, weighted, then mean
+        per_pix = F.l1_loss(pred, gt, reduction="none")              # (B, 1, H, W)
+        per_sample = per_pix.flatten(1).mean(dim=1)                  # (B,)
+        per_sample = per_sample * sample_weight.to(per_sample.dtype)
+        return per_sample.mean()

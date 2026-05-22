@@ -35,6 +35,16 @@ import time
 from pathlib import Path
 from typing import Optional
 
+# Force UTF-8 stdout/stderr on Windows so emoji-containing log lines from
+# torch.onnx ("Optimize the ONNX graph... ✅") don't crash with UnicodeEncodeError
+# under the default cp1252 codepage. No-op on Linux/macOS.
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except (AttributeError, OSError):
+        pass
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -46,18 +56,34 @@ from training.model import build_model
 
 class _OnnxWrapper(nn.Module):
     """Wrap FenceSegmentationModel to expose a single tensor output (sigmoid
-    probabilities) — keeps the ONNX graph + the JS inference code simple."""
-    def __init__(self, model: nn.Module, use_refined: bool) -> None:
+    probabilities) — keeps the ONNX graph + the JS inference code simple.
+
+    Temperature scaling is BAKED INTO the graph: the wrapper computes
+    `sigmoid(logits / temperature)` so the deployed model is automatically
+    calibrated. Browser/server inference does NOT need to apply T separately.
+    Default T=1.0 = no scaling (back-compat with older training runs that
+    didn't fit a temperature).
+    """
+    def __init__(self, model: nn.Module, use_refined: bool,
+                 temperature: float = 1.0) -> None:
         super().__init__()
         self.model = model
         self.use_refined = use_refined
+        # Buffer (not Parameter) so it's included in the ONNX graph but not
+        # treated as a learnable weight.
+        T = max(1e-6, float(temperature))
+        self.register_buffer("temperature",
+                              torch.tensor(T, dtype=torch.float32))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         out = self.model(x)
         logits = (out.refined_logits
                   if (self.use_refined and out.refined_logits is not None)
                   else out.mask_logits)
-        return torch.sigmoid(logits)
+        # Cast logits to fp32 BEFORE division + sigmoid for numerical
+        # hygiene at the saturated tail (matches FenceSegmentationModel
+        # .inference() behavior).
+        return torch.sigmoid(logits.float() / self.temperature)
 
 
 def _load_checkpoint(checkpoint_path: Path,
@@ -115,6 +141,22 @@ def export_onnx(checkpoint_path: str | Path,
     print(f"  patch_size   : {patch_size}")
     print(f"  use_refined  : {use_refined}")
 
+    # Pull calibration from checkpoint meta — fitted post-training and saved
+    # by training/train.py + tools/swa_average.py. Default T=1.0 (no scaling)
+    # for back-compat with older checkpoints.
+    temperature = float(meta.get("temperature", 1.0))
+    per_subcat_thresholds = meta.get("per_subcat_thresholds")
+    binarize_threshold = float(meta.get(
+        "binarize_threshold",
+        getattr(config.post, "binarize_threshold", 0.5) if config is not None else 0.5,
+    ))
+    final_summary = meta.get("final_summary") or {}
+    print(f"  temperature  : {temperature:.4f}  (baked into ONNX graph)")
+    if per_subcat_thresholds:
+        print(f"  per_subcat_thresholds: {len(per_subcat_thresholds)} buckets "
+              f"(applied client-side post-sigmoid)")
+    print(f"  binarize_threshold: {binarize_threshold}")
+
     # Snap image_size to a valid patch stride
     snapped = max(patch_size * 4,
                    int(round(image_size / patch_size)) * patch_size)
@@ -123,7 +165,8 @@ def export_onnx(checkpoint_path: str | Path,
               f"{snapped} (multiple of patch_size={patch_size})")
         image_size = snapped
 
-    wrapper = _OnnxWrapper(model, use_refined=use_refined).eval()
+    wrapper = _OnnxWrapper(model, use_refined=use_refined,
+                            temperature=temperature).eval()
     dummy = torch.randn(1, 3, image_size, image_size, dtype=torch.float32)
 
     # Export
@@ -216,6 +259,19 @@ def export_onnx(checkpoint_path: str | Path,
         "crf_bilateral_srgb": getattr(eff_cfg.post, "crf_bilateral_srgb", 10),
         "crf_bilateral_compat": getattr(eff_cfg.post, "crf_bilateral_compat", 12),
     }
+    # CALIBRATION block — calibration data baked into / shipped with the ONNX.
+    # Browser/server inference reads this to:
+    #   - Know temperature is ALREADY APPLIED (don't re-apply!)
+    #   - Look up per-subcategory thresholds at predict time
+    #   - Use the right binarize threshold to match training-time eval
+    calibration_block = {
+        "temperature": float(temperature),
+        "temperature_baked_in": True,   # CRITICAL flag for client code
+        "per_subcat_thresholds": per_subcat_thresholds,
+        "binarize_threshold": float(binarize_threshold),
+        # Source: where the calibration came from (best.pt -> SWA -> here)
+        "source_checkpoint": str(checkpoint_path),
+    }
     sidecar_payload = {
         "checkpoint_meta": meta,
         "image_size": image_size,
@@ -245,9 +301,71 @@ def export_onnx(checkpoint_path: str | Path,
         "exporter_versions": exporter_versions,
         # ONNX-vs-PyTorch numerical parity check
         "parity_check": parity_stats,
+        # NEW: calibration baked into the graph (T baked, thresholds shipped)
+        "calibration": calibration_block,
+        # NEW: training's final test metrics (so deployment knows what to expect)
+        "training_test_metrics": final_summary.get("test_metrics") if final_summary else None,
+        "training_summary": final_summary if final_summary else None,
+        # Variant: this is the fp32 reference. Other variants (fp16/int8) are
+        # listed below if they were exported.
+        "variant": "fp32",
     }
     sidecar.write_text(json.dumps(sidecar_payload, indent=2, default=str))
     print(f"  Sidecar: {sidecar}")
+
+    # Helper: validate a variant against the fp32 reference + write its sidecar
+    def _validate_and_sidecar_variant(variant_path: Path,
+                                       variant_label: str,
+                                       quantization_kwargs: dict) -> None:
+        """Run optional parity check between variant ONNX and fp32 PyTorch
+        wrapper, then write a per-variant sidecar JSON."""
+        variant_parity = {"validated": False}
+        try:
+            import onnxruntime as ort
+        except ImportError:
+            print(f"    [skip {variant_label} validate] onnxruntime not installed.")
+        else:
+            try:
+                # Use a NEW dummy + the same dummy from above for parity
+                with torch.no_grad():
+                    ref = wrapper(dummy).numpy()
+                providers = ["CPUExecutionProvider"]
+                # fp16 ONNX with `keep_io_types=True` runs on CPU with fp32 IO
+                sess_v = ort.InferenceSession(str(variant_path), providers=providers)
+                got_v = sess_v.run(["mask_prob"], {"image": dummy.numpy()})[0]
+                max_abs = float(np.max(np.abs(ref - got_v)))
+                mean_abs = float(np.mean(np.abs(ref - got_v)))
+                # Looser tolerance for quantized variants
+                tol = 5e-2 if variant_label != "fp16" else 1e-2
+                ok_v = max_abs <= tol
+                print(f"    [{variant_label}] abs diff: max={max_abs:.4e}  "
+                      f"mean={mean_abs:.4e}  tol={tol:.0e}  "
+                      f"{'OK' if ok_v else 'WARN'}")
+                variant_parity = {
+                    "validated": True,
+                    "max_abs_diff": max_abs,
+                    "mean_abs_diff": mean_abs,
+                    "tolerance": tol,
+                    "within_tolerance": ok_v,
+                    "validator_provider": providers[0],
+                }
+            except Exception as e:
+                print(f"    [{variant_label}] parity check failed: "
+                      f"{type(e).__name__}: {e}")
+                variant_parity = {"validated": False, "error": str(e)}
+
+        # Per-variant sidecar — same shape as the main one but flags variant + quant
+        variant_sidecar = variant_path.with_suffix(".json")
+        v_payload = {
+            **sidecar_payload,
+            "variant": variant_label,
+            "quantization": quantization_kwargs,
+            "size_mb": round(variant_path.stat().st_size / (1 << 20), 2),
+            "parity_check": variant_parity,
+            "fp32_reference": str(output_path.name),
+        }
+        variant_sidecar.write_text(json.dumps(v_payload, indent=2, default=str))
+        print(f"    Sidecar: {variant_sidecar}")
 
     # fp16 conversion (smaller, GPU-faster on Ampere+ / WebGPU; sweet spot
     # between fp32 and int8 quantization for accuracy/size tradeoff).
@@ -269,6 +387,15 @@ def export_onnx(checkpoint_path: str | Path,
             onnx.save(model_fp16, str(qpath))
             qsize = qpath.stat().st_size / (1 << 20)
             print(f"  fp16: {qsize:.1f} MB ({qsize / size_mb * 100:.0f}% of fp32)")
+            # Per-variant sidecar + parity check (same calibration block as fp32)
+            _validate_and_sidecar_variant(
+                qpath, "fp16",
+                quantization_kwargs={
+                    "method": "onnxconverter_common.float16",
+                    "keep_io_types": True,
+                    "disable_shape_infer": False,
+                },
+            )
 
     # Dynamic int8 quantization (CPU-only, smallest)
     if quantize_dynamic:
@@ -286,6 +413,13 @@ def export_onnx(checkpoint_path: str | Path,
             )
             qsize = qpath.stat().st_size / (1 << 20)
             print(f"  int8: {qsize:.1f} MB ({qsize / size_mb * 100:.0f}% of fp32)")
+            _validate_and_sidecar_variant(
+                qpath, "int8",
+                quantization_kwargs={
+                    "method": "onnxruntime.quantization.quantize_dynamic",
+                    "weight_type": "QUInt8",
+                },
+            )
 
     return output_path
 

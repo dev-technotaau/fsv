@@ -31,6 +31,13 @@ class SegMetricsAccumulator:
     # Per-image accumulators (for class-balanced metrics)
     per_image_iou: list[float] = field(default_factory=list)
     per_image_dice: list[float] = field(default_factory=list)
+    # Per-image background-class IoU (for legacy mIoU comparison with older
+    # training scripts that reported `mean(IoU_bg, IoU_fence)`). Negative-only
+    # images contribute NaN here (no fence union on the bg side either when
+    # everything is bg → IoU_bg = 1.0 trivially). Tracked separately so we
+    # can produce a comparable mIoU to old scripts (e.g., robust_train_v2
+    # reported 0.70 mIoU which corresponds to ~0.40-0.45 fence-only val_iou).
+    per_image_iou_bg: list[float] = field(default_factory=list)
 
     # Per-subcategory accumulators — populated when update() receives a list
     # of subcategory strings alongside probs/targets. Used to surface which
@@ -67,12 +74,22 @@ class SegMetricsAccumulator:
             i_tp = ((p == 1) & (t == 1)).sum().item()
             i_fp = ((p == 1) & (t == 0)).sum().item()
             i_fn = ((p == 0) & (t == 1)).sum().item()
+            i_tn = ((p == 0) & (t == 0)).sum().item()
             denom_iou = i_tp + i_fp + i_fn
             denom_dice = 2 * i_tp + i_fp + i_fn
             iou_i = (i_tp / denom_iou) if denom_iou > 0 else 1.0
             dice_i = (2 * i_tp / denom_dice) if denom_dice > 0 else 1.0
             self.per_image_iou.append(iou_i)
             self.per_image_dice.append(dice_i)
+            # Per-image BACKGROUND IoU for the legacy mIoU compatibility metric.
+            # bg_TP = correctly-bg pixels (= fence_TN), bg_FP = predicted-bg-but-
+            # really-fence (= fence_FN), bg_FN = predicted-fence-but-really-bg
+            # (= fence_FP). Union==0 means the image is all-fence (no bg) AND
+            # the model also predicted all-fence — assign 1.0 (matches the old
+            # script's NaN-then-skipped semantics for fully-saturated images).
+            denom_iou_bg = i_tn + i_fn + i_fp
+            iou_bg_i = (i_tn / denom_iou_bg) if denom_iou_bg > 0 else 1.0
+            self.per_image_iou_bg.append(iou_bg_i)
             # Bucket by subcategory if caller supplied one — same image-level
             # numerators, just collected per group for breakdown reporting.
             if subcategories is not None and i < len(subcategories):
@@ -105,6 +122,7 @@ class SegMetricsAccumulator:
         self.boundary_tp = self.boundary_fp = self.boundary_fn = 0
         self.per_image_iou.clear()
         self.per_image_dice.clear()
+        self.per_image_iou_bg.clear()
         self.per_subcat_iou.clear()
         self.per_subcat_dice.clear()
 
@@ -121,6 +139,28 @@ class SegMetricsAccumulator:
             if self.per_image_iou else 0.0
         per_img_dice_mean = (sum(self.per_image_dice) / len(self.per_image_dice)) \
             if self.per_image_dice else 0.0
+        # ── Legacy-compatible mIoU (matches old robust_train_v2_upgraded.py) ──
+        # Old script: per-batch IoU = mean(IoU_bg, IoU_fence), then averaged
+        # across batches. Negative-only batches → IoU_fence is NaN (dropped),
+        # so mIoU collapses to IoU_bg ≈ 1.0 — flattering. We replicate this
+        # interpretation per-image so headline numbers are comparable to old
+        # runs without any subtle pooling differences.
+        per_image_miou: list[float] = []
+        for fence_iou_i, bg_iou_i in zip(self.per_image_iou,
+                                          self.per_image_iou_bg):
+            # If both are valid (always true in our case — we assign 1.0 on
+            # empty union), take their mean. This is exactly what the old
+            # script did after dropping NaNs (in our setup neither is NaN).
+            per_image_miou.append(0.5 * (fence_iou_i + bg_iou_i))
+        per_img_miou_mean = (sum(per_image_miou) / len(per_image_miou)) \
+            if per_image_miou else 0.0
+        per_img_iou_bg_mean = (sum(self.per_image_iou_bg) / len(self.per_image_iou_bg)) \
+            if self.per_image_iou_bg else 0.0
+        # Dataset-pooled background IoU + pooled mIoU — alternate way some
+        # reference codebases (mmsegmentation default) report it.
+        iou_bg = self.tn / (self.tn + self.fn + self.fp + eps)
+        miou_pooled = 0.5 * (iou + iou_bg)
+
         out = {
             "val_iou":               iou,                     # dataset-pooled IoU
             "val_dice":              dice,
@@ -131,6 +171,18 @@ class SegMetricsAccumulator:
             "val_boundary_iou":      biou,
             "val_per_image_iou":     per_img_iou_mean,        # mean per-image IoU
             "val_per_image_dice":    per_img_dice_mean,
+            # ── Legacy mIoU compatibility (additive, never replaces val_iou) ──
+            # `val_miou_with_bg`     — matches old robust_train_v2 metric:
+            #                          per-image mean(bg_IoU, fence_IoU), then
+            #                          averaged across images. Use this number
+            #                          when comparing to historical mIoU claims.
+            # `val_iou_bg`           — dataset-pooled background-class IoU.
+            # `val_miou_pooled`      — pooled-IoU version: mean(pooled_bg, pooled_fence).
+            # `val_per_image_iou_bg` — per-image bg_IoU mean (for transparency).
+            "val_miou_with_bg":      per_img_miou_mean,
+            "val_iou_bg":            iou_bg,
+            "val_miou_pooled":       miou_pooled,
+            "val_per_image_iou_bg":  per_img_iou_bg_mean,
         }
         # Per-subcategory breakdown (only if any subcategories were provided
         # to update()). Keys are val_iou_<subcat>, val_dice_<subcat>,

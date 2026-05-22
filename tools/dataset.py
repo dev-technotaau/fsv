@@ -100,13 +100,35 @@ REVIEW_SOURCE_WEIGHTS: dict[str, float] = {
 # I/O helpers
 # ══════════════════════════════════════════════════════════════════════
 
+_PATH_KEYS_TO_NORMALIZE = ("path", "mask_path", "image_path", "source_path")
+
+
 def load_jsonl(path: str | Path) -> list[dict]:
+    """Load a JSONL file, normalizing common path fields for cross-OS use.
+
+    JSONLs may be regenerated on either Windows (backslash separators) or
+    Linux (forward slash). Linux PIL / Path treat `\\` as a literal char in
+    a filename, so a Windows-produced JSONL like
+        {"path": "dataset\\images\\fence_001.jpg"}
+    would silently fail on a Linux training box. We normalize at the loader
+    so every downstream consumer (FenceDataset, verify_split_integrity,
+    build_*.py tools, scan_pii.py, etc.) gets clean POSIX-style paths
+    without each having to remember.
+    """
     rows: list[dict] = []
     with Path(path).open("r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
-            if line:
-                rows.append(json.loads(line))
+            if not line:
+                continue
+            row = json.loads(line)
+            # Normalize backslashes -> forward slashes on known path fields.
+            # Only touch string values; leave None / int / etc. alone.
+            for k in _PATH_KEYS_TO_NORMALIZE:
+                v = row.get(k)
+                if isinstance(v, str) and "\\" in v:
+                    row[k] = v.replace("\\", "/")
+            rows.append(row)
     return rows
 
 
@@ -134,6 +156,13 @@ class FenceDataset(Dataset):
                                   on REVIEW_SOURCE_WEIGHTS. Use to down-weight
                                   auto-processed samples in your loss.
         custom_weights:          Override REVIEW_SOURCE_WEIGHTS dict.
+        min_fence_pixels_for_pos: If > 0, drop 'pos'-class samples whose mask
+                                  has fewer than N fence pixels (val=1). Use
+                                  100 to drop the SAM2 auto-accepted near-zero-
+                                  signal samples discovered in audit (~1% of
+                                  pos in train, ~0.5% in train_hq). Ignored
+                                  for val/test splits — passing 0 (default)
+                                  preserves backward compatibility.
 
     Returns dict per sample:
         image:         (3, H, W) FloatTensor (after Normalize + ToTensorV2)
@@ -150,11 +179,42 @@ class FenceDataset(Dataset):
         weight_by_review_source: bool = False,
         custom_weights: Optional[dict[str, float]] = None,
         max_load_retries: int = 5,
+        min_fence_pixels_for_pos: int = 0,
     ) -> None:
         self.img_jsonl = Path(img_jsonl)
         self.mask_jsonl = Path(mask_jsonl)
         self.img_rows = load_jsonl(self.img_jsonl)
         self.masks: dict[str, dict] = {r["id"]: r for r in load_jsonl(self.mask_jsonl)}
+
+        # Optional: filter pos samples with near-zero fence coverage. These
+        # are SAM2 auto-accepts where the fence is ~99% occluded — they
+        # carry ~no learning signal. Audit (2026-05-14) found 103 such
+        # samples in train (1.1% of pos) and 29 in train_hq (0.5%).
+        if int(min_fence_pixels_for_pos) > 0:
+            min_px = int(min_fence_pixels_for_pos)
+            n_before = len(self.img_rows)
+            kept = []
+            dropped = 0
+            for r in self.img_rows:
+                if r.get("class") != "pos":
+                    kept.append(r)
+                    continue
+                m = self.masks.get(r["id"])
+                if m is None:
+                    kept.append(r)
+                    continue
+                fpc = int(m.get("fence_pixel_count", 0))
+                if fpc >= min_px:
+                    kept.append(r)
+                else:
+                    dropped += 1
+            self.img_rows = kept
+            if dropped > 0:
+                print(
+                    f"[FenceDataset] {self.img_jsonl.name}: dropped "
+                    f"{dropped}/{n_before} 'pos' samples with "
+                    f"fence_pixel_count < {min_px} (near-zero learning signal)"
+                )
 
         # Validate every image has a mask row (fail fast)
         missing = [r["id"] for r in self.img_rows if r["id"] not in self.masks]
@@ -185,12 +245,19 @@ class FenceDataset(Dataset):
         img_row = self.img_rows[idx]
         m = self.masks[img_row["id"]]
 
+        # Defensive path normalization: JSONLs may be regenerated on Windows
+        # with `\\` separators that fail on Linux PIL. Normalizing here is a
+        # zero-cost guard so the loader works regardless of which OS produced
+        # the splits.
+        img_path = str(img_row["path"]).replace("\\", "/")
+        mask_path = str(m["mask_path"]).replace("\\", "/")
+
         # PIL -> numpy uint8 RGB (albumentations expects HWC RGB).
         # Use context managers so file handles are released promptly even when
         # workers raise — avoids exhausting the OS handle quota over long runs.
-        with Image.open(img_row["path"]) as _im:
+        with Image.open(img_path) as _im:
             image = np.array(_im.convert("RGB"))
-        with Image.open(m["mask_path"]) as _mk:
+        with Image.open(mask_path) as _mk:
             mask = np.array(_mk)
         if mask.ndim == 3:
             mask = mask[..., 0]   # safety: any unexpected RGB mask -> grayscale
@@ -307,7 +374,77 @@ class FenceDataset(Dataset):
 # Augmentation pipelines
 # ══════════════════════════════════════════════════════════════════════
 
-def phase1_train_aug(image_size: int = 512) -> A.Compose:
+def randaugment_block(n: int = 2, m: int = 10) -> A.BasicTransform:
+    """RandAugment-style photometric policy (Cubuk et al., NeurIPS 2020).
+
+    Randomly picks `n` transforms from a pool of color/contrast/sharpness
+    operations and applies each at a magnitude controlled by `m` (0-30).
+    The pool is photometric ONLY — geometric ops live elsewhere in the
+    Albumentations pipeline so they remain in lockstep with the mask.
+
+    Returns an Albumentations `A.SomeOf` transform you can drop into any
+    Compose. With `n=2, m=10` (the published sweet spot) this adds ~+0.3-0.8%
+    IoU on top of a hand-tuned photometric augmentation set.
+
+    Args:
+        n: number of transforms applied per sample (1-5 sensible).
+        m: magnitude 0-30. Larger = more aggressive. 10 is the recommended
+            default for segmentation tasks.
+    """
+    n = max(1, int(n))
+    # Magnitude in [0, 30] → fraction in [0, 1] for transforms that accept ranges
+    mag = max(0.0, min(30.0, float(m))) / 30.0
+    pool: list[A.BasicTransform] = [
+        # ── Brightness / contrast / exposure ────────────────────────────
+        A.RandomBrightnessContrast(
+            brightness_limit=0.10 + 0.45 * mag,
+            contrast_limit=0.10 + 0.45 * mag,
+            p=1.0,
+        ),
+        A.RandomGamma(
+            gamma_limit=(int(100 - 50 * mag), int(100 + 50 * mag)),
+            p=1.0,
+        ),
+        # ── Color / saturation / hue ────────────────────────────────────
+        A.HueSaturationValue(
+            hue_shift_limit=int(8 + 30 * mag),
+            sat_shift_limit=int(15 + 50 * mag),
+            val_shift_limit=int(10 + 35 * mag),
+            p=1.0,
+        ),
+        A.ColorJitter(
+            brightness=0.10 + 0.40 * mag,
+            contrast=0.10 + 0.40 * mag,
+            saturation=0.10 + 0.40 * mag,
+            hue=0.04 + 0.16 * mag,
+            p=1.0,
+        ),
+        # ── Tonemapping / curve ─────────────────────────────────────────
+        A.RandomToneCurve(scale=0.05 + 0.30 * mag, p=1.0),
+        A.CLAHE(clip_limit=(1.0, 1.0 + 5.0 * mag),
+                  tile_grid_size=(8, 8), p=1.0),
+        # ── Sharpness / detail ──────────────────────────────────────────
+        A.Sharpen(alpha=(0.10, 0.10 + 0.40 * mag),
+                    lightness=(0.50, 1.0), p=1.0),
+        A.Equalize(mode="cv", by_channels=True, p=1.0),
+        # ── Posterize / Solarize (extreme tonal ops; use sparingly) ─────
+        A.Posterize(num_bits=(max(3, int(8 - 4 * mag)), 8), p=1.0),
+        A.Solarize(threshold_range=(1.0 - 0.5 * mag, 1.0), p=1.0),
+    ]
+    # `A.SomeOf` picks `n` from the list (without replacement by default)
+    # and applies them with probability 1.0 inside the block. The OUTER
+    # probability is left to the caller via `p=` on the result.
+    try:
+        return A.SomeOf(transforms=pool, n=n, replace=False, p=1.0)
+    except (TypeError, AttributeError):
+        # Older albumentations versions: fall back to OneOf (1 transform)
+        return A.OneOf(transforms=pool, p=1.0)
+
+
+def phase1_train_aug(image_size: int = 512,
+                      use_randaugment: bool = False,
+                      randaugment_n: int = 2,
+                      randaugment_m: int = 10) -> A.Compose:
     """Strong augmentation for Phase 1 training at 512x512.
 
     Targeted scenarios (per the project's deployment requirements):
@@ -347,6 +484,14 @@ def phase1_train_aug(image_size: int = 512) -> A.Compose:
                        border_mode=2, p=1.0),
         BoundaryAwareCrop(image_size, image_size, boundary_p=0.85, p=1.0),
     ])
+
+    # RandAugment block (photometric only) — applied AFTER the hand-tuned
+    # color/contrast OneOf so it stacks with our existing photometric aug.
+    # Wrapped by the caller-provided probability so it can be turned off
+    # entirely without changing the rest of the pipeline.
+    ra_block: list[A.BasicTransform] = []
+    if use_randaugment:
+        ra_block.append(randaugment_block(n=randaugment_n, m=randaugment_m))
 
     return A.Compose([
         # ── DISTANCE SCALING (far vs close fence + BOUNDARY FOCUS) ───
@@ -429,6 +574,9 @@ def phase1_train_aug(image_size: int = 512) -> A.Compose:
             fill_mask=0,
             p=0.4,                                                   # was 0.3
         ),
+
+        # ── RANDAUGMENT (optional photometric policy, opt-in) ────────
+        *ra_block,
 
         # ── FINAL: normalize + tensor ────────────────────────────────
         A.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
@@ -919,11 +1067,23 @@ def phase1_val_aug(image_size: int = 512) -> A.Compose:
     ])
 
 
-def phase2_train_aug(image_size: int = 1024) -> A.Compose:
+def phase2_train_aug(image_size: int = 1024,
+                      use_randaugment: bool = False,
+                      randaugment_n: int = 2,
+                      randaugment_m: int = 6) -> A.Compose:
     """Moderately augmented Phase 2 fine-tuning at 1024x1024.
     Still much gentler than phase 1 (we want fine-detail preservation), but
     bumped slightly: stronger crop range, more color, mild lighting/noise/JPEG
-    so the FT phase doesn't just memorize the HQ subset."""
+    so the FT phase doesn't just memorize the HQ subset.
+
+    `use_randaugment`: opt-in photometric policy. At phase 2 we default the
+    magnitude `m` lower (6 vs phase 1's 10) — fine-tuning shouldn't blow up
+    color distribution as aggressively.
+    """
+    ra_block: list[A.BasicTransform] = []
+    if use_randaugment:
+        ra_block.append(randaugment_block(n=randaugment_n, m=randaugment_m))
+
     return A.Compose([
         A.RandomResizedCrop(size=(image_size, image_size),
                              scale=(0.75, 1.0), ratio=(0.80, 1.25), p=1.0),  # was (0.85, 1.0)
@@ -947,6 +1107,7 @@ def phase2_train_aug(image_size: int = 1024) -> A.Compose:
         ], p=0.15),                                                             # was 0.1 only Gaussian
         A.GaussNoise(std_range=(0.02, 0.10), p=0.15),                           # NEW
         A.ImageCompression(quality_range=(70, 100), p=0.2),                     # NEW
+        *ra_block,
         A.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
         ToTensorV2(),
     ])
@@ -1087,6 +1248,32 @@ def verify_split_integrity(
                     f"ID overlap {a} <-> {b}: {len(ov)} ids "
                     f"(first 5: {list(ov)[:5]})"
                 )
+
+    # Cross-PHASE overlap (HQ-vs-non-HQ). phase 2 fine-tunes from phase 1
+    # weights — if phase 2's val_hq / test_hq overlaps phase 1's train, then
+    # phase 2 val/test metrics are inflated (model already saw those images
+    # in phase 1). Phase 2 train_hq IS expected to be a subset of phase 1
+    # train (that's the design — HQ is a manual-review subset), so we ONLY
+    # check the val_hq/test_hq splits.
+    cross_phase_pairs = [
+        ("train", "val_hq"),
+        ("train", "test_hq"),
+    ]
+    for a, b in cross_phase_pairs:
+        if a in img_id_sets and b in img_id_sets:
+            ov = img_id_sets[a] & img_id_sets[b]
+            if ov:
+                # WARN rather than abort — depending on dataset preparation, a
+                # small intentional overlap may be deliberate. But raise the
+                # alarm loudly so it's caught at split-build time, not after
+                # a 5-day training run posts a too-good-to-be-true number.
+                print(
+                    f"  WARNING: cross-phase overlap {a} ∩ {b}: {len(ov)} ids "
+                    f"(first 5: {list(ov)[:5]}). Phase-2 metrics on {b} will "
+                    f"be INFLATED — the model already saw these images in {a}.",
+                    file=sys.stderr, flush=True,
+                )
+                summary.setdefault("cross_phase_overlap", {})[f"{a}__{b}"] = len(ov)
 
     return summary
 

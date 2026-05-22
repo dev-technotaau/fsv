@@ -34,6 +34,7 @@ from typing import Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint as _ckpt_fn
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -179,7 +180,8 @@ class DinoBackbone(nn.Module):
     def enable_gradient_checkpointing(self) -> bool:
         """Activate HF's built-in gradient checkpointing on the backbone.
         Halves activation memory for the backbone at ~25% slower bwd. Critical
-        for training H+ at 1024px. Returns True on success."""
+        for training large ViTs (e.g. DINOv3-L/H+) at 1024px. Returns True on
+        success."""
         try:
             self.model.gradient_checkpointing_enable()
             return True
@@ -288,11 +290,12 @@ class DinoBackboneWithAdapter(nn.Module):
         'cls':         (B, C)              CLS token  | None if disabled
         'registers':   (B, R, C)           register tokens  | None if R==0
 
-    Backbone weights are KEPT (still pretrained DINOv3-H+, still fine-tuned).
-    The SPM + interaction modules are NEW (random init, learn from scratch).
+    Backbone weights are KEPT (whatever DINOv3 variant the config selected:
+    L/H+/etc.). The SPM + interaction modules are NEW (random init, learn
+    from scratch).
     """
 
-    def __init__(self, name: str = "facebook/dinov3-vith16plus-pretrain-lvd1689m",
+    def __init__(self, name: str = "facebook/dinov3-vitl16-pretrain-lvd1689m",
                  freeze_first_n_layers: int = 0,
                  drop_path_rate: float = 0.1,
                  multi_block_n: int = 4,
@@ -341,7 +344,7 @@ class DinoBackboneWithAdapter(nn.Module):
                                         inplanes=adapter_inplanes)
 
         # Locate the encoder's transformer-block ModuleList. The HF DINOv3 model
-        # stores them under `m.model.layer` (32 blocks for H+).
+        # stores them under `m.model.layer` (24 for ViT-L, 32 for H+, etc.).
         self._n_blocks = len(self._encoder_layers())
         if adapter_n_interactions < 1 or adapter_n_interactions > self._n_blocks:
             raise ValueError(
@@ -515,7 +518,7 @@ class DinoBackboneWithAdapter(nn.Module):
 
         return {
             # Multi-scale pyramid output for the downstream pixel decoder.
-            # Channels: all `self.dim` (1280 for H+).
+            # Channels: all `self.dim` (1024 for ViT-L, 1280 for H+).
             "multi_scale": {
                 "res2": c1,         # stride 4
                 "res3": c2_ref,     # stride 8
@@ -1409,6 +1412,11 @@ class FenceSegmentationModel(nn.Module):
     def __init__(self, model_cfg) -> None:
         super().__init__()
         self.cfg = model_cfg
+        # Extended gradient checkpointing flag — set True by enable_gradient_checkpointing().
+        # When True (and self.training), pixel_decoder + transformer_decoder + each
+        # refinement iteration are wrapped in torch.utils.checkpoint to drop their
+        # activations. Trades ~10-25% slower steps for ~5-15 GB peak memory savings.
+        self._extra_checkpointing = False
         # Backbone — DinoBackbone OR DinoBackboneWithAdapter depending on config.
         # When use_vit_adapter=True, the backbone produces a ready multi-scale
         # pyramid {res2, res3, res4, res5} via ViT-Adapter and we BYPASS ViTToFPN.
@@ -1654,7 +1662,7 @@ class FenceSegmentationModel(nn.Module):
         # 3. Pixel decoder
         #    - "fpn":      returns a single (B, C, H/4, W/4) high-res tensor
         #    - "msdeform": returns dict with enhanced res2/res3/res4/res5
-        pd_out = self.pixel_decoder(fpn)
+        pd_out = self._ckpt_run(self.pixel_decoder, fpn)
         if self._pixel_decoder_type == "msdeform":
             # Use enhanced features for both transformer-decoder memory AND
             # high-res pixel features.
@@ -1678,8 +1686,8 @@ class FenceSegmentationModel(nn.Module):
                 global_tokens = self.global_token_proj(gt_bb)     # (B, G, C_dec)
 
         # 5. Transformer decoder — returns final mask + per-layer aux masks
-        coarse_logits, class_scores, aux_layer_logits = self.transformer_decoder(
-            ms, pix, global_tokens=global_tokens,
+        coarse_logits, class_scores, aux_layer_logits = self._ckpt_run(
+            self.transformer_decoder, ms, pix, global_tokens=global_tokens,
         )
 
         # Upsample coarse + aux logits to input resolution
@@ -1699,26 +1707,38 @@ class FenceSegmentationModel(nn.Module):
         # 6. Optional refinement head — with decoder feature injection (A),
         #    edge head (B), iterative refinement (C), y-coord cue, depth cue.
         if self.refinement is not None:
+            # The coarse mask is converted to prob with no_grad — detached so
+            # refinement gradients DON'T flow back into the M2F decoder
+            # (intentional design — keeps decoder + refinement decoupled).
             with torch.no_grad():
-                # Detach coarse so refinement gradients don't flow back into
-                # the main decoder. Same property for the decoder features.
                 coarse_prob = torch.sigmoid(coarse_logits_up).detach()
-                extra_parts: list[torch.Tensor] = []
-                if self.refinement_feature_proj is not None:
-                    # Project decoder dim -> compact K, detach, upsample to image res.
-                    extras_lo = self.refinement_feature_proj(pix.detach())
-                    extra_parts.append(F.interpolate(
-                        extras_lo, size=(H, W),
-                        mode="bilinear", align_corners=False,
-                    ))
+
+            # IMPORTANT: refinement_feature_proj is a LEARNABLE 1x1 conv. It
+            # was previously called inside the `with torch.no_grad():` block
+            # above, which silently froze its parameters (they were random-
+            # initialized at start and only weight-decay touched them). We
+            # call it OUTSIDE no_grad on `pix.detach()` — detached input keeps
+            # the "no gradients into the main decoder" property, but the
+            # projection itself now learns from refinement loss.
+            extra_parts: list[torch.Tensor] = []
+            if self.refinement_feature_proj is not None:
+                extras_lo = self.refinement_feature_proj(pix.detach())
+                extra_parts.append(F.interpolate(
+                    extras_lo, size=(H, W),
+                    mode="bilinear", align_corners=False,
+                ))
+            # y-coord + depth cues need no gradient — they're constants /
+            # frozen teacher outputs. Building under no_grad saves a small
+            # amount of autograd bookkeeping.
+            with torch.no_grad():
                 if self.refinement_use_y_coord:
                     extra_parts.append(self._build_y_coord(
                         B, H, W, image.device, image.dtype,
                     ))
                 if self.refinement_use_depth and self.depth_model is not None:
                     extra_parts.append(self._compute_depth(image))
-                extras = (torch.cat(extra_parts, dim=1)
-                          if extra_parts else None)
+            extras = (torch.cat(extra_parts, dim=1)
+                      if extra_parts else None)
 
             current = coarse_prob
             iter_logits: list[torch.Tensor] = []
@@ -1728,8 +1748,8 @@ class FenceSegmentationModel(nn.Module):
             dist_last: Optional[torch.Tensor] = None
             for it in range(self.refinement_iterations):
                 (refined_logits, edge_logits, fds_aux,
-                 cgm_logit, dist_logits) = self.refinement(
-                    image, current, extras=extras,
+                 cgm_logit, dist_logits) = self._ckpt_run(
+                    self.refinement, image, current, extras=extras,
                 )
                 iter_logits.append(refined_logits)
                 edge_last = edge_logits
@@ -1752,10 +1772,17 @@ class FenceSegmentationModel(nn.Module):
         return outputs
 
     def inference(self, image: torch.Tensor, use_refined: bool = True) -> torch.Tensor:
-        """Inference helper: returns the final mask probabilities (B, 1, H, W)."""
+        """Inference helper: returns the final mask probabilities (B, 1, H, W).
+
+        Logits are CAST TO fp32 before sigmoid for numerical hygiene: under
+        bf16 autocast, post-CGM-gating logits can hit large negative values
+        where bf16's 7-bit mantissa quantizes sigmoid output. fp32 sigmoid
+        on a possibly-bf16 logit costs nothing and keeps threshold
+        comparisons (e.g. 0.5) stable across precision modes.
+        """
         out = self.forward(image)
         logits = out.refined_logits if (use_refined and out.refined_logits is not None) else out.mask_logits
-        return torch.sigmoid(logits)
+        return torch.sigmoid(logits.float())
 
     @property
     def patch_size(self) -> int:
@@ -1764,7 +1791,42 @@ class FenceSegmentationModel(nn.Module):
         return int(getattr(self.backbone, "patch_size", 14))
 
     def enable_gradient_checkpointing(self) -> bool:
+        # Also enable extended checkpointing on pixel_decoder + transformer_decoder
+        # + refinement iterations (see _ckpt_run + forward()).
+        self._extra_checkpointing = True
         return self.backbone.enable_gradient_checkpointing()
+
+    def train(self, mode: bool = True):
+        """Override nn.Module.train() to ALWAYS keep the DPT depth model in
+        eval() mode, even when the parent flips into train mode.
+
+        Why: depth_model is a frozen teacher (requires_grad=False), but the
+        default `super().train()` recursively flips ALL submodules into
+        train mode — including any BatchNorm / Dropout layers inside DPT.
+        BatchNorm updates its running_mean / running_var on every forward
+        in train mode REGARDLESS of `requires_grad`. Over a 5-day training
+        run that drift silently degrades depth predictions and, downstream,
+        the boundary quality of the refinement head.
+
+        We call super().train(mode) first (so the rest of the network gets
+        the requested mode) and then snap depth_model back to eval(). No-op
+        when depth_model is None (refinement_use_depth=False).
+        """
+        super().train(mode)
+        if getattr(self, "depth_model", None) is not None:
+            self.depth_model.eval()
+        return self
+
+    def _ckpt_run(self, fn, *args, **kwargs):
+        """Wrap fn(*args, **kwargs) in checkpoint when training + extra checkpointing on.
+
+        Uses use_reentrant=False which supports arbitrary input types (dict, list,
+        None, tensors) and forwards positional + keyword args to fn. Autograd
+        traces gradients through tensors nested in containers automatically.
+        """
+        if self._extra_checkpointing and self.training:
+            return _ckpt_fn(fn, *args, use_reentrant=False, **kwargs)
+        return fn(*args, **kwargs)
 
 
 def build_model(model_cfg) -> FenceSegmentationModel:

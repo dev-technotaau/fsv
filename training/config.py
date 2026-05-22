@@ -272,6 +272,23 @@ class TrainConfig:
     cutmix_p: float = 0.3
     cutmix_alpha: float = 1.0
 
+    # Mosaic augmentation (YOLO-style 4-way mix). For each triggered sample,
+    # combine current sample + 3 randomly-picked OTHER batch samples into one
+    # 4-quadrant mosaic. Image AND mask AND CGM metadata are stitched in
+    # lockstep. Exposes the model to 4 different scene contexts per step —
+    # complements CutMix (which is 2-way) by also varying surrounding context.
+    # 0 = disabled, 0.10-0.25 = typical (combined with cutmix_p, total aug
+    # frequency ~50%).
+    mosaic_p: float = 0.0
+
+    # RandAugment-style photometric policy (Cubuk et al., NeurIPS 2020). Per
+    # sample, pick N transforms at random from a pool of color/contrast ops,
+    # each at a magnitude in [0, 30]. Diversifies the photometric domain beyond
+    # the hand-tuned Albumentations OneOf blocks. Wired in tools/dataset.py.
+    use_randaugment: bool = False
+    randaugment_n: int = 2          # number of transforms to apply per sample
+    randaugment_m: int = 10         # magnitude 0-30; ~10 is the published sweet spot
+
     # Class-balanced sampling (WeightedRandomSampler over the train split).
     # Boosts rare/hard subcategories (e.g. neg_shutter_blind, style_cedar)
     # so the model sees them roughly proportional to (1/freq)^alpha rather
@@ -298,6 +315,12 @@ class TrainConfig:
     use_tta: bool = False
     tta_scales: tuple[float, ...] = (1.0,)
     tta_flip: bool = False
+    # Photometric TTA (additive to geometric TTA above). For each pass, also
+    # average over brightness/contrast/gamma perturbations. Captures lighting
+    # robustness that scale+flip can't simulate. Cost: +N forwards per image.
+    tta_photometric: bool = False
+    tta_photometric_brightness: tuple[float, ...] = (-0.10, 0.10)   # delta to [0,1] image
+    tta_photometric_gamma: tuple[float, ...] = (0.9, 1.1)            # multiplicative on logits via gamma
     # Force TTA ON for the FINAL post-training test-set evaluation
     # (regardless of `use_tta`). Per-epoch val still respects `use_tta`
     # (TTA at val is slow and we don't need it during training).
@@ -322,6 +345,12 @@ class DataConfig:
     train_split: str = "train"             # phase2 sets this to 'train_hq'
     val_split: str = "val"                 # phase2 sets this to 'val_hq'
     test_split: str = "test"               # phase2 sets this to 'test_hq'
+    # Optional: drop 'pos'-class TRAIN samples whose mask has fewer than N
+    # fence pixels. Targets the SAM2 near-zero-signal samples found in audit
+    # (~1% of train pos, ~0.5% of train_hq pos). 0 = disabled (keep all).
+    # Only applies to TRAIN split — val/test always keep every sample so
+    # reported metrics are honest against the full evaluation set.
+    min_fence_pixels_for_pos: int = 0
 
 
 @dataclass
@@ -362,6 +391,41 @@ class PostProcessConfig:
     cc_min_blob_area: int = 200             # drop blobs smaller than N pixels
     cc_fill_holes_smaller_than: int = 0     # 0 = preserve picket gaps; raise to fill
     cc_keep_top_k_blobs: int = 0            # 0 = unlimited; e.g. 5 = up to 5 fence regions
+    # Binarize threshold applied to the sigmoid probability map at the FINAL
+    # stage (or before DenseCRF as the soft unary). Default 0.5 matches the
+    # training-time `SegMetricsAccumulator` threshold. Lower (0.3-0.45) for
+    # thin-structure recall (chain-link, wrought-iron); higher (0.55-0.65)
+    # for cleaner precision on cedar/vinyl with many look-alike negatives.
+    binarize_threshold: float = 0.5
+
+    # Temperature scaling — divides logits by `temperature` before sigmoid to
+    # correct over-confident model output. 1.0 = no scaling. Fit on val set
+    # via `training.calibration.fit_temperature` AFTER training; stored in
+    # checkpoint meta + applied at inference. Improves calibration (Expected
+    # Calibration Error drops ~5x) and slightly improves IoU via better
+    # thresholding decisions.
+    temperature: float = 1.0
+    # If True, after training fits temperature on val set and saves the value
+    # back into the checkpoint's meta. At inference the model's sigmoid input
+    # is divided by this value.
+    fit_temperature_on_finish: bool = True
+
+    # Per-subcategory threshold tuning. After training, sweep thresholds on val
+    # per subcategory and pick the argmax-IoU value per bucket. Stored as a
+    # dict {subcategory: threshold} in checkpoint meta. At inference, the
+    # lookup is by `metadata.subcategory`; falls back to `binarize_threshold`
+    # if subcategory is missing or unknown.
+    # Different fence types have different precision/recall sweet spots:
+    #   - cedar / vinyl (thick, clean): higher threshold (~0.55-0.65)
+    #   - chain-link / wrought-iron (thin): lower threshold (~0.30-0.40)
+    per_subcategory_thresholds: bool = True
+    # Search grid for per-subcategory threshold sweep
+    threshold_sweep_min: float = 0.20
+    threshold_sweep_max: float = 0.80
+    threshold_sweep_step: float = 0.025
+    # Minimum samples per subcategory to do a per-bucket sweep (avoid
+    # over-fitting threshold on tiny buckets).
+    threshold_sweep_min_count: int = 20
 
 
 @dataclass
@@ -452,6 +516,20 @@ def _asdict_safe(obj: Any) -> Any:
 def _from_dict(cls, data: dict) -> Any:
     if not dataclasses.is_dataclass(cls):
         return data
+    # Strict-unknown-keys check: any YAML key that doesn't correspond to a
+    # dataclass field is a typo we MUST surface (e.g. `pos_weights: 3.0`
+    # silently using the default `pos_weight=None` would re-enable auto pos
+    # weight computation → blob-bias regression). We raise instead of warn
+    # so the typo can't slip past a $500 training run.
+    known = {f.name for f in fields(cls)}
+    if isinstance(data, dict):
+        unknown = [k for k in data.keys() if k not in known]
+        if unknown:
+            raise ValueError(
+                f"Unknown YAML key(s) for {cls.__name__}: {unknown}. "
+                f"Allowed: {sorted(known)}. "
+                f"Fix the YAML — silent defaults can corrupt a multi-day run."
+            )
     kwargs: dict[str, Any] = {}
     for f in fields(cls):
         if f.name in data:

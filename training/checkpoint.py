@@ -199,6 +199,45 @@ class CheckpointManager:
                     pass
         return out
 
+    @staticmethod
+    def update_extra(path: str | Path,
+                       updates: dict,
+                       in_meta: bool = False) -> bool:
+        """Atomic in-place update of a checkpoint's `extra` (or `meta`) dict.
+
+        Loads the checkpoint, deep-merges `updates` into payload['extra']
+        (or payload['meta'] if in_meta=True), writes back atomically.
+
+        Used to propagate POST-training info (final calibration, test metrics,
+        runtime stats, completion timestamp) into ALREADY-saved checkpoints
+        without re-saving the whole model+optimizer state. Idempotent.
+
+        Returns True on success, False if the file doesn't exist.
+        """
+        p = Path(path)
+        if not p.exists():
+            return False
+        try:
+            payload = torch.load(p, map_location="cpu", weights_only=False)
+        except Exception:
+            return False
+        target_key = "meta" if in_meta else "extra"
+        existing = payload.get(target_key) or {}
+        if not isinstance(existing, dict):
+            existing = {}
+        existing.update(updates)
+        payload[target_key] = existing
+        tmp = p.with_suffix(p.suffix + ".tmp")
+        torch.save(payload, tmp)
+        if p.exists():
+            try:
+                import os
+                os.chmod(p, 0o644)
+            except OSError:
+                pass
+        tmp.replace(p)
+        return True
+
     # ── Load ─────────────────────────────────────────────────────────
 
     @staticmethod
@@ -209,46 +248,90 @@ class CheckpointManager:
              scaler: Optional[Any] = None,
              ema: Optional[Any] = None,
              strict: bool = True,
-             map_location: str = "cpu") -> dict:
+             map_location: str = "cpu",
+             logger: Optional[Any] = None,
+             restore_rng: bool = True,
+             missing_key_abort_ratio: Optional[float] = None) -> dict:
         """Load checkpoint and restore the provided components in-place.
-        Returns the raw payload dict so caller can extract `state` etc."""
+        Returns the raw payload dict so caller can extract `state` etc.
+
+        Args:
+            logger: if provided, all warnings are routed through it at
+                WARNING level (so they hit the run log file, not just stdout).
+            restore_rng: if False, RNG state in the checkpoint is IGNORED.
+                Set False when this load is for `init_from` (Phase 2 starting
+                from Phase 1 best.pt) so phase 2's own seed is respected.
+            missing_key_abort_ratio: if set, abort when
+                (missing + unexpected) / total_params > this ratio. Use to
+                fail-loud on phase1↔phase2 architecture drift instead of
+                silently random-initializing big chunks of the model.
+        """
+        def _warn(msg: str) -> None:
+            if logger is not None:
+                try:
+                    logger.warning(msg)
+                    return
+                except Exception:
+                    pass
+            print(msg)
+
         path = Path(path)
         payload = torch.load(path, map_location=map_location, weights_only=False)
         if model is not None and "model" in payload:
             missing, unexpected = model.load_state_dict(payload["model"], strict=strict)
             if not strict:
-                if missing:
-                    print(f"[ckpt] missing keys: {len(missing)} (first 3: {missing[:3]})")
-                if unexpected:
-                    print(f"[ckpt] unexpected keys: {len(unexpected)} (first 3: {unexpected[:3]})")
+                total_params = sum(1 for _ in model.state_dict().keys())
+                miss_n = len(missing) if missing is not None else 0
+                unex_n = len(unexpected) if unexpected is not None else 0
+                if miss_n:
+                    _warn(
+                        f"[ckpt] {path.name}: MISSING {miss_n}/{total_params} "
+                        f"state_dict keys (first 5: {list(missing)[:5]})"
+                    )
+                if unex_n:
+                    _warn(
+                        f"[ckpt] {path.name}: UNEXPECTED {unex_n} keys "
+                        f"(first 5: {list(unexpected)[:5]})"
+                    )
+                if missing_key_abort_ratio is not None and total_params > 0:
+                    bad_ratio = (miss_n + unex_n) / float(total_params)
+                    if bad_ratio > float(missing_key_abort_ratio):
+                        raise RuntimeError(
+                            f"[ckpt] {path.name}: {miss_n} missing + {unex_n} "
+                            f"unexpected keys ({bad_ratio*100:.1f}% of "
+                            f"{total_params}) exceeds the abort threshold "
+                            f"{missing_key_abort_ratio*100:.1f}%. "
+                            f"Phase1↔Phase2 architecture mismatch suspected — "
+                            f"refusing to silently init from a wrong checkpoint."
+                        )
         if optimizer is not None and "optimizer" in payload:
             try:
                 optimizer.load_state_dict(payload["optimizer"])
             except (ValueError, KeyError) as e:
-                print(f"[ckpt] WARN: could not restore optimizer state: {e}")
+                _warn(f"[ckpt] WARN: could not restore optimizer state: {e}")
         if scheduler is not None and "scheduler" in payload:
             try:
                 scheduler.load_state_dict(payload["scheduler"])
             except Exception as e:
-                print(f"[ckpt] WARN: could not restore scheduler state: {e}")
+                _warn(f"[ckpt] WARN: could not restore scheduler state: {e}")
         if scaler is not None and "scaler" in payload:
             try:
                 scaler.load_state_dict(payload["scaler"])
             except Exception as e:
-                print(f"[ckpt] WARN: could not restore scaler state: {e}")
+                _warn(f"[ckpt] WARN: could not restore scaler state: {e}")
         if ema is not None and "ema" in payload:
             try:
                 ema.load_state_dict(payload["ema"])
             except Exception as e:
-                print(f"[ckpt] WARN: could not restore EMA state: {e}")
-        if "rng" in payload:
+                _warn(f"[ckpt] WARN: could not restore EMA state: {e}")
+        if restore_rng and "rng" in payload:
             try:
                 torch.set_rng_state(payload["rng"]["torch"])
                 if (payload["rng"].get("torch_cuda") is not None
                         and torch.cuda.is_available()):
                     torch.cuda.set_rng_state_all(payload["rng"]["torch_cuda"])
             except Exception as e:
-                print(f"[ckpt] WARN: could not restore RNG state: {e}")
+                _warn(f"[ckpt] WARN: could not restore RNG state: {e}")
         return payload
 
 

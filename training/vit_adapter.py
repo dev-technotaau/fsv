@@ -252,8 +252,13 @@ class SpatialPriorModule(nn.Module):
     Final 1x1 projections to embed_dim.
     """
 
-    def __init__(self, in_channels: int = 3, embed_dim: int = 1280,
+    def __init__(self, in_channels: int = 3, embed_dim: int = 1024,
                  inplanes: int = 64) -> None:
+        # Note: this default (1024) matches DINOv3 ViT-L. Other backbones
+        # (DINOv3-H+=1280, DINOv2-large=1024, etc.) ALWAYS override this
+        # explicitly via the call site (DinoBackboneWithAdapter passes
+        # `embed_dim=self.dim`). Default is only used for standalone unit
+        # tests of this module.
         super().__init__()
         # Stem: image → stride 4
         self.stem = nn.Sequential(

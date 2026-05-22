@@ -73,6 +73,16 @@ import math
 import random
 import sys
 import time
+
+# Force UTF-8 stdout/stderr on Windows so emoji-containing log lines from
+# torch.onnx, transformers, etc. don't crash with UnicodeEncodeError under
+# the default cp1252 codepage. No-op on Linux/macOS.
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except (AttributeError, OSError):
+        pass
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
@@ -779,6 +789,16 @@ def train(cfg: TrainingConfig) -> int:
                  f"(LR range {param_groups[-1]['lr']:.2e} .. {param_groups[0]['lr']:.2e})")
     if cfg.optim.optimizer == "adamw":
         optimizer = torch.optim.AdamW(param_groups, betas=cfg.optim.betas)
+    elif cfg.optim.optimizer == "adamw8bit":
+        # 8-bit Adam (bitsandbytes) — saves ~50% of optim state with no measurable
+        # convergence difference vs fp32 Adam. Falls back to fp32 AdamW if bnb missing.
+        try:
+            import bitsandbytes as bnb
+            optimizer = bnb.optim.AdamW8bit(param_groups, betas=cfg.optim.betas)
+            logger.info("Using bitsandbytes AdamW8bit optimizer (8-bit moment states)")
+        except ImportError:
+            logger.warning("bitsandbytes not installed; falling back to fp32 AdamW.")
+            optimizer = torch.optim.AdamW(param_groups, betas=cfg.optim.betas)
     elif cfg.optim.optimizer == "sgd":
         optimizer = torch.optim.SGD(param_groups, momentum=cfg.optim.momentum)
     else:

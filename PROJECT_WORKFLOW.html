@@ -1,0 +1,630 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Fence Stain Simulator — Project Workflow</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:wght@500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap">
+  <style>
+:root {
+  --brand: #C06B1A;
+  --brand-light: #E58939;
+  --brand-dark: #8A4A0F;
+  --brand-50: #FDF4EC;
+  --brand-100: #F8E3CC;
+  --ink-900: #0B0D0E;
+  --ink-700: #1F2326;
+  --ink-600: #3A4047;
+  --ink-500: #5B636B;
+  --ink-300: #C7CCD2;
+  --ink-200: #E5E8EB;
+  --ink-100: #F0F2F4;
+  --ink-50:  #F7F8FA;
+  --paper:   #FFFFFF;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+  font-size: 11pt;
+  line-height: 1.55;
+  color: var(--ink-700);
+  background: var(--ink-50);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+.page {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 36px 44px 56px;
+  background: var(--paper);
+}
+header.cover {
+  background: linear-gradient(135deg, #14171A 0%, #0B0D0E 100%);
+  color: #fff;
+  padding: 44px 44px 38px;
+  margin: -36px -44px 36px;
+  border-radius: 0;
+  position: relative;
+  overflow: hidden;
+}
+header.cover::before {
+  content: '';
+  position: absolute;
+  top: -100px; right: -80px;
+  width: 360px; height: 360px;
+  background: radial-gradient(closest-side, rgba(192,107,26,0.42), transparent 70%);
+  filter: blur(20px);
+  pointer-events: none;
+}
+.cover-tag {
+  display: inline-block;
+  font-family: 'JetBrains Mono', 'Cascadia Code', Consolas, monospace;
+  font-size: 0.72rem;
+  color: rgba(255,255,255,0.65);
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.1);
+  padding: 4px 12px;
+  border-radius: 999px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: 14px;
+  position: relative;
+  z-index: 1;
+}
+.cover-title {
+  font-family: 'Plus Jakarta Sans', 'Inter', sans-serif;
+  font-size: 2.6rem;
+  font-weight: 800;
+  letter-spacing: -0.025em;
+  margin: 0 0 8px;
+  color: #fff;
+  position: relative;
+  z-index: 1;
+}
+.cover-title .accent {
+  background: linear-gradient(120deg, #FFB76A, #C06B1A 60%, #8A4A0F);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.cover-sub {
+  color: rgba(255,255,255,0.72);
+  font-size: 1rem;
+  max-width: 640px;
+  margin: 0;
+  position: relative;
+  z-index: 1;
+}
+
+h1, h2, h3 {
+  font-family: 'Plus Jakarta Sans', 'Inter', sans-serif;
+  color: var(--ink-900);
+  letter-spacing: -0.015em;
+  font-weight: 700;
+  page-break-after: avoid;
+}
+h1 { display: none; }   /* the title is rendered in the cover banner instead */
+h2 {
+  font-size: 1.5rem;
+  margin: 36px 0 14px;
+  padding-bottom: 8px;
+  border-bottom: 2px solid var(--brand-100);
+  page-break-before: auto;
+  break-inside: avoid;
+}
+h2:first-of-type { margin-top: 8px; }
+h3 {
+  font-size: 1.05rem;
+  margin: 22px 0 8px;
+  color: var(--brand-dark);
+}
+p { margin: 0 0 12px; }
+ul, ol { margin: 0 0 14px; padding-left: 22px; }
+li { margin: 4px 0; }
+strong { color: var(--ink-900); }
+em { color: var(--ink-700); }
+
+hr {
+  border: 0;
+  border-top: 1px dashed var(--ink-200);
+  margin: 28px 0;
+}
+
+a { color: var(--brand-dark); text-decoration: none; border-bottom: 1px solid var(--brand-100); }
+a:hover { border-bottom-color: var(--brand); }
+
+code {
+  font-family: 'JetBrains Mono', 'Cascadia Code', Consolas, Menlo, monospace;
+  font-size: 0.9em;
+  background: var(--ink-100);
+  padding: 1px 6px;
+  border-radius: 4px;
+  color: var(--brand-dark);
+}
+pre {
+  background: #0E1012;
+  color: #E5E8EB;
+  padding: 16px 18px;
+  border-radius: 10px;
+  overflow-x: auto;
+  font-family: 'JetBrains Mono', 'Cascadia Code', Consolas, Menlo, monospace;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  margin: 14px 0 18px;
+  border: 1px solid #1F2326;
+  page-break-inside: avoid;
+}
+pre code { background: transparent; color: inherit; padding: 0; }
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 14px 0 22px;
+  font-size: 0.92rem;
+  background: var(--paper);
+  border: 1px solid var(--ink-200);
+  border-radius: 10px;
+  overflow: hidden;
+  page-break-inside: avoid;
+}
+th {
+  background: linear-gradient(135deg, var(--brand-50), #fff);
+  color: var(--ink-900);
+  font-family: 'Plus Jakarta Sans', 'Inter', sans-serif;
+  font-weight: 700;
+  text-align: left;
+  padding: 10px 14px;
+  border-bottom: 2px solid var(--brand-100);
+  font-size: 0.85rem;
+  letter-spacing: 0.01em;
+}
+td {
+  padding: 10px 14px;
+  border-top: 1px solid var(--ink-100);
+  vertical-align: top;
+  color: var(--ink-700);
+}
+tr:last-child td { border-bottom: none; }
+tr:nth-child(even) td { background: rgba(247,248,250,0.5); }
+
+/* The SVG flowchart wrapper */
+.flow-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin: 18px 0 24px;
+  background: linear-gradient(180deg, #FAFBFC 0%, #F7F8FA 100%);
+  border: 1px solid var(--ink-200);
+  border-radius: 14px;
+  padding: 18px 12px;
+  page-break-inside: avoid;
+}
+
+footer.foot {
+  margin: 48px -44px -56px;
+  padding: 22px 44px;
+  background: var(--ink-50);
+  border-top: 1px solid var(--ink-200);
+  color: var(--ink-500);
+  font-size: 0.85rem;
+  text-align: center;
+  font-style: italic;
+}
+
+/* Print sizing */
+@page {
+  size: A4;
+  margin: 14mm 12mm;
+}
+@media print {
+  body { background: var(--paper); }
+  .page { box-shadow: none; padding: 0; max-width: none; }
+  header.cover { margin: 0 0 24px; border-radius: 0; }
+  footer.foot { margin: 36px 0 0; }
+  h2 { page-break-after: avoid; }
+  table, pre, .flow-svg { page-break-inside: avoid; }
+}
+</style>
+</head>
+<body>
+  <article class="page">
+    <header class="cover">
+      <span class="cover-tag">Project workflow · v1</span>
+      <h1 class="cover-title">Fence Stain Simulator<br><span class="accent">Project Workflow</span></h1>
+      <p class="cover-sub">A client-friendly walk-through of how the Fence Stain Simulator fence-visualizer goes from raw web photos all the way to the in-browser experience your customers click on. No deep ML jargon — just the moving parts and what each one does.</p>
+    </header>
+    <hr />
+<h2>What Fence Stain Simulator is</h2>
+<p>Fence Stain Simulator is a browser-based tool that lets a homeowner upload a photo of their<br />
+fence, automatically detects the fence boards using AI, and previews any stain<br />
+color on it instantly. The AI detection step runs on a tiny <strong>serverless<br />
+backend</strong> that processes the photo in memory and discards it the moment the<br />
+response is sent — no logging, no persistence. Everything else — color<br />
+picking, recoloring, downloading — happens <strong>locally in the browser</strong>, so<br />
+changing colors or opacity is instant.</p>
+<hr />
+<h2>The pipeline at a glance</h2>
+<div class="flowchart">
+<svg viewBox="0 0 900 540" xmlns="http://www.w3.org/2000/svg"
+     role="img" aria-label="Fence Stain Simulator workflow diagram"
+     class="flow-svg">
+  <defs>
+    <linearGradient id="g-card" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"  stop-color="#FFFFFF"/>
+      <stop offset="100%" stop-color="#FDF4EC"/>
+    </linearGradient>
+    <linearGradient id="g-num" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%"  stop-color="#E58939"/>
+      <stop offset="100%" stop-color="#8A4A0F"/>
+    </linearGradient>
+    <linearGradient id="g-final" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"  stop-color="#14171A"/>
+      <stop offset="100%" stop-color="#0B0D0E"/>
+    </linearGradient>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#C06B1A"/>
+    </marker>
+    <filter id="card-shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="3" stdDeviation="6" flood-color="#0B0D0E" flood-opacity="0.10"/>
+    </filter>
+  </defs>
+
+  <!-- Row 1 -->
+  <g filter="url(#card-shadow)">
+    <rect x="30"  y="30" width="240" height="110" rx="14" fill="url(#g-card)" stroke="#E5E8EB" stroke-width="1.5"/>
+    <rect x="320" y="30" width="240" height="110" rx="14" fill="url(#g-card)" stroke="#E5E8EB" stroke-width="1.5"/>
+    <rect x="610" y="30" width="240" height="110" rx="14" fill="url(#g-card)" stroke="#E5E8EB" stroke-width="1.5"/>
+  </g>
+  <g font-family="'Plus Jakarta Sans', 'Inter', sans-serif">
+    <circle cx="65" cy="65" r="18" fill="url(#g-num)"/>
+    <text x="65" y="71" text-anchor="middle" font-size="18" font-weight="700" fill="#fff">1</text>
+    <text x="95" y="72" font-size="16" font-weight="700" fill="#0B0D0E">Image collection</text>
+    <text x="50" y="110" font-size="12.5" fill="#3A4047">3 coordinated scrapes</text>
+    <text x="50" y="128" font-size="12.5" fill="#3A4047">~34,000 images, 11+ sources</text>
+
+    <circle cx="355" cy="65" r="18" fill="url(#g-num)"/>
+    <text x="355" y="71" text-anchor="middle" font-size="18" font-weight="700" fill="#fff">2</text>
+    <text x="385" y="72" font-size="16" font-weight="700" fill="#0B0D0E">Validate &amp; catalog</text>
+    <text x="340" y="110" font-size="12.5" fill="#3A4047">Integrity, dedup, PII, license</text>
+    <text x="340" y="128" font-size="12.5" fill="#3A4047">→ manifest.jsonl</text>
+
+    <circle cx="645" cy="65" r="18" fill="url(#g-num)"/>
+    <text x="645" y="71" text-anchor="middle" font-size="18" font-weight="700" fill="#fff">3</text>
+    <text x="675" y="72" font-size="16" font-weight="700" fill="#0B0D0E">Split + Golden set</text>
+    <text x="630" y="110" font-size="12.5" fill="#3A4047">70/15/15 stratified</text>
+    <text x="630" y="128" font-size="12.5" fill="#3A4047">+ curated QA reference</text>
+  </g>
+
+  <!-- Arrows row 1 -->
+  <line x1="275" y1="85" x2="315" y2="85" stroke="#C06B1A" stroke-width="2.2" marker-end="url(#arrow)"/>
+  <line x1="565" y1="85" x2="605" y2="85" stroke="#C06B1A" stroke-width="2.2" marker-end="url(#arrow)"/>
+
+  <!-- Right-down connector to row 2 -->
+  <path d="M 730 145 L 730 200" stroke="#C06B1A" stroke-width="2.2" fill="none" marker-end="url(#arrow)"/>
+
+  <!-- Row 2 (reversed flow) -->
+  <g filter="url(#card-shadow)">
+    <rect x="610" y="210" width="240" height="110" rx="14" fill="url(#g-card)" stroke="#E5E8EB" stroke-width="1.5"/>
+    <rect x="320" y="210" width="240" height="110" rx="14" fill="url(#g-card)" stroke="#E5E8EB" stroke-width="1.5"/>
+    <rect x="30"  y="210" width="240" height="110" rx="14" fill="url(#g-card)" stroke="#E5E8EB" stroke-width="1.5"/>
+  </g>
+  <g font-family="'Plus Jakarta Sans', 'Inter', sans-serif">
+    <circle cx="645" cy="245" r="18" fill="url(#g-num)"/>
+    <text x="645" y="251" text-anchor="middle" font-size="18" font-weight="700" fill="#fff">4</text>
+    <text x="675" y="252" font-size="16" font-weight="700" fill="#0B0D0E">AI labeling</text>
+    <text x="630" y="290" font-size="12.5" fill="#3A4047">DINO + SAM 2.1 → auto-QA</text>
+    <text x="630" y="308" font-size="12.5" fill="#3A4047">→ SAM 3 manual refine</text>
+
+    <circle cx="355" cy="245" r="18" fill="url(#g-num)"/>
+    <text x="355" y="251" text-anchor="middle" font-size="18" font-weight="700" fill="#fff">5</text>
+    <text x="385" y="252" font-size="16" font-weight="700" fill="#0B0D0E">Train model</text>
+    <text x="340" y="290" font-size="12.5" fill="#3A4047">DINOv2-Small ~31M params</text>
+    <text x="340" y="308" font-size="12.5" fill="#3A4047">augment + EMA + final eval</text>
+
+    <circle cx="65" cy="245" r="18" fill="url(#g-num)"/>
+    <text x="65" y="251" text-anchor="middle" font-size="18" font-weight="700" fill="#fff">6</text>
+    <text x="95" y="252" font-size="16" font-weight="700" fill="#0B0D0E">Deploy to Modal</text>
+    <text x="50" y="290" font-size="12.5" fill="#3A4047">ONNX + FastAPI endpoint</text>
+    <text x="50" y="308" font-size="12.5" fill="#3A4047">serverless, scale-to-zero</text>
+  </g>
+
+  <!-- Arrows row 2 (right→left) -->
+  <line x1="605" y1="265" x2="565" y2="265" stroke="#C06B1A" stroke-width="2.2" marker-end="url(#arrow)"/>
+  <line x1="315" y1="265" x2="275" y2="265" stroke="#C06B1A" stroke-width="2.2" marker-end="url(#arrow)"/>
+
+  <!-- Left-down connector to row 3 -->
+  <path d="M 150 325 L 150 380" stroke="#C06B1A" stroke-width="2.2" fill="none" marker-end="url(#arrow)"/>
+
+  <!-- Row 3: final dark card -->
+  <g filter="url(#card-shadow)">
+    <rect x="30" y="390" width="820" height="120" rx="16" fill="url(#g-final)" stroke="#1F2326" stroke-width="1.5"/>
+  </g>
+  <g font-family="'Plus Jakarta Sans', 'Inter', sans-serif">
+    <circle cx="65" cy="430" r="22" fill="url(#g-num)"/>
+    <text x="65" y="437" text-anchor="middle" font-size="20" font-weight="800" fill="#fff">7</text>
+    <text x="105" y="425" font-size="20" font-weight="800" fill="#FFFFFF">Fence Stain Simulator</text>
+    <text x="105" y="452" font-size="13.5" fill="rgba(255,255,255,0.78)">Upload → Detect (server) → Color → Download — recolor &amp; UI run locally, no photos stored</text>
+    <text x="105" y="478" font-size="12.5" font-style="italic" fill="rgba(255,255,255,0.55)">Privacy-first, zero-infrastructure, cross-platform</text>
+  </g>
+</svg>
+</div>
+
+<hr />
+<h2>Step 1 — Image collection (scraping)</h2>
+<p>To teach the model what a fence looks like (and what doesn't), we gather a<br />
+broad, real-world photo library from many sources.</p>
+<p><strong>Three coordinated scrapes:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Scrape</th>
+<th>Goal</th>
+<th>Target volume</th>
+<th>What it gathers</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Positives</strong></td>
+<td>Fences we <em>can</em> stain</td>
+<td>~17,000 images</td>
+<td>Cedar, wood, picket, privacy, shadowbox fences in every angle, season, and condition</td>
+</tr>
+<tr>
+<td><strong>Hard positives</strong></td>
+<td>Tricky-but-valid fences</td>
+<td>~5,000 images (top-up)</td>
+<td>Heavy plant occlusion, snow, broken boards, half-stained, dramatic lighting, unusual angles</td>
+</tr>
+<tr>
+<td><strong>Negatives</strong></td>
+<td>Look-alikes we should <em>not</em> stain</td>
+<td>~12,000 images</td>
+<td>Vinyl/chain-link/iron fences, brick walls, wood siding, decks, pergolas, hedges, empty yards</td>
+</tr>
+<tr>
+<td><strong>Combined</strong></td>
+<td>Full training pool</td>
+<td>~34,000 images</td>
+<td>Balanced across ~30 fence styles and ~20 look-alike categories</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Where the photos come from:</strong> Pexels, Unsplash, Pixabay, Wikimedia, plus<br />
+respectful crawls of Google, Bing, Pinterest, Houzz, and ~30 licensed<br />
+fence-company galleries (~200 unique search queries across the three scrapes).<br />
+The whole scraper is built for production use — rate limiting per source,<br />
+retry-on-failure, duplicate detection, content filtering, and Google Vision<br />
+verification on positives to catch off-topic results before they enter the<br />
+dataset. Source licensing is tracked per image for clean commercial use.</p>
+<p><strong>Output:</strong> <code>data_scraped/</code> (positives) and <code>data_scraped_neg/</code> (negatives),<br />
+each with the images plus a metadata file recording where each photo came<br />
+from, its license, and quality details.</p>
+<hr />
+<h2>Step 2 — Validate, clean, and catalog</h2>
+<p>Raw scraped data always has some noise, and a few compliance checks need to<br />
+happen before any image enters the training pool. This stage runs a single<br />
+audited pass that:</p>
+<ul>
+<li><strong>Verifies every image</strong> opens correctly (catches corrupt or truncated files)</li>
+<li><strong>Removes duplicates</strong> within and across the positive and negative sets<br />
+  (SHA-256 byte match + visual-hash near-duplicate detection)</li>
+<li><strong>Removes orphans</strong> (files without metadata, or metadata without files)</li>
+<li><strong>Scans for PII</strong> — a Google Vision OCR pass catches readable text on<br />
+  signs, vehicles, or house numbers so we can review or drop sensitive photos</li>
+<li><strong>Audits every image's license</strong> per source — the resulting report is the<br />
+  legal paper trail for clean commercial use</li>
+<li><strong>Standardizes</strong> image orientation, EXIF rotation, and color profile so<br />
+  the model sees consistent input regardless of how the photo was uploaded</li>
+<li><strong>Drops near-empty fence samples</strong> (images where the fence is fewer than<br />
+  ~100 pixels — so occluded the image carries no learning signal)</li>
+<li><strong>Tags each image</strong> with a subcategory — e.g., <em>cedar</em>, <em>weather</em>,<br />
+<em>occlusion</em>, <em>multi-structure</em>, <em>brick-wall</em>, <em>chain-link</em> — so the<br />
+  training pool is balanced across real-world situations</li>
+<li><strong>Produces a single catalog file</strong> (<code>dataset/manifest.jsonl</code>) that becomes<br />
+  the single source of truth for the rest of the pipeline</li>
+</ul>
+<p><strong>Output:</strong> a clean, fully-cataloged dataset with integrity + license audit<br />
+reports kept alongside it for reproducibility.</p>
+<hr />
+<h2>Step 3 — Splitting into train / validate / test (+ Golden set)</h2>
+<p>The catalog is divided into three slices the AI never confuses:</p>
+<ul>
+<li><strong>Training set (~70%)</strong> — what the model learns from</li>
+<li><strong>Validation set (~15%)</strong> — used during training to check progress</li>
+<li><strong>Test set (~15%)</strong> — held back to honestly measure the final model</li>
+</ul>
+<p>The split is <strong>stratified</strong> — every subcategory (cedar fence, vinyl fence,<br />
+empty yard, occlusion, etc.) is proportionally represented in all three<br />
+slices, so the model never gets surprised by a category it hardly saw. We<br />
+also use visual-similarity grouping to make sure near-duplicate photos<br />
+always end up in the same slice (preventing the model from "cheating" by<br />
+seeing a near-copy of a test image during training).</p>
+<p>On top of the three splits we curate a small <strong>Golden Set</strong> — a hand-picked<br />
+reference batch of photos covering the trickiest real-world conditions<br />
+(deep occlusion, harsh lighting, similar-looking distractors, multi-fence<br />
+scenes). The golden set is run after every model update to spot regressions<br />
+that matter in practice but might hide inside aggregate numbers.</p>
+<p>Once the labeling step (next) finishes, the produced pixel masks are<br />
+attached to each slice — every training image is paired with its mask so<br />
+the model can learn from both at the same time.</p>
+<p><strong>Output:</strong> <code>dataset/splits/{train,val,test}.jsonl</code> plus matching mask<br />
+files, an audit record for reproducibility, and <code>dataset/golden_set/</code> for<br />
+ongoing QA.</p>
+<hr />
+<h2>Step 4 — AI-assisted labeling</h2>
+<p>For each training image, we need to know <em>exactly which pixels are fence</em>.<br />
+Hand-drawing those masks for tens of thousands of images would take months.<br />
+Instead we use a three-stage pipeline that combines AI detection, automated<br />
+quality control, and targeted human review:</p>
+<h3>Stage 1 — AI detection + mask generation</h3>
+<ol>
+<li><strong>Grounding DINO</strong> — an open-vocabulary detector that finds objects<br />
+   matching text prompts ("wooden fence", "cedar fence", "wood plank fence",<br />
+   plus a longer list of variations).</li>
+<li><strong>SAM 2.1</strong> (Segment Anything) — converts each detection box into a<br />
+   pixel-accurate mask.</li>
+</ol>
+<h3>Stage 2 — Automatic quality gate</h3>
+<ol>
+<li><strong>Auto-accept</strong> high-confidence positives — masks that clear the<br />
+   detection-confidence + mask-coverage thresholds are approved directly,<br />
+   with no human time spent.</li>
+<li><strong>Auto-review</strong> uncertain or low-confidence cases — anything below the<br />
+   threshold is automatically flagged for human inspection, never silently<br />
+   accepted or rejected.</li>
+</ol>
+<h3>Stage 3 — Targeted manual refinement</h3>
+<ol>
+<li><strong>SAM 3</strong> is used by a human reviewer to refine only the flagged cases —<br />
+   tricky occlusion, gates, edge boundaries, or images where the auto<br />
+   pipeline disagreed with itself. The reviewer only sees images that<br />
+   actually need attention, so manual time scales with edge-case volume,<br />
+   not with dataset size.</li>
+</ol>
+<p>We use a <strong>3-class schema</strong> so the AI can also learn what <em>not</em> to stain:</p>
+<ul>
+<li><code>fence_wood</code> — the target (will be re-stained in the app)</li>
+<li><code>not_target</code> — wood siding, deck railings, vinyl fences, brick walls,<br />
+  furniture, etc. (looks similar, but we don't want to stain it)</li>
+<li><code>background</code> — everything else</li>
+</ul>
+<p>The <code>not_target</code> class is the key trick: it gives the AI an explicit<br />
+category for "wood-like thing that isn't a wooden fence", which dramatically<br />
+cuts down false positives.</p>
+<p><strong>Output:</strong> a pixel mask for every catalog image, plus an audit trail<br />
+showing which masks were auto-accepted vs human-refined.</p>
+<hr />
+<h2>Step 5 — Train the AI model</h2>
+<p>We train a compact segmentation model designed from day one to fit in a<br />
+browser:</p>
+<ul>
+<li><strong>DINOv2-Small backbone</strong> — a strong, open vision model from Meta</li>
+<li><strong>Multi-scale decoder + Mask2Former head</strong> — translates the backbone's<br />
+  features into a fence mask</li>
+<li><strong>Refinement module</strong> — sharpens the mask's edges and removes obvious<br />
+  mistakes</li>
+<li><strong>Total size:</strong> ~31M parameters — small enough to ship to a browser</li>
+</ul>
+<h3>Augmentation</h3>
+<p>Every training image is randomly perturbed so the model effectively sees<br />
+thousands of variations of the same photo and learns to generalize:</p>
+<ul>
+<li><strong>Spatial:</strong> random crops, horizontal flips, multi-scale resizing<br />
+  (75–125% of the base resolution), and CutMix — pasting a patch from one<br />
+  image into another so the model learns to handle blended scenes</li>
+<li><strong>Photometric:</strong> color, brightness, contrast, and sharpness jitter so<br />
+  the model is robust to lighting, weather, and camera differences</li>
+<li><strong>Balanced sampling:</strong> during each training epoch we re-weight the draw-<br />
+  probability of rare subcategories (e.g., damaged fences, snowy fences)<br />
+  so the model doesn't ignore the long tail of edge cases</li>
+</ul>
+<h3>Training loop</h3>
+<p>The model is updated on the training split, validated each epoch on the<br />
+validation split, and an exponential-moving-average copy of the weights is<br />
+kept in parallel for smoother, more stable predictions. When training<br />
+finishes, the best validation checkpoint is selected and evaluated once on<br />
+the held-back <strong>test split</strong> — with test-time augmentation (averaging<br />
+predictions over multiple scales and a horizontal flip) and the same<br />
+post-processing the browser will apply. That run produces the final honest<br />
+evaluation report and a side-by-side preview gallery.</p>
+<p><strong>Output:</strong> a trained model checkpoint, the test-eval report, and a<br />
+sample-image preview gallery showing model behavior on real photos.</p>
+<hr />
+<h2>Step 6 — Convert and deploy to Modal</h2>
+<p>The trained model is exported to <strong>ONNX format</strong> — an open, framework-neutral<br />
+standard that any inference runtime can load. The ONNX file plus a small<br />
+FastAPI handler are bundled into a <strong>Modal</strong> container image that exposes a<br />
+single <code>/detect</code> HTTP endpoint.</p>
+<p>Why server-side instead of in-browser:</p>
+<ul>
+<li>The page loads in <strong>under a second</strong> — no large model file download</li>
+<li>Inference runs on managed CPU (~500 ms per image), so the experience is the<br />
+  same on a phone, a laptop, or an older browser</li>
+<li>The model can be retrained and redeployed independently of the website —<br />
+  no client update needed</li>
+<li>Modal <strong>scales to zero when idle</strong> (no idle cost) and pre-warms on page<br />
+  load so the first detection click is fast</li>
+</ul>
+<p>We also generate a small sidecar file (<code>fence_model_dinov2.json</code>) that<br />
+records exactly how the model expects its input, used during server-side<br />
+preprocessing for parity with training.</p>
+<p><strong>Output:</strong> a deployed HTTPS endpoint that accepts a JPEG upload and returns a<br />
+compact PNG mask (~30-100 KB), plus the bundled ONNX in the container image.</p>
+<hr />
+<h2>Step 7 — The Fence Stain Simulator web visualizer</h2>
+<p>The browser app is a single lightweight HTML page<br />
+(<code>fence-staining-visualizer/index2.html</code>) that talks to the Modal endpoint<br />
+from Step 6 only when the user clicks <em>Detect</em>. Everything else — color<br />
+picking, blending, downloading — happens locally in the browser.</p>
+<p><strong>User flow:</strong></p>
+<ol>
+<li><strong>Upload</strong> — drag-and-drop or pick a fence photo (JPG / PNG / WebP, up to 10 MB)</li>
+<li><strong>Detect</strong> — the browser sends a downsized copy to the AI service, which<br />
+   returns a fence mask in 1–3 seconds</li>
+<li><strong>Color</strong> — pick from 20 curated stain colors (Cedar, Walnut, Charcoal,<br />
+   Mahogany, Pine, etc.), adjust opacity, choose a blend mode (Multiply for<br />
+   realistic, Overlay for vivid, Screen for highlights) — fully local, instant</li>
+<li><strong>Download</strong> — save the recolored preview as a PNG</li>
+</ol>
+<p><strong>Behind the user-facing screen, the app also:</strong></p>
+<ul>
+<li>Downsizes the photo to ≤1024 px JPEG before upload (typically 150–400 KB),<br />
+  so the network transfer is tiny even on mobile data</li>
+<li>Pings the AI service on page load so its container is already warm when<br />
+  the user clicks <em>Detect</em></li>
+<li>Decodes the PNG mask the server returns and uses the model's <strong>confidence<br />
+  level as the blending alpha</strong> — stained areas have natural anti-aliased<br />
+  edges instead of a chunky cut-out look</li>
+<li>Runs a <strong>connected-component cleanup</strong> that removes small, isolated<br />
+  false-positive blobs (dirt patches, far-away objects)</li>
+<li>Runs a <strong>vegetation filter</strong> that strips out green-dominant pixels (leaves<br />
+  and bushes growing in front of the fence) so they don't get stained</li>
+<li>Erodes the mask edge by one pixel to suppress slight color bleed onto<br />
+  the grass or sky</li>
+</ul>
+<p>Recoloring, color changes, opacity tweaks, blend-mode switching, and the<br />
+final download all run <strong>client-side</strong> — the server is only contacted for<br />
+the one AI detection step.</p>
+<hr />
+<h2>Privacy and deployment</h2>
+<ul>
+<li><strong>Privacy-conscious data handling:</strong> the photo is sent to the AI service<br />
+<strong>only</strong> when the user clicks <em>Detect</em>, transmitted over HTTPS, processed<br />
+  entirely in memory, and discarded the instant the response is sent. No<br />
+  logging, no persistence, no analytics. Color picking, recoloring, and<br />
+  downloading all happen locally and never leave the device.</li>
+<li><strong>Lightweight frontend:</strong> the web page is a single static HTML file —<br />
+  no large model download, fast first paint on any device. Hosted on any<br />
+  CDN or static host.</li>
+<li><strong>Auto-scaling backend:</strong> the AI runs on a managed serverless container<br />
+  that scales to zero when nobody is using it (no idle cost) and warms up<br />
+  on page load so the user's first detection click is fast.</li>
+<li><strong>Cross-platform:</strong> works on Chrome, Edge, Firefox, and Safari on<br />
+  desktop and mobile.</li>
+</ul>
+<hr />
+<h2>Project structure (for reference)</h2>
+<pre><code>data_scraper/             Image collection engine (multiple sources)
+data_scraped/             Raw positive images + metadata
+data_scraped_neg/         Raw negative images + metadata
+annotation/               AI-assisted labeling pipeline (Grounding DINO + SAM)
+configs/                  Scraper configs + annotation schema + training configs
+dataset/                  Cleaned catalog + train/val/test splits + masks
+tools/                    Utility scripts (mask building, ONNX export, etc.)
+training/                 Model architecture, losses, metrics, optimizer
+prepare_dataset.py        Step 2 — clean &amp; catalog
+split_dataset.py          Step 3 — stratified split
+train_web_deployable.py   Step 5 — train the deployable model
+modal_inference/          Step 6 — serverless AI backend (Modal + FastAPI + ONNX)
+fence-staining-visualizer/ Step 7 — the Fence Stain Simulator web frontend (HTML, calls Modal)
+</code></pre>
+<hr />
+    <footer class="foot">Fence Stain Simulator — instant AI fence color previews, in any browser.</footer>
+  </article>
+</body>
+</html>

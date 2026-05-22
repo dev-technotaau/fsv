@@ -165,9 +165,27 @@ def connected_component_clean(mask: np.ndarray, *,
 # ══════════════════════════════════════════════════════════════════════
 
 def post_process(prob: np.ndarray, image_rgb: np.ndarray, cfg) -> np.ndarray:
-    """Apply the configured cascade. Returns binary mask (H, W) uint8 0/1."""
+    """Apply the configured cascade. Returns binary mask (H, W) uint8 0/1.
+
+    Cascade order (revised — see Stage C note):
+        A. Guided filter  — smooth the probability map with image guidance.
+        B. Morphology     — closing on the SOFT probability (binarized via
+                             threshold AFTER, so we don't erode thin pickets).
+        C. DenseCRF       — final pixel-level labeling using the smoothed prob.
+        D. CC cleanup     — drop tiny FP specks / optionally fill picket holes.
+
+    Why morphology moved BEFORE CRF: previously morphology ran AFTER CRF on
+    the binarized mask, and the morphology OPEN step erased 1-2 px wide
+    structures (chain-link wire, wrought-iron pickets) that CRF had correctly
+    preserved. Doing closing on the SOFT prob before CRF smooths salt-pepper
+    noise without erosion, then CRF + CC handle the binarization + cleanup.
+    """
+    # Threshold: configurable so the deployment threshold matches whatever
+    # was tuned on val_hq. Default 0.5 preserves prior behavior.
+    thr = float(getattr(cfg, "binarize_threshold", 0.5))
+
     if not cfg.enabled:
-        return (prob >= 0.5).astype(np.uint8)
+        return (prob >= thr).astype(np.uint8)
 
     refined = prob.astype(np.float32).copy()
 
@@ -181,7 +199,28 @@ def post_process(prob: np.ndarray, image_rgb: np.ndarray, cfg) -> np.ndarray:
             warnings.warn("guided filter requested but cv2.ximgproc not installed",
                            RuntimeWarning)
 
-    # Stage B: DenseCRF (final pixel labeling)
+    # Stage B (NEW POSITION): morphology in PROB space — closing only, on a
+    # quasi-binary scaled map. We threshold lightly to a {0, 255} surface,
+    # apply closing (fills small holes / picket gaps shorter than k px),
+    # then carry the result back into prob space WITHOUT eroding thin
+    # structures. (Opening, which was the dangerous step for chain-link
+    # wires, is dropped from this stage and reintroduced as CC-based
+    # cleanup at stage D — by area, not by morphological erosion.)
+    if cfg.use_morphology and _HAS_CV2:
+        k = int(getattr(cfg, "morphology_kernel", 3))
+        bin_in = (refined >= thr).astype(np.uint8) * 255
+        kernel = np.ones((k, k), np.uint8)
+        bin_closed = cv2.morphologyEx(bin_in, cv2.MORPH_CLOSE, kernel)
+        # Pull the closed region back into the prob map: pixels that closing
+        # added stay at the threshold value so CRF can decide; original prob
+        # values otherwise.
+        added = (bin_closed > 0) & (bin_in == 0)
+        refined = np.where(added, np.float32(thr), refined)
+    elif cfg.use_morphology and not _HAS_CV2:
+        warnings.warn("morphology requested but cv2 not installed",
+                       RuntimeWarning)
+
+    # Stage C: DenseCRF (final pixel labeling) — operates on the smoothed prob
     if cfg.use_dense_crf:
         if _HAS_CRF:
             mask = dense_crf(refined, image_rgb,
@@ -194,18 +233,14 @@ def post_process(prob: np.ndarray, image_rgb: np.ndarray, cfg) -> np.ndarray:
         else:
             warnings.warn("dense_crf requested but pydensecrf not installed",
                            RuntimeWarning)
-            mask = (refined >= 0.5).astype(np.uint8)
+            mask = (refined >= thr).astype(np.uint8)
     else:
-        mask = (refined >= 0.5).astype(np.uint8)
+        mask = (refined >= thr).astype(np.uint8)
 
-    # Stage C: morphology cleanup
-    if cfg.use_morphology:
-        if _HAS_CV2:
-            mask = morphology_clean(mask, kernel_size=cfg.morphology_kernel)
-        else:
-            warnings.warn("morphology requested but cv2 not installed",
-                           RuntimeWarning)
     # Stage D: connected-component cleanup (fence-domain post-process)
+    # IMPORTANT: morphology OPEN is NOT re-applied here — area-based CC
+    # cleanup is friendlier to thin chain-link wires (which can survive as
+    # tall, narrow components even at small area in patch view).
     use_cc = bool(getattr(cfg, "use_cc_cleanup", False))
     if use_cc:
         if _HAS_CV2:

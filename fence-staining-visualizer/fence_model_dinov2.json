@@ -1,0 +1,74 @@
+{
+  "model_path": "fence_model_dinov2.onnx",
+  "architecture": "FenceSegmentationModel (backbone=facebook/dinov2-small, decoder=mask2former dim=192 q=16 L=6, refinement_iters=2)",
+  "training_pipeline_version": "web_deployable/v1",
+  "training_epoch": 19,
+  "training_global_step": 27778,
+  "training_metric_name": "val_iou",
+  "training_metric_value": 0.4252539869685397,
+  "input": {
+    "name": "input",
+    "shape": [
+      1,
+      3,
+      518,
+      518
+    ],
+    "dtype": "float32",
+    "channel_order": "RGB",
+    "preprocessing": {
+      "rescale": "pixel / 255.0",
+      "normalize": true,
+      "mean": [
+        0.485,
+        0.456,
+        0.406
+      ],
+      "std": [
+        0.229,
+        0.224,
+        0.225
+      ],
+      "layout": "NCHW"
+    },
+    "patch_size": 14
+  },
+  "output": {
+    "name": "output",
+    "shape": [
+      1,
+      1,
+      518,
+      518
+    ],
+    "dtype": "float32",
+    "range": [
+      0.0,
+      1.0
+    ],
+    "interpretation": "sigmoid probabilities of fence pixel",
+    "sigmoid_baked_in": true,
+    "temperature_baked_in": true,
+    "temperature": 1.0
+  },
+  "recommended": {
+    "binarize_threshold": 0.5,
+    "client_postprocess": [
+      "Resize input image to 518x518 (bilinear)",
+      "ImageNet normalize, NCHW",
+      "Run inference",
+      "Bilinear upsample 518x518 -> original image size",
+      "Threshold at 0.5 (or higher for cleaner staining)",
+      "Optional: connected-component cleanup, drop blobs <2% of image"
+    ]
+  },
+  "size_mb": 135.6,
+  "opset": 18,
+  "parity_check": {
+    "validated": true,
+    "max_abs_diff": 1.7374753952026367e-05,
+    "mean_abs_diff": 2.92019450398584e-07,
+    "tolerance": 0.005,
+    "within_tolerance": true
+  }
+}

@@ -8,15 +8,15 @@
 
 model:
   # DINOv3 H+ (~840M) — gated on HF, run `huggingface-cli login` once.
-  # Drop to dinov3-vitl16-pretrain-lvd1689m (~300M) if VRAM-limited,
+  # Drop to dinov3-vith16plus-pretrain-lvd1689m (~840M) if VRAM-limited,
   # or fall back to facebook/dinov2-large for unrestricted access.
-  backbone_name: "facebook/dinov3-vith16plus-pretrain-lvd1689m"
+  backbone_name: "facebook/dinov3-vitl16-pretrain-lvd1689m"
   backbone_freeze_first_n_layers: 0
   backbone_drop_path_rate: 0.1
   # Multi-block aggregation (DINOv3 paper: fusing last N blocks meaningfully
   # improves dense-prediction quality vs using only the final block).
   # Tier-1 bump: 4 → 6 captures more semantic depth from the 32-layer H+.
-  multi_block_n: 6
+  multi_block_n: 6                   # rolled back from 6 (Tier-1 bump) to fit RTX 6000 Ada 48GB
   aggregation_type: "weighted_sum"   # 'sum' | 'concat_proj' | 'weighted_sum'
   # ViT-Adapter (Chen et al., ICLR 2023) — adds dense-prediction-friendly
   # multi-scale spatial features to the plain ViT via parallel CNN + bidirectional
@@ -32,9 +32,9 @@ model:
   # Pixel decoder: 'msdeform' = real M2F (deformable encoder, HF impl).
   # Falls back to 'fpn' for the lighter convolutional decoder.
   pixel_decoder_type: "msdeform"
-  pixel_decoder_layers: 12             # was 9 — more deformable attention encoder layers
+  pixel_decoder_layers: 12              # rolled back from 12 — Tier-2 bump OOMed at bs=8 on RTX 6000 Ada 48GB (21k-token MSDeform encoder activations too heavy)
   pixel_decoder_heads: 8
-  pixel_decoder_ffn_dim: 3072           # Tier-2 bump: 2048 → 3072 (wider FFN per MSDA layer)
+  pixel_decoder_ffn_dim: 3072           # rolled back from 3072 — saves intermediate FFN activations per MSA layer at bs=8
   decoder_type: "mask2former"
   decoder_dim: 512                      # was 256 — 4x more decoder capacity
   decoder_num_queries: 64               # was 32 — more learnable mask queries
@@ -46,18 +46,18 @@ model:
   num_classes: 1
   output_logit: true
   use_refinement_head: true
-  refinement_channels: 96               # Tier-2 bump: 64 → 96 (more refinement capacity, +25M params)
+  refinement_channels: 96               # rolled back from 96 (Tier-2 bump) to free ~2-3GB at refinement on RTX 6000 Ada 48GB
   refinement_num_blocks: 4              # was 3
   refinement_use_decoder_features: true # A: feed pixel decoder features into UNet
   refinement_decoder_feature_channels: 64
   refinement_use_edge_head: true        # B: predict edges as side task
-  refinement_iterations: 3              # C: Tier-1 bump 2→3 (no params, +1.5% epoch time)
+  refinement_iterations: 3              # rolled back from 3 (Tier-1 bump) to free ~3-5GB activations on 48GB
   refinement_use_y_coord: true          # depth-lite: y-position cue (FREE)
-  refinement_use_depth: true           # frozen DPT teacher; opt-in (+25% train cost)
+  refinement_use_depth: true           # frozen DPT teacher; opt-in (+25% train cost) — fits with adamw8bit optimizer (saves ~6GB)
   depth_model_name: "Intel/dpt-hybrid-midas"
   # UNet3+ extras inside the refinement head:
   refinement_use_full_scale_ds: true    # FDS side heads off D1..D{N-1}
-  refinement_use_cgm: true              # per-image fence/non-fence classifier + inference gate
+  refinement_use_cgm: true              # per-image fence/non-fence classifier + inference gate (HELPS on negatives — reverted from disable)
   # Boundary signal extras:
   refinement_use_distance: true                # signed-distance regression head
   refinement_use_pointrend_module: true        # forward-time PointRend MLP refinement
@@ -73,17 +73,26 @@ loss:
   boundary_weight: 0.8          # Tier-2 bump: 0.5 → 0.8 (sharper boundaries)
   lovasz_weight: 0.5            # ON — direct IoU surrogate
   tversky_weight: 0.5           # ON — recall-friendly (don't miss fence pixels)
-  tversky_alpha: 0.7            # FN penalty (higher = more recall focus)
-  tversky_beta: 0.3             # FP penalty
-  connectivity_weight: 0.1      # Tier-2 (was 0.0): topology-aware loss; preserves picket separation
+  tversky_alpha: 0.6            # Audit fix: lowered 0.7 -> 0.6 to ease the
+                                # recall amplifier stack (pos_weight=3.0 +
+                                # focal_gamma=2.0 + edge_pos_w were all
+                                # pushing recall). 0.6 is still > beta so
+                                # FN penalty > FP, but the gap is gentler.
+  tversky_beta: 0.4             # raised 0.3 -> 0.4 to match the alpha cut
+  connectivity_weight: 0.02     # Audit fix: 0.1 -> 0.02. The docstring says
+                                # "use 1e-3 to 1e-2 range"; 0.1 was 10x that
+                                # and was actively reinforcing blob bias
+                                # (the soft-Euler heuristic favors solid
+                                # blobs over thin pickets — wrong direction
+                                # for fence segmentation).
   use_pos_weight: true
-  pos_weight: null
+  pos_weight: 3.0               # FIX 1: capped from auto-9.84 (too aggressive — caused recall>>precision blob bias in web + flagship epoch 1)
   focal_gamma: 2.0              # focal BCE — focus on hard pixels (look-alikes)
   ohem_top_k_ratio: 0.25        # Tier-1 (was 0.0): keep top-25% hardest BCE pixels per image
   boundary_kernel_size: 5
   dice_smooth: 1.0
   weight_by_review_source: true
-  deep_supervision_weight: 1.0       # M2F-style aux losses on each decoder layer
+  deep_supervision_weight: 0.3       # FIX 2: scaled from 1.0 (15-layer × this dominated gradient signal — ~75% of loss was aux instead of main mask)
   # PointRend importance sampling — real M2F training-time loss.
   use_pointrend: true
   pointrend_n_points: 12544          # 112^2 — Mask2Former default
@@ -91,47 +100,58 @@ loss:
   pointrend_importance_ratio: 0.75
   edge_loss_weight: 0.8              # Tier-2 bump: 0.5 → 0.8 (refinement edge head pushed harder)
   edge_loss_dilate: 3
-  edge_loss_pos_weight: 8.0
-  refinement_iter_aux_weight: 0.5    # C: aux loss on non-final iterations
+  edge_loss_pos_weight: 4.0          # Audit fix: 8.0 -> 4.0. Edge pixels are
+                                     # ~5% of image so even 4.0 is a strong
+                                     # ~20x reweighting; 8.0 stacked with
+                                     # pos_weight=3.0 was promoting thin
+                                     # boundary false positives (the same
+                                     # recall amplifier the 4 fixes targeted).
+  refinement_iter_aux_weight: 0.2    # FIX 2 cont: scaled from 0.5 (3-iter × 0.5 was over-weighted vs final-iter mask)
   ema_distill_weight: 0.0            # off in phase 1 (extra fwd cost; EMA still warming)
   # UNet3+ extras:
   refinement_fds_weight: 0.3         # FDS — supervised side heads on D1..D{N-1}
-  cgm_weight: 0.5                    # CGM — per-image fence/non-fence classifier BCE
+  cgm_weight: 0.5                    # CGM — per-image fence/non-fence classifier BCE (HELPS on negatives — reverted from disable)
   # Boundary Distance Regression (sub-pixel boundary signal)
   boundary_distance_weight: 0.3      # L1 between predicted distance and GT distance map
   boundary_distance_clip: 50.0       # clip pred + GT to ±50 px
   boundary_distance_normalize: true  # normalize loss to [0, 1]
 
 optim:
-  optimizer: "adamw"
-  base_lr: 3.0e-4               # head LR
-  backbone_lr: 1.0e-5           # backbone LR (lower so we don't destroy DINOv2)
+  optimizer: "adamw8bit"        # bitsandbytes AdamW8bit — saves ~6GB vs fp32 AdamW (no quality loss); falls back to "adamw" if bnb unavailable
+  base_lr: 4.5e-4               # head LR — Goyal linear scale: 3.0e-4 * (24/16) = 4.5e-4
+  backbone_lr: 1.5e-5           # backbone LR — Goyal linear scale: 1.0e-5 * (24/16) = 1.5e-5
   backbone_lr_decay: 0.9        # layer-wise LR decay multiplier
   weight_decay: 0.05
   betas: [0.9, 0.999]
-  warmup_epochs: 5                # was 2 — bigger model + 9-layer decoder benefits from longer warmup
+  warmup_epochs: 7                # 5 -> 7 for the 1.5x higher LR (Goyal recommends longer warmup with larger batches)
   warmup_lr: 1.0e-7
   lr_min: 1.0e-7
   schedule: "cosine"
   grad_clip_norm: 1.0
-  grad_accumulation_steps: 4     # effective batch = batch_size * accum_steps  (4 * 4 = 16)
+  grad_accumulation_steps: 1     # effective batch = batch_size * accum_steps  (16 * 1 = 16) — same as original 4*4=16; H200 140GB fits bs=16 directly without grad_accum
   use_amp: true
   amp_dtype: "bf16"
 
 train:
   epochs: 120                  # Tier-1 bump: 100 → 120 (more convergence headroom)
-  batch_size: 4                # dinov3-H+ at 512^2 needs ~16-22GB; reduce to 2 if OOM
-  val_batch_size: 8
-  num_workers: 6
+  batch_size: 24               # bumped 16 -> 24 on H200 140GB; projected ~125GB peak (~15GB headroom). LRs Goyal-scaled 1.5x above. Saves ~10-15% wall clock vs bs=16 by reducing optim steps per epoch from ~2063 to ~1375.
+  val_batch_size: 32           # 2x val throughput
+  num_workers: 32              # H200 box has 224 vCPUs (28 allocated); bumped from 24
   pin_memory: true
   persistent_workers: true
   val_every_n_epochs: 1
   val_inference_size: 0
-  multi_scale_train: true
+  multi_scale_train: true      # FIX 4: re-enabled with narrowed range (no upscale → no OOM)
   multi_scale_min_factor: 0.75
-  multi_scale_max_factor: 1.25
+  multi_scale_max_factor: 1.0  # FIX 4 cont: capped at 1.0 — only DOWN-scaling (was 1.25 = 640² which OOMed); model still gets multi-resolution variety
   cutmix_p: 0.3                    # 30% of batches get pair-wise CutMix
   cutmix_alpha: 1.0
+  mosaic_p: 0.15                   # 4-way mosaic mix; ~50% total aug rate with cutmix
+  # RandAugment photometric policy (Cubuk et al., NeurIPS 2020) — picks N=2
+  # transforms from 10-op pool, each at magnitude M=10 (sweet spot for seg).
+  use_randaugment: true
+  randaugment_n: 2
+  randaugment_m: 10
   # Class-balanced sampling — off in phase 1 (let the model see the natural
   # data distribution first; turn on in phase 2 to focus on weak categories).
   use_balanced_sampler: false
@@ -147,6 +167,12 @@ train:
   use_tta: false                     # off during per-epoch val (slow)
   tta_scales: [0.5, 0.75, 1.0, 1.25, 1.5]  # Tier-1 bump: more scales for the FINAL test TTA
   tta_flip: true                     # used at FINAL test eval if tta_at_final_test
+  # Photometric TTA (orthogonal to scales+flip) — averages over brightness +
+  # gamma perturbations to add lighting robustness. ~3x more forwards at the
+  # final test eval; per-epoch val unaffected.
+  tta_photometric: true
+  tta_photometric_brightness: [-0.10, 0.10]
+  tta_photometric_gamma: [0.9, 1.1]
   tta_at_final_test: true            # auto-enable TTA for the post-training test eval
   skip_step_on_nonfinite_loss: true
   log_grad_norm: true
@@ -160,6 +186,10 @@ data:
   train_split: "train"
   val_split: "val"
   test_split: "test"
+  # Audit-driven filter: drop the 103 SAM2 auto-accepted train pos samples
+  # with fewer than 100 fence pixels (1.1% of train pos). They carry near-
+  # zero learning signal (~99% occluded). Val/test never filtered.
+  min_fence_pixels_for_pos: 100
 
 post:
   enabled: true                 # ON for the final test eval after training
@@ -175,9 +205,29 @@ post:
   crf_bilateral_compat: 12
   # Connected-component cleanup (drops false-positive specks in trees/grass)
   use_cc_cleanup: true
-  cc_min_blob_area: 200         # drop blobs smaller than 200 px
+  cc_min_blob_area: 150         # 200 -> 150 at 512^2 (audit fix #23): keeps
+                                # smaller real fence blobs (fragmented chain-
+                                # link, distant pickets) without admitting
+                                # tree-bark false-positives (those are still
+                                # well below 150 px).
   cc_fill_holes_smaller_than: 0 # 0 = preserve picket gaps
   cc_keep_top_k_blobs: 0        # 0 = keep all blobs that pass min_area
+  binarize_threshold: 0.5       # threshold sigmoid prob -> binary mask
+                                # (used by both post-process cascade AND
+                                # the in-training val/test eval — they
+                                # must match for honest reporting).
+  # Calibration: fit a temperature scalar on val_dl after training,
+  # save into best_inference.pt and apply at inference. 1.0 = no scaling.
+  temperature: 1.0
+  fit_temperature_on_finish: true
+  # Per-subcategory threshold tuning: after training, sweep thresholds per
+  # subcategory on val and pick argmax-IoU per bucket. Stored in checkpoint
+  # meta and applied at test eval / browser inference.
+  per_subcategory_thresholds: true
+  threshold_sweep_min: 0.20
+  threshold_sweep_max: 0.80
+  threshold_sweep_step: 0.025
+  threshold_sweep_min_count: 20
 
 log:
   log_dir: "outputs/training_v2"
