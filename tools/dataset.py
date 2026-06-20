@@ -1323,10 +1323,11 @@ def compute_class_distribution(img_jsonl: str | Path) -> dict[str, int]:
     return out
 
 
-def compute_balanced_sample_weights(img_jsonl: str | Path,
+def compute_balanced_sample_weights(img_jsonl: str | Path | None = None,
                                       balance_by: str = "subcategory",
                                       alpha: float = 0.5,
                                       min_count: int = 50,
+                                      rows: Optional[list[dict]] = None,
                                       ) -> list[float]:
     """Per-sample weights for `torch.utils.data.WeightedRandomSampler` so that
     rare/hard categories (e.g. neg_shutter_blind, style_cedar) are oversampled
@@ -1336,6 +1337,7 @@ def compute_balanced_sample_weights(img_jsonl: str | Path,
         freq_capped = max(min_count, count_of_this_category_in_split)
 
     Args:
+        img_jsonl:  path to JSONL. Ignored when `rows` is provided.
         balance_by: jsonl key to bucket by — typically 'subcategory' (~30 buckets,
                      finer-grained) or 'class' (just pos/neg, coarser).
         alpha:      0.0 = uniform (no balancing), 1.0 = inverse-frequency,
@@ -1344,13 +1346,21 @@ def compute_balanced_sample_weights(img_jsonl: str | Path,
         min_count:  floor on per-bucket count. Prevents an N=10 rare class from
                      being sampled 100x more than a major class. Set to ~1% of
                      the split size as a rule of thumb.
+        rows:       pre-loaded list of row dicts. MUST be aligned with the
+                     dataset's actual surviving rows when used with
+                     `WeightedRandomSampler` — pass `train_ds.img_rows` to avoid
+                     OOB indices when the dataset applies its own filtering
+                     (e.g. `min_fence_pixels_for_pos`).
 
     Returns:
-        list[float] of length len(rows), in the same order as the JSONL file.
+        list[float] of length len(rows), in the same order as the provided rows.
         Pass directly to `WeightedRandomSampler(weights, num_samples=..., replacement=True)`.
     """
     from collections import Counter
-    rows = load_jsonl(img_jsonl)
+    if rows is None:
+        if img_jsonl is None:
+            raise ValueError("compute_balanced_sample_weights: must provide either img_jsonl or rows")
+        rows = load_jsonl(img_jsonl)
     keys = [r.get(balance_by, "unknown") or "unknown" for r in rows]
     counts = Counter(keys)
     counts_floor = {k: max(min_count, v) for k, v in counts.items()}

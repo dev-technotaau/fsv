@@ -1,0 +1,12 @@
+# Serve .wasm with the correct MIME type so browsers can use
+# WebAssembly.instantiateStreaming() instead of falling back to
+# ArrayBuffer instantiation (~50-100ms slower on first load).
+#
+# Scope: this file only affects requests for files inside the plugin
+# directory. Apache reads it automatically; Nginx ignores it (Nginx
+# users must add `types { application/wasm wasm; }` to their server
+# config — most managed WordPress hosting runs Apache, so this covers
+# the common case with zero user action).
+<IfModule mod_mime.c>
+    AddType application/wasm .wasm
+</IfModule>

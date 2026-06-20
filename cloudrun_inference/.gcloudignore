@@ -1,0 +1,21 @@
+# Excludes from the upload to Cloud Build. Smaller upload = faster builds.
+# The model files (.onnx + .onnx.data) ARE included — they're needed by
+# the Dockerfile's COPY.
+
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.git/
+.gitignore
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+.env
+.env.local

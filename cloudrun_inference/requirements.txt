@@ -1,0 +1,19 @@
+# Pinned to the same versions the Modal container uses so behavior matches
+# byte-for-byte. The nvidia-cu12-* pip packages bundle the user-space CUDA
+# .so files that onnxruntime-gpu dlopens at startup — the host (Cloud Run
+# L4 instance) provides only the kernel driver.
+
+onnxruntime-gpu==1.24.4
+nvidia-cublas-cu12
+nvidia-cuda-runtime-cu12
+nvidia-cuda-nvrtc-cu12
+nvidia-cudnn-cu12==9.10.2.21
+nvidia-cufft-cu12
+nvidia-curand-cu12
+nvidia-nvjitlink-cu12
+
+pillow==10.4.0
+numpy==1.26.4
+fastapi==0.115.6
+python-multipart==0.0.20
+uvicorn[standard]==0.32.0

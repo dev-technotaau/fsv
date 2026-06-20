@@ -442,8 +442,15 @@ def build_dataloaders(cfg: TrainingConfig, logger: logging.Logger,
     # `shuffle=True` (the sampler IS the shuffle).
     train_sampler = None
     if getattr(cfg.train, "use_balanced_sampler", False):
+        # CRITICAL: pass the dataset's actual rows (post-filter), NOT the raw
+        # JSONL. The dataset drops rows via `min_fence_pixels_for_pos`, so
+        # len(train_ds) < len(jsonl). Using raw JSONL row count would make the
+        # sampler emit OOB indices that the dataset retries 5x and falls back
+        # to a deterministic idx — corrupting both the balance and the
+        # per-bucket distribution for rare classes.
+        rows = list(train_ds.img_rows)
         sample_weights = compute_balanced_sample_weights(
-            splits_dir / f"{cfg.data.train_split}.jsonl",
+            rows=rows,
             balance_by=cfg.train.balance_by,
             alpha=cfg.train.balance_alpha,
             min_count=cfg.train.balance_min_count,
@@ -455,7 +462,6 @@ def build_dataloaders(cfg: TrainingConfig, logger: logging.Logger,
         # Quick distribution log — show the top oversampled buckets so it's
         # obvious whether the balance knob is doing what you wanted.
         from collections import Counter
-        rows = load_jsonl(splits_dir / f"{cfg.data.train_split}.jsonl")
         keys = [r.get(cfg.train.balance_by, "unknown") or "unknown" for r in rows]
         counts = Counter(keys)
         logger.info(
@@ -970,6 +976,10 @@ def train_one_phase(cfg: TrainingConfig) -> int:
             )
             if "state" in payload:
                 state.__dict__.update(payload["state"])
+                # Saved state.epoch is the epoch that was JUST COMPLETED.
+                # Advance by 1 so the training loop skips it and starts at the
+                # next epoch. Without this, resume re-runs the completed epoch.
+                state.epoch = int(state.epoch) + 1
             logger.info(f"Resumed at epoch={state.epoch} step={state.global_step}  "
                          f"best {state.best_metric_name}={state.best_metric:.4f}")
         else:

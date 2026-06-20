@@ -1,0 +1,107 @@
+# AREA: Final model state + training progress (models/ and outputs/)
+
+## SUMMARY
+The production model is a DINOv3 ViT-L/16 ("facebook/dinov3-vitl16-pretrain-lvd1689m") segmentation network with a ViT-Adapter, MSDeformAttn pixel decoder, Mask2Former decoder, and a multi-iteration refinement head, exported to ONNX at 512x512. The currently deployed weights are EPOCH 24 of phase 1 (val_iou 0.5014), exported on 2026-06-04 from outputs/training_v2/phase1/checkpoints/best_inference.pt; the models/ and cloudrun_inference/ copies are byte-identical (graph md5 906c53d9, weights md5 48e1a8a6). Phase 1 was configured for 120 epochs but only reached epoch 24 (training was interrupted mid-epoch 25), and phase 2 never started. Per-epoch wall time on a single A100-80GB averaged ~14,115 seconds (~3.92 h), so the 24 completed epochs represent roughly 94 wall-clock hours. The earlier outputs/web_deployable/web_v1 run is a superseded DINOv2-small model (epoch 19, val_iou 0.4253).
+
+## KEY_FACTS
+- Production backbone is facebook/dinov3-vitl16-pretrain-lvd1689m (configs verified at outputs/training_v2/phase1/config.yaml:2 and in checkpoint meta).
+- DEPLOYED EPOCH = 24. best_inference.pt meta: epoch=24, global_step=34920, val_iou=0.5013831 (rounds to 0.5014), saved_at 2026-05-29T09:53:21Z, backbone dinov3-vitl16, image_size 512, patch_size 16.
+- models/fence_dinov3_phase1.onnx (Jun 4 20:42) and cloudrun_inference/fence_dinov3_phase1.onnx (Jun 5 13:23) are byte-identical: graph md5 906c53d98f17936a1c386c818ffed117 (13,902,638 bytes); external weights .onnx.data md5 48e1a8a6f8f52abff2420bf1b15f31a0 (2,451,570,688 bytes ~2.45 GB).
+- The Jun 4 deployed weights differ from both backups: .onnx.data.bak (ep18, md5 54574bad, May 28) and .onnx.data.bak_ep23 (ep23, md5 dd0a1a84, May 29) — confirming the live model is the later ep24 export.
+- onnx_export.log shows the deployed export was run on 2026-06-04 from checkpoint outputs/training_v2/phase1/checkpoints/best_inference.pt; export completed ('Exported in 242.1s (13.3 MB)', line 127) but the post-export parity self-check crashed with onnxruntime bad_allocation on the RTX 3060 laptop (line 112) — export artifact is valid, only the in-process validation OOM'd.
+- Highest epoch reached in phase 1 = 24 completed. train.log tail shows epoch 25 was in progress (it 1161/2911) when training stopped; 'epochs: 120' configured (config.yaml:97) — only 24/120 (20%) completed.
+- Best val_iou = 0.5014 at epoch 24 (also the final epoch); val_dice at ep24 = 0.6679. IoU climbed monotonically-ish from 0.4244 (ep1) to 0.5014 (ep24).
+- Per-epoch wall time averaged ~14,115 s (min 13,952 s ep23, max 14,580 s ep1) on NVIDIA A100-SXM4-80GB; 24 epochs ~= 94.1 wall-clock hours.
+- Phase 2 has NOT started: outputs/training_v2/ contains only the phase1/ subdir; no phase2 directory exists.
+- No test_metrics.jsonl exists anywhere; final test evaluation never ran (run_test_eval_on_finish=true was configured but training was interrupted before finish). training_test_metrics and training_summary in the sidecar are null.
+- Training was a single A100-80GB run (training_provenance: NVIDIA A100-SXM4-80GB, 85.09 GB, torch 2.11.0+cu126, transformers 5.5.4, python 3.12.3, hostname d6e2e6426981 = vast.ai container).
+- Train set: 23,291 samples after filtering (min_fence_pixels_for_pos=100); 2,911 iterations/epoch at batch_size 8 with grad_accumulation_steps 2.
+- Model architecture (config.yaml): ViT-Adapter (inplanes 64, 8 heads, 4 points, 4 interactions), MSDeformAttn pixel decoder (12 layers, 8 heads, ffn 3072), Mask2Former decoder (dim 512, 64 queries, 15 layers, masked attention), refinement head (96 ch, 4 blocks, 3 iterations, edge head, CGM, PointRend, depth via Intel/dpt-hybrid-midas).
+- Optimizer AdamW base_lr 1.5e-4, backbone_lr 1.5e-5, weight_decay 0.05, cosine schedule, warmup 8 epochs, grad_clip 2.0, bf16 AMP, EMA decay 0.999 with 1000-step warmup (config.yaml:78-95,118-120).
+- Loss is a composite: BCE 1.0 + Dice 1.0 + boundary 0.4 + Lovasz 0.25 + Tversky 0.5 (a0.6/b0.4) + connectivity 0.02 + edge 0.8 + PointRend, pos_weight 3.0, focal_gamma 2.0 (config.yaml:47-77).
+- ONNX export: opset 17 requested but auto-upgraded to 18 (ScatterND lacks an opset-17 adapter, onnx_export.log:7,28); FP32 variant, input image [1,3,512,512], output mask_prob [1,1,512,512] sigmoid in [0,1], temperature 1.0 baked in, binarize_threshold 0.5.
+- Sidecar parity_check (from a prior successful ep18 export) reported max_abs_diff 3.32e-5, mean 1.44e-6, within tolerance 0.005.
+- Suggested post-process baked into sidecar: morphology + guided filter + dense CRF + connected-component cleanup (cc_min_blob_area 150, crf_bilateral sxy 50 / srgb 10 / compat 12).
+- H+ is NOT the production model: facebook/dinov3-vith16plus-pretrain-lvd1689m (~840M) is only the dataclass DEFAULT (training/config.py:26, training/model.py:61) and appears in onnx_export.log:113 because export_onnx.py:142 prints the TrainingConfig() default string; the model was actually built from the bundled checkpoint config (vitl16), confirmed by onnx_export.log:4 'Using bundled config from checkpoint'.
+- Superseded earlier run: outputs/web_deployable/web_v1/checkpoints/best_inference.pt is DINOv2-small (facebook/dinov2-small), epoch 19, val_iou 0.4253, saved 2026-05-04 — replaced by the DINOv3 ViT-L run.
+- Two sidecar JSONs are stale snapshots: fence_dinov3_phase1.json.bak = epoch 18 (val_iou 0.4855, May 28) and fence_dinov3_phase1.json.bak_ep23 = epoch 23 (val_iou 0.4918, May 29); neither matches the deployed ep24 weights and NO current (non-.bak) sidecar exists alongside the live ONNX.
+- Per-subcategory val_iou at ep24-region (from ep15 sample in ckpt): fence_general weakest (~0.27), damaged_construction ~0.38, occlusion ~0.60, style_cedar ~0.56, style_wood ~0.51; negative buckets near-perfect (neg_pure_random 0.99, neg_shutter_blind 1.0).
+
+## FILE_ROLES
+- [current] models/fence_dinov3_phase1.onnx — Deployed ONNX graph (epoch 24, 13.9 MB). md5 906c53d9; byte-identical to cloudrun copy.
+- [current] models/fence_dinov3_phase1.onnx.data — Deployed external weights (2.45 GB, epoch 24). md5 48e1a8a6.
+- [current] cloudrun_inference/fence_dinov3_phase1.onnx — Production Cloud Run copy of the ONNX graph; identical to models/ copy.
+- [current] cloudrun_inference/fence_dinov3_phase1.onnx.data — Production Cloud Run copy of external weights; identical to models/ copy.
+- [backup] models/fence_dinov3_phase1.onnx.bak / .onnx.data.bak — Backup of the epoch-18 export (May 28). md5 5fe46f9b / 54574bad.
+- [backup] models/fence_dinov3_phase1.onnx.bak_ep23 / .onnx.data.bak_ep23 — Backup of the epoch-23 export (May 29). md5 a1760d5e / dd0a1a84.
+- [stale] models/fence_dinov3_phase1.json.bak — ONNX sidecar metadata snapshot at epoch 18 (val_iou 0.4855). Stale vs deployed ep24.
+- [stale] models/fence_dinov3_phase1.json.bak_ep23 — ONNX sidecar metadata snapshot at epoch 23 (val_iou 0.4918). Stale vs deployed ep24.
+- [current] models/onnx_export.log — Log of the Jun 4 deployed export from best_inference.pt; shows successful export + post-export validation OOM.
+- [current] models/smoke_test_onnx.py — Standalone CPU ORT smoke test for the deployed ONNX (preprocess, infer, confidence histogram, overlay).
+- [current] models/test_index4_dinov3_pipeline.py — Replicates index4_dinov3.html browser preprocessing (resize 1024, contrast/saturate, autoLevels, JPEG q85, 512 norm) for diagnostic parity.
+- [stale] models/onnx/fence_model_unet_browser.onnx — Legacy UNet browser ONNX (35.2 MB, Nov 2025) from earlier architecture comparison.
+- [stale] models/onnx/legacy_training_copies/ — Legacy SegFormer (16.2 MB) and UNet (35.2 MB) browser ONNX copies, Nov 2025.
+- [stale] models/pytorch/ — Old PyTorch checkpoints: best_fence_model_light.pth (26.6 MB), best/last_fence_model_v2.pth (106 MB), Nov 2025 — pre-DINOv3.
+- [artifact] models/test_runs/ — Sample mask+overlay PNG outputs from smoke tests (1000s, images-4).
+- [current] outputs/training_v2/phase1/checkpoints/best_inference.pt — Inference-only checkpoint, epoch 24 val_iou 0.5014 — SOURCE of the deployed ONNX. 2.43 GB.
+- [current] outputs/training_v2/phase1/checkpoints/best.pt / latest.pt / ema.pt — Full training checkpoints (8.26 GB best/latest, 2.43 GB ema) for resume; best.pt is EMA-swapped ep24.
+- [backup] outputs/training_v2/phase1/checkpoints/*.bak_ep* / epoch_0NN.pt — Periodic/versioned checkpoint backups (ep1 v1, ep3 v2, ep18 v4, ep24 v4; epoch_005/010/015/020).
+- [current] outputs/training_v2/phase1/config.yaml — Authoritative phase-1 training config: 120 epochs, vitl16, full loss/optim/post settings.
+- [current] outputs/training_v2/phase1/val_metrics.jsonl — Per-epoch validation metrics + epoch_seconds across 4 restart attempts (v1-v4); final v4 block = ep1-24.
+- [current] outputs/training_v2/phase1/train.log — Final clean training log; ends mid epoch 25 (it 1161/2911) — last NEW BEST val_iou=0.5014 at ep24.
+- [stale] outputs/training_v2/phase1/train.log.v4_buggy / stderr.log.v4_buggy — Logs from an earlier buggy v4 attempt before the clean run.
+- [artifact] outputs/training_v2/phase1/val_samples/epoch_001..024 — Saved validation prediction images per epoch (max epoch dir = 024).
+- [stale] outputs/web_deployable/web_v1/ — EARLIER superseded run: DINOv2-small best_inference.pt (epoch 19, val_iou 0.4253, May 4) + test images.
+- [artifact] models/_make_aria2_*.py, aria2_*.txt/log, _curl_*.sh/.txt, _curl_shard_*.txt, _parallel_curl.sh, parallel_curl.log*, _priority_*.sh, _priority_parts/, _epoch_015_parts/ — vast.ai checkpoint-retrieval ARTIFACTS: multi-stream aria2/curl download scripts, input lists, and transfer logs. Not pipeline code.
+- [artifact] models/priority_best_latest_ep{17,18,22,23,24}.log, priority_inf_ema_ep*.log, priority_best_*.log, ema_tail.log — Download-completion logs for best/latest/best_inference/ema checkpoints at each epoch pulled from vast.ai; ep24 logs (May 29 16:36) are latest.
+- [artifact] models/_check_ckpt.py, _check_calibration.py, _compare_ep_iou.py, _compare_dinov2_dinov3_okc.py, _compare_masks.py, _raw_confidence_mask.py, _modal_overlay.py, _shadow_dom_refactor_css.py — Ad-hoc one-off diagnostic/comparison scripts (underscore-prefixed).
+- [artifact] models/*.png (dinov2_okc_*, modal_*, raw_*, overlay_full, smoke_test_*) — Diagnostic/test inference output images.
+
+## NARRATIVE
+## Final model state and training progress
+
+The short version, which is the version the client cares about: the model running in production right now is the **epoch-24 checkpoint** of the phase-1 DINOv3 run, and it is the best checkpoint we ever produced. Everything else in `models/` and `outputs/` is either a backup of an older epoch, a download artifact from pulling checkpoints off the rented GPU, or a superseded earlier experiment.
+
+### Which weights are actually deployed
+
+There are three sets of ONNX files in `models/`: the live ones, a `.bak` set, and a `.bak_ep23` set. I confirmed by hashing the actual bytes rather than trusting filenames. The live graph `models/fence_dinov3_phase1.onnx` (13.9 MB, dated Jun 4 20:42) has md5 `906c53d9...`, and the copy sitting in `cloudrun_inference/fence_dinov3_phase1.onnx` (Jun 5) has the exact same md5 — they are byte-for-byte identical. The large external-weights file (`*.onnx.data`, 2.45 GB) is likewise identical between the two locations (md5 `48e1a8a6...`). So the model in the Cloud Run container is precisely the model in the repo, no drift.
+
+To prove which epoch those bytes represent, I compared the live `.onnx.data` against the two backups: the `.bak` weights (md5 `54574bad`, from May 28) correspond to the epoch-18 export, and the `.bak_ep23` weights (md5 `dd0a1a84`, May 29) correspond to epoch 23. The live weights match neither — they are newer. The `onnx_export.log` closes the loop: the Jun 4 export was run with `--checkpoint outputs/training_v2/phase1/checkpoints/best_inference.pt`, and when I loaded that checkpoint its embedded `meta` block reads `epoch: 24, global_step: 34920, metric_value: 0.5013831, backbone_name: facebook/dinov3-vitl16-pretrain-lvd1689m`. **So production = epoch 24, val_iou 0.5014.**
+
+One wrinkle worth flagging honestly: that Jun 4 export job actually threw an error at the very end. The export itself succeeded (`Exported in 242.1s (13.3 MB)`), but the script's built-in PyTorch-vs-ONNX parity check then tried to run an inference session on the laptop's 6 GB RTX 3060 and died with a `bad allocation` out-of-memory error inside ONNX Runtime. That is a validation-harness limitation on a small laptop GPU, not a problem with the exported model — the ONNX file was already written to disk before the check ran, and the earlier ep18 export's parity check (preserved in the sidecar) had passed cleanly with a max absolute difference of 3.3e-5 against a 5e-3 tolerance. The same architecture exports identically; only the weights changed. Still, it means the deployed ep24 export was never formally parity-validated end-to-end, which is something to note.
+
+### How far training actually got
+
+The config (`outputs/training_v2/phase1/config.yaml:97`) asks for **120 epochs**. Training reached **epoch 24 completed**, then started epoch 25 and stopped partway through. I can see this directly in `train.log`: the last validation line is `NEW BEST val_iou=0.5014 -> saved best.pt (EMA-swapped) + best_inference.pt` at the end of epoch 24, after which the log shows epoch 25 progressing to iteration 1161 of 2911 and then simply ending. So 24 of 120 epochs (20%) were finished. That also tells us each epoch is 2,911 iterations at batch size 8 with 2-step gradient accumulation.
+
+The validation history is clean and monotonic enough to be reassuring: val_iou went 0.4244 (ep1) -> 0.4603 (ep8) -> 0.4787 (ep15) -> 0.4855 (ep18) -> 0.4918 (ep23) -> **0.5014 (ep24)**. Dice tracked it from 0.5959 up to 0.6679. The curve was still climbing at the point training stopped, with no sign of a plateau, which is why the decision was to keep epoch 24 as the deployable model but note that the run was cut short of its configured budget.
+
+The `val_metrics.jsonl` file is a little messy because the run was restarted four times (you can see blocks of ep1-3, ep1-4, ep1-6, then the final clean ep1-24). The earlier short blocks are the v1-v3 attempts; the v4 buggy logs (`train.log.v4_buggy`, `stderr.log.v4_buggy`) are leftovers from a failed attempt before the clean run took hold. For wall-clock budgeting: the final run averaged **14,115 seconds per epoch** (about 3.92 hours), ranging from 13,952 s (ep23) to 14,580 s (ep1). Twenty-four epochs is therefore roughly **94 hours of A100 time**. The hardware was a single NVIDIA A100-SXM4-80GB (85 GB reported) inside a vast.ai container, torch 2.11.0+cu126, transformers 5.5.4.
+
+### Has phase 2 started? No.
+
+`outputs/training_v2/` contains exactly one subdirectory, `phase1/`. There is no `phase2/` anywhere. The two-phase plan exists in the configuration vocabulary, but the second phase has not begun — phase 1 itself never finished. Relatedly, there is **no test-set evaluation**: `run_test_eval_on_finish: true` is set, but because training was interrupted it never reached the finish hook, so no `test_metrics.jsonl` exists and the sidecar's `training_test_metrics` and `training_summary` fields are both `null`. All quoted numbers are **validation** metrics, not held-out test metrics. This is an important caveat for the client report — we have strong validation IoU but no final test number yet.
+
+### The architecture being shipped
+
+Reading `config.yaml` and the bundled config inside the checkpoint, the deployed model is a fairly heavyweight segmentation stack: a frozen-free DINOv3 ViT-L/16 backbone (`facebook/dinov3-vitl16-pretrain-lvd1689m`, drop-path 0.1, multi-block aggregation over 6 blocks with weighted sum) feeding a **ViT-Adapter** (64 inplanes, 8 heads, 4 deform points, 4 interaction stages), then an **MSDeformAttn pixel decoder** (12 layers, 8 heads, 3072 FFN), a **Mask2Former decoder** (512-dim, 64 queries, 15 layers, masked attention), and finally a multi-iteration **refinement head** (96 channels, 4 blocks, 3 refinement iterations, with an edge head, a coarse-to-fine guidance module, distance fields, depth conditioning via `Intel/dpt-hybrid-midas`, and a PointRend uncertainty module). It is a single-class (fence) sigmoid model, output as a probability map. The loss is a composite of BCE, Dice, boundary, Lovasz, Tversky (alpha 0.6 / beta 0.4), connectivity, and edge terms, with PointRend point sampling and a positive-class weight of 3.0. Optimizer is AdamW with base LR 1.5e-4, a much lower backbone LR of 1.5e-5, cosine schedule, 8-epoch warmup, bf16 AMP, and EMA with decay 0.999. At export, temperature is baked in at 1.0 and the binarization threshold is 0.5; the recommended post-processing chain (carried in the sidecar) is morphology + guided filter + dense CRF + connected-component cleanup with a 150-pixel minimum blob area.
+
+### Killing the H+ confusion
+
+The export log line `backbone : facebook/dinov3-vith16plus-pretrain-lvd1689m` will jump out at anyone skimming, but it is a red herring. H+ (the ~840M ViT-H+ variant) is only the **dataclass default** in `training/config.py:26` and `training/model.py:61`. The export script at `tools/export_onnx.py:142` prints `(config or TrainingConfig()).model.backbone_name`, and in some code paths that resolves to the default string even though the model was actually built from the **bundled checkpoint config** (the log itself says, one line earlier, "Using bundled config from checkpoint"). The bundled config, the `config.yaml`, and the checkpoint `meta` all agree the real backbone is **ViT-L/16**. So: H+ is an unused default that shows up only in printed strings; the shipped model is ViT-L/16.
+
+### What's superseded
+
+`outputs/web_deployable/web_v1/` is the previous generation: its `best_inference.pt` is a **DINOv2-small** model (`facebook/dinov2-small`), epoch 19, val_iou 0.4253, saved May 4. It's been fully replaced by the DINOv3 ViT-L run, which beats it by roughly 7.6 IoU points. The old PyTorch `.pth` files under `models/pytorch/` and the UNet/SegFormer browser ONNX files under `models/onnx/` and `models/onnx/legacy_training_copies/` are even older (Nov 2025) artifacts from the original architecture bake-off and are not in the deployment path.
+
+### Download and diagnostic clutter
+
+A large fraction of `models/` is not code at all — it's the debris of dragging multi-gigabyte checkpoints off a vast.ai box over a throttled link: `aria2_*.txt/log`, `_curl_shard_*.txt`, `_parallel_curl.sh`, `_priority_*.sh`, `_priority_parts/`, `_epoch_015_parts/`, and the `priority_best_latest_ep{17,18,22,23,24}.log` / `priority_inf_ema_ep*.log` completion logs. These are pure transfer artifacts (the ep24 ones, dated May 29 16:36, are the most recent successful pulls). Similarly, the underscore-prefixed `.py` files (`_check_ckpt.py`, `_compare_ep_iou.py`, `_compare_dinov2_dinov3_okc.py`, `_raw_confidence_mask.py`, etc.) are throwaway diagnostics, and the many `.png` files are test-inference outputs. The two genuinely useful test scripts are `smoke_test_onnx.py` (a clean CPU ORT sanity check) and `test_index4_dinov3_pipeline.py` (which faithfully reproduces the browser-side preprocessing — resize to 1024, CSS contrast/saturate, percentile auto-levels, JPEG q85 round-trip, 512 resize, ImageNet normalize — so we can debug why the live site's mask differs from a raw model run).
+
+## UNCERTAINTIES
+- The deployed ep24 ONNX export's end-to-end PyTorch-vs-ONNX parity check never completed (it OOM'd on the laptop GPU per onnx_export.log:112). The earlier ep18 export passed parity (max_abs_diff 3.3e-5), and the architecture is unchanged, so the ep24 export is almost certainly correct — but it was not formally validated. Recommend re-running parity on a machine with more RAM/VRAM.
+- No held-out TEST metrics exist anywhere (no test_metrics.jsonl; sidecar training_test_metrics/training_summary are null) because training stopped before the finish-time test hook. All reported numbers are VALIDATION metrics only.
+- The two sidecar JSONs in models/ are ep18 and ep23 snapshots; there is NO current sidecar matching the deployed ep24 ONNX. The architecture/calibration fields (temperature 1.0, threshold 0.5, post-process settings) are assumed unchanged for ep24, which is reasonable but not separately recorded for the live model.
+- I could not 100% confirm WHY the H+ default string was printed instead of vitl16 at export_onnx.py:142 given the bundled config was loaded one line earlier (onnx_export.log:4). The model weights and meta unambiguously say vitl16, so deployment is correct, but the print-path logic is slightly inconsistent and worth a quick code read by the orchestrator if it matters for the report.
+- epoch_seconds in val_metrics.jsonl includes validation time per row; the ~14,115 s figure is total per-epoch wall time (train+val), not pure training compute. lr fields in that file are null (logged elsewhere in train.log), so I could not extract per-epoch LR from the jsonl.
+- Training was restarted 4 times (v1-v4 blocks in val_metrics.jsonl). I could not determine the exact cause of each restart from these files alone; the v4_buggy logs suggest at least one was due to a code bug that was then fixed.

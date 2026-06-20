@@ -235,3 +235,21 @@ tmp_*.py
 *.dll
 *.so
 *.dylib
+
+# ───── Model scratch dir + model backups (too large for git; added per request) ─────
+# The whole models/ working dir is download artifacts, diagnostics, ONNX exports
+# (13 MB - 2.45 GB) and epoch backups — none of it is canonical source. The
+# deployable ONNX is bundled into cloudrun_inference/ (ignored there by *.onnx).
+models/
+# Catch epoch-suffixed backups that *.bak does NOT (e.g. .onnx.data.bak_ep23 = 2.45 GB)
+*.bak_*
+*.onnx.data.bak*
+*.onnx.bak*
+*.json.bak*
+
+# ───── Web build toolchains / model caches (large, regeneratable) ─────
+fence-staining-visualizer/wasm/emsdk/
+fence-staining-visualizer/wasm/build/
+fence-staining-visualizer/scripts/node_modules/
+fence-staining-visualizer/scripts/.transformers_cache/
+**/.transformers_cache/

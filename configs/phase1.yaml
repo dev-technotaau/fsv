@@ -70,8 +70,8 @@ model:
 loss:
   bce_weight: 1.0
   dice_weight: 1.0
-  boundary_weight: 0.8          # Tier-2 bump: 0.5 → 0.8 (sharper boundaries)
-  lovasz_weight: 0.5            # ON — direct IoU surrogate
+  boundary_weight: 0.4          # FIX H (2026-05-24): halved from 0.8. Per-component log shows boundary_coarse jumped 1.42->2.38 (+68%) at LR transition (ep3->ep4), driving 25% of the total_loss spike. Refined boundary head still produces sharp masks via its own edge_loss/distance/PointRend signals — coarse boundary weight was over-pressuring the unstable raw decoder output.
+  lovasz_weight: 0.25           # FIX H (2026-05-24): halved from 0.5. Per-component log shows lovasz_coarse jumped 4.68->7.45 (+59%) at LR transition, driving 46% of the total_loss spike. Lovasz is a ranking-based loss highly sensitive to prediction distribution shifts during LR ramp — halving its weight removes the primary destabilizer. Dice+Tversky on the refined head still provides IoU-surrogate signal.
   tversky_weight: 0.5           # ON — recall-friendly (don't miss fence pixels)
   tversky_alpha: 0.6            # Audit fix: lowered 0.7 -> 0.6 to ease the
                                 # recall amplifier stack (pos_weight=3.0 +
@@ -106,36 +106,36 @@ loss:
                                      # pos_weight=3.0 was promoting thin
                                      # boundary false positives (the same
                                      # recall amplifier the 4 fixes targeted).
-  refinement_iter_aux_weight: 0.2    # FIX 2 cont: scaled from 0.5 (3-iter × 0.5 was over-weighted vs final-iter mask)
+  refinement_iter_aux_weight: 0.35   # FIX I (2026-05-25): bumped 0.2->0.35. v3 ep1-6 data showed dice_refine_iter_avg essentially FLAT (1.31->1.28 across 6 epochs = no learning). 0.35 still keeps aux/main ratio at 3*0.35=1.05 vs final 1.0 (balanced, not dominating); web ran 2*0.5=1.0 with no issue.
   ema_distill_weight: 0.0            # off in phase 1 (extra fwd cost; EMA still warming)
   # UNet3+ extras:
-  refinement_fds_weight: 0.3         # FDS — supervised side heads on D1..D{N-1}
-  cgm_weight: 0.5                    # CGM — per-image fence/non-fence classifier BCE (HELPS on negatives — reverted from disable)
+  refinement_fds_weight: 0.5         # FIX I (2026-05-25): bumped 0.3->0.5. Full-scale deep supervision inside refinement head. Same starvation pattern as iter_aux - refinement head's mid-layers need more signal to learn occluder cleanup features. 0.5 gives 1.7x more pull without dominating.
+  cgm_weight: 1.0                    # FIX I (2026-05-25): bumped 0.5->1.0. v3 ep1-6 data showed cgm essentially FLAT (0.538->0.535 across 6 epochs = literally not learning). CGM is the per-image gate that suppresses predictions on non-fence regions - directly addresses occluder-inclusion symptom. CGM is 1 scalar/image so doubling its weight has tiny effect on total loss but doubles gradient flow to the CGM head.
   # Boundary Distance Regression (sub-pixel boundary signal)
   boundary_distance_weight: 0.3      # L1 between predicted distance and GT distance map
   boundary_distance_clip: 50.0       # clip pred + GT to ±50 px
   boundary_distance_normalize: true  # normalize loss to [0, 1]
 
 optim:
-  optimizer: "adamw8bit"        # bitsandbytes AdamW8bit — saves ~6GB vs fp32 AdamW (no quality loss); falls back to "adamw" if bnb unavailable
-  base_lr: 4.5e-4               # head LR — Goyal linear scale: 3.0e-4 * (24/16) = 4.5e-4
-  backbone_lr: 1.5e-5           # backbone LR — Goyal linear scale: 1.0e-5 * (24/16) = 1.5e-5
+  optimizer: "adamw"            # FIX C (2026-05-23): switched from adamw8bit. 8-bit moment quantization + bf16 grads + 41k-clipped-to-1.0 grad norms caused optim state drift on this 485M-param + 12-component-loss combo. Full adamw costs ~3 GB more VRAM but preserves moment estimate precision. Model+optim still fits in 80GB at bs=8+grad_accum=2.
+  base_lr: 1.5e-4               # FIX A (2026-05-23): halved from 3.0e-4. Goyal linear scaling at effective batch 16 was over-extrapolating for a 485M ViT-L + 15-layer Mask2Former + 3-iter refinement (Mask2Former/SegFormer papers use 1e-4 to 1.5e-4 typically). 3.0e-4 caused train loss to climb 13.1 -> 16.2 across 3 epochs while LR ramped, signaling optimizer divergence.
+  backbone_lr: 1.5e-5           # FIX E (2026-05-23, revised): bumped from 1.0e-5 to 1.5e-5 (not 3.0e-5 - too aggressive). Old ratio 30x (head 3e-4 / backbone 1e-5) left backbone frozen-ish while heavy aux losses fit head to noise. New ratio 10x (head 1.5e-4 / backbone 1.5e-5) lets backbone adapt with the head while still preserving DINOv3 LVD-1689M pretrained features.
   backbone_lr_decay: 0.9        # layer-wise LR decay multiplier
   weight_decay: 0.05
   betas: [0.9, 0.999]
-  warmup_epochs: 7                # 5 -> 7 for the 1.5x higher LR (Goyal recommends longer warmup with larger batches)
+  warmup_epochs: 8                # FIX F (2026-05-23): extended from 5. For 485M model with heavy multi-component loss, large-scale seg papers use 10-20% warmup. 8/120 = 6.7%, gentler ramp that lets optimizer state stabilize before LR reaches full base.
   warmup_lr: 1.0e-7
   lr_min: 1.0e-7
   schedule: "cosine"
-  grad_clip_norm: 1.0
-  grad_accumulation_steps: 1     # effective batch = batch_size * accum_steps  (16 * 1 = 16) — same as original 4*4=16; H200 140GB fits bs=16 directly without grad_accum
+  grad_clip_norm: 2.0           # FIX B (2026-05-23): loosened from 1.0. With pre-clip grad norms hitting 8k-41k, clipping to 1.0 destroyed magnitude info that Adam's moment estimates need to compute correct per-parameter LRs. 2.0 still bounds gradients (preventing explosion) but preserves more signal for moment updates.
+  grad_accumulation_steps: 2     # A100 80GB: paired with bs=8 to keep effective batch=16 (bs=16 OOM'd; halving per-step activations restores headroom)
   use_amp: true
   amp_dtype: "bf16"
 
 train:
   epochs: 120                  # Tier-1 bump: 100 → 120 (more convergence headroom)
-  batch_size: 24               # bumped 16 -> 24 on H200 140GB; projected ~125GB peak (~15GB headroom). LRs Goyal-scaled 1.5x above. Saves ~10-15% wall clock vs bs=16 by reducing optim steps per epoch from ~2063 to ~1375.
-  val_batch_size: 32           # 2x val throughput
+  batch_size: 8                # A100 80GB: bs=16 OOM'd every batch (model+activations ~83GB > 80GB cap). bs=8 + grad_accum=2 keeps effective batch=16, LRs/warmup unchanged. Future H200 run: bump back to 24 + scale LRs 1.5x.
+  val_batch_size: 8            # FIX G (2026-05-23): halved from 16. Switching to full adamw (FIX C) adds ~2.9 GB always-resident optimizer state; epoch 1 val already pegged at 98.8% memory at val_batch_size=16+adamw8bit. Halving val batch gives ~5 GB headroom on val side to prevent OOM. Val takes ~2x longer (~18 min vs ~9 min per epoch) - acceptable cost.
   num_workers: 32              # H200 box has 224 vCPUs (28 allocated); bumped from 24
   pin_memory: true
   persistent_workers: true
@@ -152,14 +152,20 @@ train:
   use_randaugment: true
   randaugment_n: 2
   randaugment_m: 10
-  # Class-balanced sampling — off in phase 1 (let the model see the natural
-  # data distribution first; turn on in phase 2 to focus on weak categories).
-  use_balanced_sampler: false
+  # Class-balanced sampling — ON 2026-05-25 (FIX I): enabled in phase 1.
+  # Original "off in phase 1" plan assumed refinement-head would converge
+  # on natural distribution within phase 1; v3 ep1-6 data showed cgm + iter
+  # refinement losses essentially flat (no learning). Balanced sampler
+  # oversamples rare positive subcats (occlusion, occlusion_mild, painted,
+  # complex_background) — directly addresses occluder-inclusion symptom by
+  # giving refinement head more occluded examples per epoch. Web_deployable
+  # also used it from epoch 1 and reached 0.4253 with visually clean output.
+  use_balanced_sampler: true
   balance_by: "subcategory"
   balance_alpha: 0.5
   balance_min_count: 50
   use_ema: true
-  ema_decay: 0.9999
+  ema_decay: 0.999             # FIX D (2026-05-23): lowered from 0.9999 (10k-step window) to 0.999 (1k-step window). The longer window was averaging over the chaotic training trajectory so val (EMA-swapped) saw a smeared-out version of an oscillating model. Shorter window tracks current model more closely - val reflects what training is actually producing.
   ema_warmup_steps: 1000
   seed: 42
   deterministic: false

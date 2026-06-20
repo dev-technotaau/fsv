@@ -1,0 +1,640 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Fence Stain Simulator</title>
+    <meta
+      name="description"
+      content="AI-powered fence detection and color staining preview. Upload a photo, detect the fence, and try any stain color in seconds."
+    />
+    <meta name="theme-color" content="#ffffff" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css"
+    />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Plus+Jakarta+Sans:wght@500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap"
+    />
+    <link rel="stylesheet" href="app.css" />
+  </head>
+  <body>
+    <div
+      class="toast-container"
+      id="toast-container"
+      aria-live="polite"
+      aria-atomic="false"
+    ></div>
+
+    <div
+      class="loading-overlay"
+      id="loading-overlay"
+      role="status"
+      aria-live="polite"
+    >
+      <div class="loading-content">
+        <div class="loading-spinner" aria-hidden="true"></div>
+        <div class="loading-text" id="loading-text">Processing...</div>
+        <div class="loading-subtext" id="loading-subtext">
+          This only takes a moment.
+        </div>
+        <div class="loading-bar" aria-hidden="true">
+          <div class="loading-bar-fill"></div>
+        </div>
+      </div>
+    </div>
+
+    <div
+      class="color-picker-modal"
+      id="color-picker-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="color-picker-title"
+    >
+      <div class="color-picker-dialog">
+        <button
+          class="color-picker-close"
+          id="color-picker-close"
+          aria-label="Close color picker"
+        >
+          &times;
+        </button>
+        <h3 id="color-picker-title">
+          <i class="bi bi-palette-fill"></i> Choose Your Stain Color
+        </h3>
+        <div class="color-picker-grid" id="color-picker-grid"></div>
+      </div>
+    </div>
+
+    <div
+      class="color-picker-modal help-modal"
+      id="help-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="help-modal-title"
+    >
+      <div class="color-picker-dialog help-modal-dialog">
+        <button
+          class="color-picker-close"
+          id="help-modal-close"
+          aria-label="Close help"
+        >
+          &times;
+        </button>
+        <div class="help-modal-header">
+          <span class="help-modal-icon" aria-hidden="true"
+            ><i class="bi bi-lightbulb-fill"></i
+          ></span>
+          <div class="help-modal-heading-text">
+            <h3 id="help-modal-title">How It Works</h3>
+            <p class="help-modal-sub">4 simple steps</p>
+          </div>
+        </div>
+        <div class="info-grid">
+          <div class="info-tile">
+            <div class="badge">01</div>
+            <div class="info-tile-body">
+              <p class="info-tile-title">Upload</p>
+              <p class="info-tile-desc">
+                Drag or pick a fence photo (JPG, PNG, WebP up to 10 MB).
+              </p>
+            </div>
+          </div>
+          <div class="info-tile">
+            <div class="badge">02</div>
+            <div class="info-tile-body">
+              <p class="info-tile-title">Detect</p>
+              <p class="info-tile-desc">
+                The simulator isolates the fence boards from the rest of the
+                scene.
+              </p>
+            </div>
+          </div>
+          <div class="info-tile">
+            <div class="badge">03</div>
+            <div class="info-tile-body">
+              <p class="info-tile-title">Color</p>
+              <p class="info-tile-desc">
+                Pick any stain. Adjust opacity and blend mode to preview the
+                finish on your actual boards.
+              </p>
+            </div>
+          </div>
+          <div class="info-tile">
+            <div class="badge">04</div>
+            <div class="info-tile-body">
+              <p class="info-tile-title">Download</p>
+              <p class="info-tile-desc">Save the preview as a PNG.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="app-shell">
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="hero-inner">
+          <h1 id="hero-title">
+            Preview your fence in <span class="accent">any stain color</span
+            ><br />before you spend a dollar.
+          </h1>
+          <p class="lede">
+            Drop in a photo of your fence. Our fence simulator detects the
+            board, try Natural Cedar, Leatherwood, Redwood, or your HOA's
+            approved color, and see the finish on your actual boards before you
+            book.
+          </p>
+
+          <ol
+            class="stepper"
+            aria-label="Workflow steps"
+            hidden
+            style="display: none"
+          >
+            <li class="step active">
+              <span class="num">1</span><span>Upload</span>
+            </li>
+            <span class="step-sep" aria-hidden="true"></span>
+            <li class="step"><span class="num">2</span><span>Detect</span></li>
+            <span class="step-sep" aria-hidden="true"></span>
+            <li class="step"><span class="num">3</span><span>Color</span></li>
+            <span class="step-sep" aria-hidden="true"></span>
+            <li class="step">
+              <span class="num">4</span><span>Download</span>
+            </li>
+          </ol>
+        </div>
+      </section>
+
+      <div class="content">
+        <div class="workspace">
+          <div class="workspace-left">
+            <section
+              class="card card-flush"
+              aria-labelledby="upload-card-title"
+            >
+              <div class="card-head">
+                <h2 class="card-title" id="upload-card-title">
+                  <span class="icon-chip"
+                    ><i class="bi bi-cloud-arrow-up"></i
+                  ></span>
+                  Upload Photo
+                </h2>
+                <span class="card-sub" style="display: none">Step 1 of 4</span>
+              </div>
+              <div class="card-body">
+                <div
+                  class="upload-section"
+                  id="upload-section"
+                  tabindex="0"
+                  role="button"
+                  aria-label="Upload an image of your fence"
+                >
+                  <div class="upload-icon" aria-hidden="true">
+                    <i class="bi bi-images"></i>
+                  </div>
+                  <h3>Drop your fence photo here</h3>
+                  <p class="upload-hint">or click to browse from your device</p>
+                  <input type="file" id="file-input" accept="image/*" />
+                  <button
+                    class="upload-btn"
+                    type="button"
+                    onclick="document.getElementById('file-input').click()"
+                  >
+                    <i class="bi bi-folder2-open"></i> Choose Image
+                  </button>
+                  <div class="upload-meta">
+                    <span class="pill"
+                      ><i class="bi bi-file-image"></i> JPG · PNG · WebP</span
+                    >
+                    <span class="pill"
+                      ><i class="bi bi-hdd"></i> Up to 10 MB</span
+                    >
+                  </div>
+                </div>
+
+                <div class="status-row" style="display: none">
+                  <div class="loader" id="loader" aria-hidden="true"></div>
+                  <div class="status" id="status">Initializing model...</div>
+                </div>
+              </div>
+            </section>
+
+            <section
+              class="card"
+              aria-labelledby="controls-card-title"
+              style="display: none"
+            >
+              <div class="card-head">
+                <h2 class="card-title" id="controls-card-title">
+                  <span class="icon-chip"><i class="bi bi-sliders"></i></span>
+                  Stain Settings
+                </h2>
+                <span class="card-sub">Pick your color &amp; blend</span>
+              </div>
+              <div class="card-body">
+                <div class="controls">
+                  <div class="control-group" style="display: none">
+                    <label for="blend-mode">
+                      <span><i class="bi bi-layers-half"></i> Blend Mode</span>
+                    </label>
+                    <select id="blend-mode">
+                      <option value="smart" selected>
+                        Smart (works for any color)
+                      </option>
+                      <option value="normal">Normal</option>
+                      <option value="multiply">
+                        Multiply (Realistic — dark colors only)
+                      </option>
+                      <option value="overlay">Overlay</option>
+                      <option value="screen">Screen</option>
+                    </select>
+                  </div>
+                  <div class="control-group" style="display: none">
+                    <label for="opacity">
+                      <span><i class="bi bi-circle-half"></i> Opacity</span>
+                      <span class="value-display" id="opacity-value">80%</span>
+                    </label>
+                    <input
+                      type="range"
+                      id="opacity"
+                      min="0"
+                      max="100"
+                      value="80"
+                    />
+                  </div>
+                  <div class="control-group" style="display: none">
+                    <label for="threshold">
+                      Detection Threshold
+                      <span class="value-display" id="threshold-value"
+                        >0.6</span
+                      >
+                    </label>
+                    <input
+                      type="range"
+                      id="threshold"
+                      min="0.1"
+                      max="0.9"
+                      step="0.01"
+                      value="0.6"
+                    />
+                  </div>
+                  <div class="control-group" style="display: none">
+                    <label for="edge-smoothing">
+                      Edge Smoothing
+                      <span class="value-display" id="smoothing-value"
+                        >Medium</span
+                      >
+                    </label>
+                    <input
+                      type="range"
+                      id="edge-smoothing"
+                      min="1"
+                      max="5"
+                      step="1"
+                      value="3"
+                    />
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <div
+              class="btn-group"
+              role="toolbar"
+              aria-label="Image actions"
+              id="action-bar-1"
+              hidden
+              style="display: none"
+            >
+              <button
+                class="action-btn btn-color color-picker-button"
+                id="color-picker-button"
+                type="button"
+                aria-label="Choose stain color"
+                hidden
+                style="display: none"
+              >
+                <div
+                  class="current-color-display"
+                  id="current-color-display"
+                  style="background: #a37033"
+                  aria-hidden="true"
+                ></div>
+                <span class="btn-color-text">
+                  <span class="btn-color-label">Color</span>
+                  <span class="btn-color-value" id="color-name-display"
+                    >Natural Cedar</span
+                  >
+                </span>
+                <i
+                  class="bi bi-chevron-down btn-color-chevron"
+                  aria-hidden="true"
+                ></i>
+              </button>
+
+              <button
+                class="action-btn btn-clean"
+                id="clean-btn"
+                type="button"
+                disabled
+              >
+                <i class="bi bi-droplet-half"></i> Clean Fence
+              </button>
+
+              <button
+                class="action-btn btn-change"
+                id="change-image-btn"
+                type="button"
+              >
+                <i class="bi bi-arrow-repeat"></i> Change Image
+              </button>
+
+              <button
+                class="action-btn btn-reset"
+                id="reset-btn"
+                type="button"
+                disabled
+                style="display: none"
+              >
+                <i class="bi bi-arrow-counterclockwise"></i> Reset
+              </button>
+            </div>
+
+            <div
+              class="btn-group"
+              role="toolbar"
+              aria-label="Stain actions"
+              id="action-bar-2"
+              hidden
+              style="display: none"
+            >
+              <button
+                class="action-btn btn-detect"
+                id="detect-btn"
+                type="button"
+                disabled
+              >
+                <i class="bi bi-magic"></i> Apply Stain
+              </button>
+              <button
+                class="action-btn btn-recolor"
+                id="recolor-btn"
+                type="button"
+                disabled
+                style="display: none"
+              >
+                <i class="bi bi-magic"></i> Recolor Fence
+              </button>
+              <button
+                class="action-btn btn-download"
+                id="download-btn"
+                type="button"
+                disabled
+              >
+                <i class="bi bi-cloud-arrow-down"></i> Download Result
+              </button>
+            </div>
+          </div>
+          <div class="workspace-right">
+            <section
+              class="card"
+              aria-labelledby="canvas-card-title"
+              hidden
+              style="display: none"
+            >
+              <div class="card-head">
+                <h2 class="card-title" id="canvas-card-title">
+                  <span class="icon-chip"><i class="bi bi-image"></i></span>
+                  <span id="canvas-title-text">Fence Preview</span>
+                </h2>
+                <span class="card-sub" id="canvas-label" style="display: none"
+                  >Upload a photo</span
+                >
+              </div>
+              <div class="card-body">
+                <div class="canvas-container">
+                  <div class="canvas-wrapper canvas-compare">
+                    <div class="canvas-stack" id="canvas-stack">
+                      <canvas
+                        id="original-canvas"
+                        width="800"
+                        height="620"
+                        aria-label="Original photo"
+                      ></canvas>
+                      <canvas
+                        id="result-canvas"
+                        width="800"
+                        height="620"
+                        aria-label="Stained preview"
+                      ></canvas>
+
+                      <div
+                        class="compare-slider"
+                        id="compare-slider"
+                        aria-hidden="true"
+                        hidden
+                      >
+                        <div class="compare-line" aria-hidden="true"></div>
+                        <button
+                          class="compare-handle"
+                          id="compare-handle"
+                          type="button"
+                          aria-label="Drag to compare before and after"
+                        >
+                          <i class="bi bi-chevron-left" aria-hidden="true"></i
+                          ><i
+                            class="bi bi-chevron-right"
+                            aria-hidden="true"
+                          ></i>
+                        </button>
+                        <span
+                          class="compare-label compare-label-left"
+                          aria-hidden="true"
+                          >Before</span
+                        >
+                        <span
+                          class="compare-label compare-label-right"
+                          aria-hidden="true"
+                          >After</span
+                        >
+                      </div>
+
+                      <button
+                        class="canvas-overlay-btn"
+                        id="compare-btn"
+                        type="button"
+                        aria-label="Compare before and after"
+                        title="Compare before vs after"
+                        hidden
+                      >
+                        <i
+                          class="bi bi-arrow-left-right"
+                          aria-hidden="true"
+                        ></i>
+                      </button>
+
+                      <div
+                        class="canvas-tip"
+                        id="compare-tip"
+                        role="tooltip"
+                        hidden
+                      >
+                        <i
+                          class="bi bi-hand-index-thumb"
+                          aria-hidden="true"
+                        ></i>
+                        <span>Tap to see before vs after</span>
+                      </div>
+
+                      <div
+                        class="canvas-loading"
+                        id="canvas-loading"
+                        aria-live="polite"
+                        aria-busy="false"
+                        hidden
+                      >
+                        <div
+                          class="canvas-loading-blur"
+                          aria-hidden="true"
+                        ></div>
+                        <div
+                          class="canvas-loading-scan"
+                          aria-hidden="true"
+                        ></div>
+                        <div class="canvas-loading-card">
+                          <div
+                            class="canvas-loading-spinner"
+                            aria-hidden="true"
+                          ></div>
+                          <div
+                            class="canvas-loading-text"
+                            id="canvas-loading-text"
+                          >
+                            Working on your photo…
+                          </div>
+                          <div class="canvas-loading-bar" aria-hidden="true">
+                            <div class="canvas-loading-bar-fill"></div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="canvas-wrapper" style="display: none">
+                    <h3>
+                      <i class="bi bi-bullseye"></i> Detection Mask
+                      <span class="pill">AI</span>
+                    </h3>
+                    <canvas
+                      id="mask-canvas"
+                      width="300"
+                      height="200"
+                      aria-label="AI-generated fence mask"
+                    ></canvas>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <div class="color-bar-wrap" hidden style="display: none">
+              <div
+                class="color-bar-card"
+                role="radiogroup"
+                aria-label="Choose stain color"
+              >
+                <div class="color-bar-header" aria-hidden="true">
+                  Pick a Stain
+                </div>
+                <div class="color-bar-grid" id="color-bar"></div>
+              </div>
+            </div>
+
+            <div
+              class="btn-group download-mobile-wrap"
+              id="download-mobile-wrap"
+              role="toolbar"
+              aria-label="Image actions"
+              hidden
+              style="display: none"
+            >
+              <button
+                class="action-btn btn-change"
+                id="change-image-btn-mobile"
+                type="button"
+              >
+                <i class="bi bi-arrow-repeat"></i> Change Image
+              </button>
+              <button
+                class="action-btn btn-download"
+                id="download-btn-mobile"
+                type="button"
+                disabled
+              >
+                <i class="bi bi-cloud-arrow-down"></i> Download Result
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <section
+          class="card"
+          aria-labelledby="howto-card-title"
+          style="display: none"
+        >
+          <div class="card-head">
+            <h2 class="card-title" id="howto-card-title">
+              <span class="icon-chip"><i class="bi bi-lightbulb"></i></span>
+              How It Works
+            </h2>
+            <span class="card-sub">4 simple steps</span>
+          </div>
+          <div class="card-body">
+            <div class="info-grid">
+              <div class="info-tile">
+                <div class="badge">01</div>
+                <div class="info-tile-body">
+                  <p class="info-tile-title">Upload</p>
+                  <p class="info-tile-desc">
+                    Drag or pick a fence photo (JPG, PNG, WebP up to 10 MB).
+                  </p>
+                </div>
+              </div>
+              <div class="info-tile">
+                <div class="badge">02</div>
+                <div class="info-tile-body">
+                  <p class="info-tile-title">Detect</p>
+                  <p class="info-tile-desc">
+                    The simulator isolates the fence boards from the rest of the
+                    scene.
+                  </p>
+                </div>
+              </div>
+              <div class="info-tile">
+                <div class="badge">03</div>
+                <div class="info-tile-body">
+                  <p class="info-tile-title">Color</p>
+                  <p class="info-tile-desc">
+                    Pick any stain. Adjust opacity and blend mode to preview the
+                    finish on your actual boards.
+                  </p>
+                </div>
+              </div>
+              <div class="info-tile">
+                <div class="badge">04</div>
+                <div class="info-tile-body">
+                  <p class="info-tile-title">Download</p>
+                  <p class="info-tile-desc">Save the preview as a PNG.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+    <script src="app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,12 @@
+{
+  "name": "fsv-fence-gate-bake",
+  "private": true,
+  "type": "module",
+  "description": "Offline build script for the fence-gate text embeddings.",
+  "scripts": {
+    "bake": "node bake_fence_gate_features.mjs"
+  },
+  "dependencies": {
+    "@xenova/transformers": "^2.0.1"
+  }
+}

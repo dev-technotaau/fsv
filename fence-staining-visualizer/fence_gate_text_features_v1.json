@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "model": "Xenova/siglip-base-patch16-224",
+  "quantized": true,
+  "promptCount": 70,
+  "embeddingDim": 768,
+  "dims": [
+    70,
+    768
+  ],
+  "promptsHash": "0401aaf404241e78c477f44927ff64625befba7d99db6133b0a43b0fac3430c0",
+  "bakedAt": "2026-06-08T12:06:56.906Z"
+}

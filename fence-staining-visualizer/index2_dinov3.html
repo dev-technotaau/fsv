@@ -1,0 +1,2635 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fence Stain Simulator</title>
+    <meta name="description" content="AI-powered fence detection and color staining preview. Upload a photo, detect the fence, and try any stain color in seconds.">
+    <meta name="theme-color" content="#0b0d0e">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Plus+Jakarta+Sans:wght@500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap">
+    <style>
+        /* =====================================================================
+           F-STAIN — UI v2 (DINOv3-L page; flagship Phase 1)
+           Premium, accessible, motion-aware. CSS only — logic untouched.
+           ===================================================================== */
+
+        *, *::before, *::after { box-sizing: border-box; }
+        html, body { margin: 0; padding: 0; overflow-x: hidden; }
+        html { -webkit-text-size-adjust: 100%; }
+        body { max-width: 100%; }
+        /* min-width:0 prevents grid/flex items from forcing their parent wider
+           than its track (the classic "blown-out grid" pinching mobile pages). */
+        .controls > *, .canvas-container > *, .info-grid > *, .btn-group > * { min-width: 0; }
+        img, canvas, svg, video { max-width: 100%; }
+
+        :root {
+            /* Brand */
+            --brand:        #C06B1A;
+            --brand-light:  #E58939;
+            --brand-dark:   #8A4A0F;
+            --brand-50:     #FDF4EC;
+            --brand-100:    #F8E3CC;
+            --brand-glow:   rgba(192,107,26,0.35);
+
+            /* Ink (neutral) */
+            --ink-950:      #07080A;
+            --ink-900:      #0B0D0E;
+            --ink-800:      #16191C;
+            --ink-700:      #1F2326;
+            --ink-600:      #3A4047;
+            --ink-500:      #5B636B;
+            --ink-400:      #8B939B;
+            --ink-300:      #C7CCD2;
+            --ink-200:      #E5E8EB;
+            --ink-100:      #F0F2F4;
+            --ink-50:       #F7F8FA;
+            --paper:        #FFFFFF;
+
+            /* Semantic */
+            --success:      #16A34A;
+            --success-bg:   #ECFDF5;
+            --warning:      #D97706;
+            --warning-bg:   #FFFBEB;
+            --error:        #DC2626;
+            --error-bg:     #FEF2F2;
+            --info:         #2563EB;
+
+            /* Shape */
+            --r-sm:  8px;
+            --r-md:  12px;
+            --r-lg:  18px;
+            --r-xl:  24px;
+            --r-2xl: 32px;
+
+            /* Shadow (layered for depth) */
+            --shadow-xs: 0 1px 2px rgba(11,13,14,0.06);
+            --shadow-sm: 0 2px 6px rgba(11,13,14,0.07), 0 1px 2px rgba(11,13,14,0.04);
+            --shadow-md: 0 8px 24px rgba(11,13,14,0.08), 0 2px 6px rgba(11,13,14,0.05);
+            --shadow-lg: 0 24px 60px -10px rgba(11,13,14,0.18), 0 8px 16px rgba(11,13,14,0.06);
+            --shadow-glow: 0 10px 40px -8px rgba(192,107,26,0.45);
+
+            /* Motion */
+            --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+            --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+            --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+            --dur-fast: 160ms;
+            --dur-med:  280ms;
+            --dur-slow: 480ms;
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after {
+                animation-duration: 0.001ms !important;
+                animation-iteration-count: 1 !important;
+                transition-duration: 0.001ms !important;
+                scroll-behavior: auto !important;
+            }
+        }
+
+        html { scroll-behavior: smooth; }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            font-feature-settings: 'cv11', 'ss01', 'ss03';
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+            text-rendering: optimizeLegibility;
+            color: var(--ink-800);
+            background:
+                radial-gradient(1200px 800px at 10% -10%, rgba(192,107,26,0.18), transparent 60%),
+                radial-gradient(900px 700px at 110% 10%, rgba(229,137,57,0.10), transparent 60%),
+                linear-gradient(180deg, #0E1012 0%, #07080A 100%);
+            min-height: 100vh;
+            position: relative;
+            overflow-x: hidden;
+        }
+
+        /* Subtle animated grain */
+        body::after {
+            content: '';
+            position: fixed;
+            inset: 0;
+            pointer-events: none;
+            opacity: 0.035;
+            background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%' height='100%' filter='url(%23n)' opacity='0.7'/></svg>");
+            z-index: 0;
+            mix-blend-mode: overlay;
+        }
+
+        /* ─── App Shell ─────────────────────────────────────────────────────── */
+        .app-shell {
+            position: relative;
+            z-index: 1;
+            max-width: 1440px;
+            margin: 0 auto;
+            padding: 28px 28px 64px;
+        }
+
+        /* ─── Top Nav ───────────────────────────────────────────────────────── */
+        .topnav {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            padding: 14px 20px;
+            background: rgba(11,13,14,0.55);
+            backdrop-filter: saturate(180%) blur(20px);
+            -webkit-backdrop-filter: saturate(180%) blur(20px);
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: var(--r-xl);
+            box-shadow: var(--shadow-md);
+            position: sticky;
+            top: 14px;
+            z-index: 50;
+            margin-bottom: 28px;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            color: #fff;
+            text-decoration: none;
+        }
+        .brand-mark {
+            width: 44px; height: 44px;
+            display: inline-flex; align-items: center; justify-content: center;
+            border-radius: 12px;
+            background: linear-gradient(135deg, var(--brand-light) 0%, var(--brand) 60%, var(--brand-dark) 100%);
+            color: #fff;
+            font-size: 1.35rem;
+            border: 1px solid rgba(255,255,255,0.12);
+            box-shadow: 0 4px 14px -2px var(--brand-glow), inset 0 1px 0 rgba(255,255,255,0.25);
+            transition: transform var(--dur-med) var(--ease-spring);
+            flex-shrink: 0;
+        }
+        .brand:hover .brand-mark { transform: rotate(-4deg) scale(1.04); }
+        .brand-text { line-height: 1.1; }
+        .brand-name {
+            font-family: 'Plus Jakarta Sans', 'Inter', sans-serif;
+            font-weight: 800;
+            font-size: 1.15rem;
+            letter-spacing: -0.01em;
+        }
+        .brand-sub {
+            font-size: 0.72rem;
+            color: rgba(255,255,255,0.55);
+            font-weight: 500;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+        }
+
+        .nav-tags {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .tag {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            border-radius: 999px;
+            font-size: 0.72rem;
+            font-weight: 600;
+            letter-spacing: 0.02em;
+            color: rgba(255,255,255,0.85);
+            background: rgba(255,255,255,0.08);
+            border: 1px solid rgba(255,255,255,0.10);
+            font-family: 'JetBrains Mono', monospace;
+            transition: background var(--dur-fast) ease;
+        }
+        .tag:hover { background: rgba(255,255,255,0.14); }
+        .tag .dot {
+            width: 7px; height: 7px; border-radius: 50%;
+            background: var(--brand-light);
+            box-shadow: 0 0 12px var(--brand-light);
+            animation: pulse 2.4s ease-in-out infinite;
+        }
+        .tag.tag-model {
+            background: linear-gradient(135deg, rgba(192,107,26,0.18), rgba(229,137,57,0.10));
+            border-color: rgba(192,107,26,0.4);
+            color: #FFDFB8;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.55; transform: scale(0.85); }
+        }
+
+        /* ─── Hero ──────────────────────────────────────────────────────────── */
+        .hero {
+            background: linear-gradient(155deg, #14171A 0%, #0A0C0E 100%);
+            border: 1px solid rgba(255,255,255,0.06);
+            border-radius: var(--r-2xl);
+            padding: 48px 48px 36px;
+            position: relative;
+            overflow: hidden;
+            box-shadow: var(--shadow-lg);
+            margin-bottom: 24px;
+        }
+        .hero::before {
+            content: '';
+            position: absolute;
+            top: -120px; right: -80px;
+            width: 480px; height: 480px;
+            background: radial-gradient(closest-side, rgba(192,107,26,0.45), transparent 70%);
+            filter: blur(40px);
+            pointer-events: none;
+        }
+        .hero::after {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background:
+                linear-gradient(transparent 0, transparent calc(100% - 1px), rgba(255,255,255,0.06) 100%),
+                repeating-linear-gradient(90deg, transparent 0, transparent 60px, rgba(255,255,255,0.02) 60px, rgba(255,255,255,0.02) 61px);
+            pointer-events: none;
+        }
+        .hero-inner { position: relative; z-index: 2; }
+
+        .hero h1 {
+            font-family: 'Plus Jakarta Sans', 'Inter', sans-serif;
+            color: #fff;
+            font-size: clamp(2rem, 4vw, 3.25rem);
+            line-height: 1.05;
+            letter-spacing: -0.035em;
+            font-weight: 800;
+            margin: 0 0 14px;
+            max-width: 900px;
+        }
+        .hero h1 .accent {
+            background: linear-gradient(120deg, #FFB76A, #C06B1A 60%, #8A4A0F);
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+        }
+        .hero p.lede {
+            color: rgba(255,255,255,0.72);
+            font-size: clamp(0.98rem, 1.1vw, 1.12rem);
+            line-height: 1.6;
+            max-width: 720px;
+            margin: 0 0 28px;
+            font-weight: 400;
+        }
+
+        /* Workflow stepper */
+        .stepper {
+            display: flex;
+            align-items: center;
+            gap: 0;
+            flex-wrap: wrap;
+            margin-top: 8px;
+        }
+        .step {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            color: rgba(255,255,255,0.5);
+            font-size: 0.85rem;
+            font-weight: 600;
+            transition: color var(--dur-med) ease;
+        }
+        .step .num {
+            width: 28px; height: 28px;
+            border-radius: 50%;
+            display: inline-flex; align-items: center; justify-content: center;
+            font-size: 0.78rem;
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 700;
+            background: rgba(255,255,255,0.06);
+            border: 1px solid rgba(255,255,255,0.10);
+            color: rgba(255,255,255,0.65);
+            transition: all var(--dur-med) var(--ease-spring);
+        }
+        .step.active { color: #fff; }
+        .step.active .num {
+            background: linear-gradient(135deg, var(--brand-light), var(--brand));
+            border-color: var(--brand);
+            color: #fff;
+            box-shadow: 0 0 0 4px rgba(192,107,26,0.16);
+        }
+        .step-sep {
+            flex: 0 1 64px;
+            height: 1px;
+            min-width: 24px;
+            margin: 0 14px;
+            background: linear-gradient(90deg, rgba(255,255,255,0.10), rgba(255,255,255,0.04));
+        }
+
+        /* ─── Content Grid ──────────────────────────────────────────────────── */
+        .content {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 24px;
+        }
+
+        .card {
+            background: rgba(255,255,255,0.97);
+            border: 1px solid var(--ink-200);
+            border-radius: var(--r-2xl);
+            box-shadow: var(--shadow-sm);
+            backdrop-filter: blur(20px);
+            transition: box-shadow var(--dur-med) ease, transform var(--dur-med) ease;
+        }
+        .card:hover { box-shadow: var(--shadow-md); }
+
+        .card-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 22px 28px 14px;
+            border-bottom: 1px solid var(--ink-100);
+        }
+        .card-title {
+            display: flex; align-items: center; gap: 12px;
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            font-weight: 700;
+            font-size: 1.02rem;
+            letter-spacing: -0.01em;
+            color: var(--ink-900);
+            margin: 0;
+        }
+        .card-title .icon-chip {
+            width: 32px; height: 32px;
+            display: inline-flex; align-items: center; justify-content: center;
+            border-radius: 10px;
+            background: linear-gradient(135deg, var(--brand-50), #fff);
+            color: var(--brand-dark);
+            border: 1px solid var(--brand-100);
+            font-size: 1.05rem;
+        }
+        .card-sub {
+            color: var(--ink-500);
+            font-size: 0.82rem;
+            font-weight: 500;
+        }
+        .card-body { padding: 22px 28px 26px; }
+
+        /* ─── Upload Zone (drop target — keeps #upload-section id) ─────────── */
+        .upload-section {
+            position: relative;
+            display: block;
+            text-align: center;
+            padding: 56px 32px;
+            margin: 0;
+            background:
+                radial-gradient(800px 200px at 50% -10%, rgba(192,107,26,0.06), transparent 70%),
+                #FCFCFD;
+            border: 2px dashed var(--ink-300);
+            border-radius: var(--r-xl);
+            cursor: pointer;
+            transition: all var(--dur-med) var(--ease-out);
+            overflow: hidden;
+        }
+        .upload-section::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background:
+                repeating-linear-gradient(45deg, transparent 0, transparent 18px, rgba(192,107,26,0.025) 18px, rgba(192,107,26,0.025) 19px);
+            opacity: 0;
+            transition: opacity var(--dur-med) ease;
+            pointer-events: none;
+        }
+        .upload-section:hover {
+            border-color: var(--brand);
+            background:
+                radial-gradient(800px 200px at 50% -10%, rgba(192,107,26,0.10), transparent 70%),
+                #FCFCFD;
+            transform: translateY(-2px);
+            box-shadow: var(--shadow-md);
+        }
+        .upload-section:hover::before { opacity: 1; }
+        .upload-section.drag-over {
+            border-color: var(--success);
+            border-style: solid;
+            background: var(--success-bg);
+            transform: scale(1.005);
+        }
+        .upload-section.drag-over::before { opacity: 0; }
+
+        .upload-icon {
+            display: inline-flex;
+            align-items: center; justify-content: center;
+            width: 72px; height: 72px;
+            border-radius: 20px;
+            background: linear-gradient(135deg, var(--brand-50), #fff);
+            border: 1px solid var(--brand-100);
+            color: var(--brand-dark);
+            font-size: 2rem;
+            margin-bottom: 18px;
+            box-shadow: 0 8px 24px -8px var(--brand-glow);
+            transition: transform var(--dur-med) var(--ease-spring);
+        }
+        .upload-section:hover .upload-icon { transform: scale(1.06) rotate(-3deg); }
+        .upload-section h3 {
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            font-weight: 700;
+            color: var(--ink-900);
+            font-size: 1.25rem;
+            margin: 0 0 8px;
+            letter-spacing: -0.015em;
+        }
+        .upload-hint {
+            color: var(--ink-500);
+            font-size: 0.92rem;
+            margin: 0 0 22px;
+            font-weight: 400;
+        }
+
+        .upload-btn {
+            display: inline-flex; align-items: center; gap: 10px;
+            background: linear-gradient(135deg, var(--brand-light) 0%, var(--brand) 60%, var(--brand-dark) 100%);
+            color: #fff;
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            font-weight: 700;
+            font-size: 0.98rem;
+            letter-spacing: 0.01em;
+            padding: 14px 32px;
+            border: none;
+            border-radius: 12px;
+            cursor: pointer;
+            position: relative;
+            overflow: hidden;
+            box-shadow:
+                0 1px 0 rgba(255,255,255,0.25) inset,
+                0 -1px 0 rgba(0,0,0,0.15) inset,
+                0 10px 24px -8px var(--brand-glow);
+            transition: transform var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
+        }
+        .upload-btn::after {
+            content: '';
+            position: absolute;
+            top: 0; left: -150%;
+            width: 80%; height: 100%;
+            background: linear-gradient(110deg, transparent 30%, rgba(255,255,255,0.35) 50%, transparent 70%);
+            transform: skewX(-20deg);
+            transition: left var(--dur-slow) var(--ease-out);
+        }
+        .upload-btn:hover {
+            transform: translateY(-2px);
+            box-shadow:
+                0 1px 0 rgba(255,255,255,0.25) inset,
+                0 -1px 0 rgba(0,0,0,0.15) inset,
+                0 16px 36px -8px var(--brand-glow);
+        }
+        .upload-btn:hover::after { left: 150%; }
+        .upload-btn:active { transform: translateY(0); }
+        .upload-meta {
+            margin-top: 18px;
+            color: var(--ink-400);
+            font-size: 0.82rem;
+            display: inline-flex; align-items: center; gap: 8px;
+        }
+        .upload-meta .pill {
+            display: inline-flex; align-items: center; gap: 6px;
+            padding: 4px 10px;
+            background: var(--ink-100);
+            border-radius: 999px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.72rem;
+            color: var(--ink-600);
+        }
+        #file-input { display: none; }
+
+        /* ─── Status Toast ─────────────────────────────────────────────────── */
+        .status-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin: 18px 0 0;
+        }
+        .status {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 14px 18px;
+            border-radius: var(--r-md);
+            font-size: 0.92rem;
+            font-weight: 500;
+            background: var(--ink-50);
+            border: 1px solid var(--ink-200);
+            color: var(--ink-700);
+            transition: all var(--dur-med) ease;
+            animation: slideInUp var(--dur-med) var(--ease-out);
+        }
+        .status::before {
+            content: '';
+            width: 10px; height: 10px; border-radius: 50%;
+            background: var(--ink-400);
+            box-shadow: 0 0 0 4px rgba(91,99,107,0.12);
+            flex-shrink: 0;
+        }
+        .status.loading {
+            background: var(--warning-bg);
+            color: #92400E;
+            border-color: #FCD9A6;
+        }
+        .status.loading::before {
+            background: var(--warning);
+            box-shadow: 0 0 0 4px rgba(217,119,6,0.18);
+            animation: pulse 1.4s ease-in-out infinite;
+        }
+        .status.success {
+            background: var(--success-bg);
+            color: #166534;
+            border-color: #A7F3D0;
+        }
+        .status.success::before {
+            background: var(--success);
+            box-shadow: 0 0 0 4px rgba(22,163,74,0.18);
+        }
+        .status.error {
+            background: var(--error-bg);
+            color: #991B1B;
+            border-color: #FECACA;
+        }
+        .status.error::before {
+            background: var(--error);
+            box-shadow: 0 0 0 4px rgba(220,38,38,0.18);
+        }
+        @keyframes slideInUp {
+            from { opacity: 0; transform: translateY(8px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+
+        .loader {
+            display: none;
+            width: 20px; height: 20px;
+            border: 2.5px solid var(--ink-200);
+            border-top-color: var(--brand);
+            border-radius: 50%;
+            animation: spin 0.7s linear infinite;
+            flex-shrink: 0;
+        }
+        .loader.active { display: inline-block; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* ─── Controls Grid ────────────────────────────────────────────────── */
+        .controls {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+            gap: 16px;
+        }
+        .control-group {
+            background: #fff;
+            padding: 18px 20px;
+            border-radius: var(--r-lg);
+            border: 1px solid var(--ink-200);
+            transition: all var(--dur-med) var(--ease-out);
+            position: relative;
+        }
+        .control-group:hover {
+            border-color: var(--brand-100);
+            box-shadow: var(--shadow-sm);
+            transform: translateY(-2px);
+        }
+        .control-group label {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            font-weight: 600;
+            font-size: 0.78rem;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            color: var(--ink-500);
+            margin-bottom: 14px;
+        }
+        .value-display {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.82rem;
+            font-weight: 700;
+            color: var(--brand-dark);
+            background: var(--brand-50);
+            padding: 3px 10px;
+            border-radius: 999px;
+            letter-spacing: 0;
+            text-transform: none;
+        }
+
+        /* Color picker trigger */
+        .color-picker-button {
+            width: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 0;
+            height: 52px;
+            background: var(--ink-50);
+            border: 1px solid var(--ink-200);
+            border-radius: var(--r-md);
+            cursor: pointer;
+            transition: all var(--dur-fast) ease;
+            font-family: 'Inter', sans-serif;
+            font-weight: 500;
+            font-size: 0.92rem;
+            color: var(--ink-700);
+            padding: 0 14px;
+        }
+        .color-picker-button:hover {
+            border-color: var(--brand);
+            background: #fff;
+            box-shadow: var(--shadow-xs);
+        }
+        .color-picker-button::after {
+            content: '\F282';
+            font-family: 'bootstrap-icons';
+            font-size: 0.9rem;
+            color: var(--ink-400);
+            margin-left: auto;
+        }
+        .current-color-display {
+            width: 36px; height: 36px;
+            border-radius: 8px;
+            border: 2px solid #fff;
+            box-shadow: 0 0 0 1px var(--ink-200), 0 2px 6px rgba(0,0,0,0.10);
+            flex-shrink: 0;
+        }
+
+        /* ─── Color Picker Modal ───────────────────────────────────────────── */
+        .color-picker-modal {
+            position: fixed;
+            inset: 0;
+            background: rgba(7,8,10,0.65);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 10000;
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
+            animation: fadeIn var(--dur-med) ease;
+        }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        .color-picker-modal.active { display: flex; }
+
+        .color-picker-dialog {
+            background: #fff;
+            border-radius: var(--r-2xl);
+            padding: 30px;
+            max-width: 640px;
+            width: calc(100% - 32px);
+            max-height: 84vh;
+            overflow-y: auto;
+            box-shadow: var(--shadow-lg);
+            position: relative;
+            animation: popIn var(--dur-med) var(--ease-spring);
+        }
+        @keyframes popIn {
+            from { opacity: 0; transform: scale(0.94) translateY(8px); }
+            to { opacity: 1; transform: scale(1) translateY(0); }
+        }
+        .color-picker-dialog h3 {
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            font-weight: 700;
+            font-size: 1.25rem;
+            color: var(--ink-900);
+            letter-spacing: -0.02em;
+            margin: 0 0 22px;
+            display: flex; align-items: center; gap: 10px;
+        }
+        .color-picker-dialog h3 i {
+            color: var(--brand);
+            font-size: 1.1rem;
+        }
+        .color-picker-close {
+            position: absolute;
+            top: 18px; right: 18px;
+            background: var(--ink-100);
+            border: none;
+            font-size: 1.4rem;
+            line-height: 1;
+            cursor: pointer;
+            color: var(--ink-600);
+            width: 36px; height: 36px;
+            display: inline-flex; align-items: center; justify-content: center;
+            border-radius: 50%;
+            transition: all var(--dur-fast) ease;
+        }
+        .color-picker-close:hover {
+            background: var(--error);
+            color: #fff;
+            transform: rotate(90deg);
+        }
+        .color-picker-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+            gap: 14px;
+        }
+        .color-picker-grid > div { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+        .color-option {
+            width: 100%;
+            aspect-ratio: 1;
+            border-radius: 12px;
+            cursor: pointer;
+            border: 3px solid transparent;
+            box-shadow: 0 0 0 1px var(--ink-200), 0 2px 6px rgba(0,0,0,0.08);
+            transition: transform var(--dur-fast) var(--ease-spring), box-shadow var(--dur-fast) ease;
+            position: relative;
+        }
+        .color-option:hover {
+            transform: translateY(-3px) scale(1.04);
+            box-shadow: 0 0 0 1px var(--ink-300), 0 12px 24px rgba(0,0,0,0.16);
+        }
+        .color-option.selected {
+            border-color: var(--brand);
+            box-shadow: 0 0 0 2px var(--brand), 0 12px 28px var(--brand-glow);
+        }
+        .color-option.selected::after {
+            content: '✓';
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            color: #fff;
+            font-size: 1.5rem;
+            font-weight: 800;
+            text-shadow: 0 2px 6px rgba(0,0,0,0.4);
+        }
+        .color-option-name {
+            text-align: center;
+            font-size: 0.78rem;
+            color: var(--ink-600);
+            font-weight: 600;
+            letter-spacing: 0.01em;
+        }
+
+        /* Sliders */
+        input[type="range"] {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 100%;
+            height: 6px;
+            border-radius: 999px;
+            background: linear-gradient(90deg, var(--brand) 0%, var(--brand) var(--val,80%), var(--ink-200) var(--val,80%), var(--ink-200) 100%);
+            outline: none;
+            cursor: pointer;
+            transition: all var(--dur-fast) ease;
+        }
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 20px; height: 20px;
+            border-radius: 50%;
+            background: #fff;
+            border: 2px solid var(--brand);
+            box-shadow: 0 2px 8px var(--brand-glow), 0 0 0 0 rgba(192,107,26,0.16);
+            cursor: pointer;
+            transition: transform var(--dur-fast) var(--ease-spring), box-shadow var(--dur-fast) ease;
+        }
+        input[type="range"]::-webkit-slider-thumb:hover {
+            transform: scale(1.18);
+            box-shadow: 0 2px 8px var(--brand-glow), 0 0 0 6px rgba(192,107,26,0.16);
+        }
+        input[type="range"]::-moz-range-thumb {
+            width: 20px; height: 20px;
+            border-radius: 50%;
+            background: #fff;
+            border: 2px solid var(--brand);
+            box-shadow: 0 2px 8px var(--brand-glow);
+            cursor: pointer;
+        }
+
+        select {
+            width: 100%;
+            padding: 12px 36px 12px 14px;
+            border: 1px solid var(--ink-200);
+            border-radius: var(--r-md);
+            font-size: 0.92rem;
+            background: var(--ink-50) url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16' fill='%235B636B'><path d='M8 11L3 6h10l-5 5z'/></svg>") no-repeat right 14px center;
+            background-size: 12px;
+            -webkit-appearance: none;
+            -moz-appearance: none;
+            appearance: none;
+            font-weight: 500;
+            color: var(--ink-700);
+            cursor: pointer;
+            transition: all var(--dur-fast) ease;
+            font-family: 'Inter', sans-serif;
+        }
+        select:hover { border-color: var(--brand); background-color: #fff; }
+        select:focus {
+            outline: none;
+            border-color: var(--brand);
+            background-color: #fff;
+            box-shadow: 0 0 0 3px rgba(192,107,26,0.15);
+        }
+
+        /* ─── Action Toolbar ───────────────────────────────────────────────── */
+        .btn-group {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            padding: 16px;
+            background: linear-gradient(135deg, #16191C 0%, #0B0D0E 100%);
+            border-radius: var(--r-xl);
+            border: 1px solid rgba(255,255,255,0.06);
+            box-shadow: var(--shadow-md);
+        }
+        .action-btn {
+            flex: 1 1 180px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            padding: 13px 22px;
+            border: none;
+            border-radius: var(--r-md);
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            font-size: 0.94rem;
+            font-weight: 700;
+            letter-spacing: 0.01em;
+            cursor: pointer;
+            transition: all var(--dur-fast) var(--ease-out);
+            background: rgba(255,255,255,0.06);
+            color: rgba(255,255,255,0.92);
+            border: 1px solid rgba(255,255,255,0.08);
+            position: relative;
+            overflow: hidden;
+        }
+        .action-btn i { font-size: 1rem; }
+        .action-btn:hover:not(:disabled) {
+            background: rgba(255,255,255,0.12);
+            color: #fff;
+            transform: translateY(-1px);
+        }
+        .action-btn:active:not(:disabled) { transform: translateY(0); }
+        .action-btn:disabled {
+            opacity: 0.32;
+            cursor: not-allowed;
+            color: rgba(255,255,255,0.5);
+        }
+        .btn-detect {
+            background: linear-gradient(135deg, var(--brand-light), var(--brand));
+            color: #fff;
+            border-color: transparent;
+            box-shadow: 0 6px 20px -6px var(--brand-glow);
+        }
+        .btn-detect:hover:not(:disabled) {
+            background: linear-gradient(135deg, var(--brand-light), var(--brand-dark));
+            box-shadow: 0 10px 28px -6px var(--brand-glow);
+        }
+        .btn-recolor {
+            background: linear-gradient(135deg, #fff, #F4F6F8);
+            color: var(--ink-900);
+            border-color: transparent;
+        }
+        .btn-recolor:hover:not(:disabled) { background: #fff; }
+        .btn-download i, .btn-reset i { opacity: 0.9; }
+        .btn-reset:hover:not(:disabled) { color: var(--error); background: rgba(220,38,38,0.10); border-color: rgba(220,38,38,0.25); }
+
+        /* ─── Canvas Showcase ──────────────────────────────────────────────── */
+        .canvas-container {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 18px;
+        }
+        .canvas-wrapper {
+            background: #fff;
+            border: 1px solid var(--ink-200);
+            border-radius: var(--r-xl);
+            padding: 16px;
+            box-shadow: var(--shadow-sm);
+            transition: all var(--dur-med) var(--ease-out);
+            position: relative;
+            overflow: hidden;
+        }
+        .canvas-wrapper::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; right: 0;
+            height: 3px;
+            background: linear-gradient(90deg, transparent, var(--brand-100), transparent);
+            opacity: 0;
+            transition: opacity var(--dur-med) ease;
+        }
+        .canvas-wrapper:hover {
+            border-color: var(--brand-100);
+            box-shadow: var(--shadow-md);
+            transform: translateY(-3px);
+        }
+        .canvas-wrapper:hover::before { opacity: 1; }
+        .canvas-wrapper h3 {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            font-weight: 700;
+            font-size: 0.92rem;
+            color: var(--ink-900);
+            margin: 0 4px 14px;
+            letter-spacing: -0.005em;
+        }
+        .canvas-wrapper h3 .pill {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.66rem;
+            font-weight: 600;
+            color: var(--ink-500);
+            background: var(--ink-100);
+            padding: 3px 8px;
+            border-radius: 999px;
+            margin-left: auto;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+        }
+        .canvas-wrapper h3 i {
+            color: var(--brand);
+            font-size: 1rem;
+        }
+        canvas {
+            display: block;
+            max-width: 100%;
+            height: auto;
+            width: 100%;
+            border-radius: var(--r-md);
+            background:
+                linear-gradient(45deg, #F0F2F4 25%, transparent 25%),
+                linear-gradient(-45deg, #F0F2F4 25%, transparent 25%),
+                linear-gradient(45deg, transparent 75%, #F0F2F4 75%),
+                linear-gradient(-45deg, transparent 75%, #F0F2F4 75%);
+            background-size: 16px 16px;
+            background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+            box-shadow: inset 0 0 0 1px var(--ink-100);
+            min-height: 180px;
+        }
+
+        /* ─── Loading Overlay ──────────────────────────────────────────────── */
+        .loading-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(7,8,10,0.78);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 9999;
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            animation: fadeIn var(--dur-med) ease;
+        }
+        .loading-overlay.active { display: flex; }
+        .loading-content {
+            text-align: center;
+            color: #fff;
+            padding: 32px 44px;
+            background: linear-gradient(135deg, rgba(20,23,26,0.8), rgba(11,13,14,0.8));
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: var(--r-2xl);
+            box-shadow: var(--shadow-lg);
+            min-width: 240px;
+        }
+        .loading-spinner {
+            position: relative;
+            width: 64px; height: 64px;
+            margin: 0 auto 18px;
+        }
+        .loading-spinner::before, .loading-spinner::after {
+            content: '';
+            position: absolute;
+            inset: 0;
+            border-radius: 50%;
+            border: 3px solid transparent;
+            border-top-color: var(--brand-light);
+            animation: spin 1s linear infinite;
+        }
+        .loading-spinner::after {
+            inset: 8px;
+            border-top-color: var(--brand);
+            animation-duration: 1.6s;
+            animation-direction: reverse;
+        }
+        .loading-text {
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            font-size: 1.02rem;
+            font-weight: 600;
+            color: #fff;
+            letter-spacing: -0.01em;
+        }
+
+        /* ─── Info / How-To ────────────────────────────────────────────────── */
+        .info-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 16px;
+        }
+        .info-tile {
+            display: flex;
+            gap: 14px;
+            padding: 16px 18px;
+            background: var(--ink-50);
+            border: 1px solid var(--ink-200);
+            border-radius: var(--r-lg);
+            transition: all var(--dur-med) var(--ease-out);
+        }
+        .info-tile:hover {
+            border-color: var(--brand-100);
+            background: #fff;
+            transform: translateY(-2px);
+            box-shadow: var(--shadow-sm);
+        }
+        .info-tile .badge {
+            flex-shrink: 0;
+            width: 36px; height: 36px;
+            border-radius: 10px;
+            display: inline-flex; align-items: center; justify-content: center;
+            background: linear-gradient(135deg, var(--brand-50), #fff);
+            border: 1px solid var(--brand-100);
+            color: var(--brand-dark);
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 700;
+            font-size: 0.85rem;
+        }
+        .info-tile-body { line-height: 1.4; }
+        .info-tile-title {
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            font-weight: 700;
+            color: var(--ink-900);
+            font-size: 0.92rem;
+            margin: 0 0 4px;
+        }
+        .info-tile-desc {
+            font-size: 0.85rem;
+            color: var(--ink-500);
+            margin: 0;
+        }
+
+        /* Hide JS-bound but visually inactive groups (threshold / edge-smoothing)
+           — display:none on the .control-group inline keeps the elements in the DOM. */
+
+        /* ─── Footer ───────────────────────────────────────────────────────── */
+        .footer {
+            margin-top: 36px;
+            padding: 24px 6px 0;
+            color: rgba(255,255,255,0.45);
+            font-size: 0.82rem;
+            display: flex; justify-content: space-between; align-items: center;
+            gap: 16px;
+            flex-wrap: wrap;
+        }
+        .footer a {
+            color: rgba(255,255,255,0.75);
+            text-decoration: none;
+            border-bottom: 1px dashed rgba(255,255,255,0.25);
+            transition: color var(--dur-fast) ease, border-color var(--dur-fast) ease;
+        }
+        .footer a:hover { color: #fff; border-color: var(--brand-light); }
+        .footer-meta {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.74rem;
+            opacity: 0.7;
+            display: inline-flex; gap: 12px; align-items: center; flex-wrap: wrap;
+        }
+
+        /* ─── Responsive ──────────────────────────────────────────────────── */
+        @media (max-width: 900px) {
+            .app-shell { padding: 16px 12px 48px; }
+            .hero { padding: 32px 22px 24px; }
+            .topnav { padding: 12px 14px; border-radius: var(--r-lg); }
+            .brand-mark { width: 36px; height: 36px; font-size: 1.15rem; }
+            .card-head { padding: 16px 18px 12px; }
+            .card-body { padding: 16px 18px 20px; }
+            .upload-section { padding: 36px 18px; }
+            .stepper { gap: 6px; }
+            .step-sep { display: none; }
+            .step { padding: 6px 10px; background: rgba(255,255,255,0.05); border-radius: 999px; }
+            /* Single-column on tablet + phone so minmax floors can't overflow */
+            .controls,
+            .canvas-container,
+            .info-grid { grid-template-columns: 1fr; }
+        }
+        @media (max-width: 560px) {
+            .app-shell { padding: 12px 10px 40px; }
+            .hero { padding: 26px 18px 22px; }
+            .hero h1 { font-size: 1.6rem; line-height: 1.15; }
+            .hero p.lede { font-size: 0.95rem; }
+            .card-head { padding: 14px 14px 10px; flex-direction: column; align-items: flex-start; gap: 6px; }
+            .card-body { padding: 14px 14px 18px; }
+            .card-title { font-size: 0.96rem; }
+            .action-btn { flex-basis: 100%; padding: 12px 16px; font-size: 0.9rem; }
+            .nav-tags { display: none; }
+            .brand-name { font-size: 1.02rem; }
+            .brand-sub { font-size: 0.66rem; }
+            .upload-section { padding: 28px 14px; }
+            .upload-icon { width: 60px; height: 60px; font-size: 1.65rem; }
+            .upload-section h3 { font-size: 1.08rem; }
+            .upload-meta { flex-direction: column; gap: 6px; }
+            .control-group { padding: 14px 16px; }
+            .color-picker-dialog { padding: 22px 18px; }
+            .color-picker-grid { grid-template-columns: repeat(auto-fill, minmax(72px, 1fr)); gap: 10px; }
+            .canvas-wrapper { padding: 12px; }
+            .canvas-wrapper h3 .pill { display: none; }
+            .footer { flex-direction: column; align-items: flex-start; gap: 8px; }
+            .footer-meta { font-size: 0.7rem; }
+        }
+        @media (max-width: 380px) {
+            .app-shell { padding: 10px 8px 36px; }
+            .hero h1 { font-size: 1.4rem; }
+            .topnav { padding: 10px 12px; }
+            .brand { gap: 10px; }
+            .brand-mark { width: 32px; height: 32px; font-size: 1rem; }
+        }
+
+        /* High-contrast focus rings for keyboard nav (a11y) */
+        :focus-visible {
+            outline: 3px solid var(--brand-light);
+            outline-offset: 2px;
+            border-radius: 6px;
+        }
+        button:focus-visible, .upload-section:focus-visible {
+            outline-offset: 3px;
+        }
+    </style>
+</head>
+<body>
+    <!-- Loading Overlay (id preserved) -->
+    <div class="loading-overlay" id="loading-overlay" role="status" aria-live="polite">
+        <div class="loading-content">
+            <div class="loading-spinner" aria-hidden="true"></div>
+            <div class="loading-text" id="loading-text">Processing...</div>
+        </div>
+    </div>
+
+    <!-- Color Picker Modal (ids preserved) -->
+    <div class="color-picker-modal" id="color-picker-modal" role="dialog" aria-modal="true" aria-labelledby="color-picker-title">
+        <div class="color-picker-dialog">
+            <button class="color-picker-close" id="color-picker-close" aria-label="Close color picker">&times;</button>
+            <h3 id="color-picker-title"><i class="bi bi-palette-fill"></i> Choose Your Stain Color</h3>
+            <div class="color-picker-grid" id="color-picker-grid"></div>
+        </div>
+    </div>
+
+    <div class="app-shell">
+
+        <!-- Top Navigation -->
+        <nav class="topnav" aria-label="Primary">
+            <a class="brand" href="#" aria-label="F-Stain home">
+                <span class="brand-mark" aria-hidden="true"><i class="bi bi-bounding-box-circles"></i></span>
+                <span class="brand-text">
+                    <span class="brand-name">Fence Stain Simulator</span><br>
+                    <span class="brand-sub">Fence Detection &amp; Recolor Studio</span>
+                </span>
+            </a>
+            <div class="nav-tags">
+                <span class="tag" style="display: none;"><span class="dot" aria-hidden="true"></span> Live</span>
+                <span class="tag tag-model" style="display: none;"><i class="bi bi-cpu" aria-hidden="true"></i> DINOv3-L · 608M (Phase 1, ep 1)</span>
+                <span class="tag" style="display: none;"><i class="bi bi-shield-check" aria-hidden="true"></i> Private — runs in your browser</span>
+            </div>
+        </nav>
+
+        <!-- Hero -->
+        <section class="hero" aria-labelledby="hero-title">
+            <div class="hero-inner">
+                <h1 id="hero-title">Preview your fence in <span class="accent">any stain color</span><br>before you spend a dollar.</h1>
+                <p class="lede">
+                    Drop in a photo of your fence. Our fence simulator detects the board, try Cedar, Walnut, Charcoal, or your HOA's approved color, and see the finish on your actual boards before you book.
+                </p>
+                <ol class="stepper" aria-label="Workflow steps">
+                    <li class="step active"><span class="num">1</span><span>Upload</span></li>
+                    <span class="step-sep" aria-hidden="true"></span>
+                    <li class="step"><span class="num">2</span><span>Detect</span></li>
+                    <span class="step-sep" aria-hidden="true"></span>
+                    <li class="step"><span class="num">3</span><span>Color</span></li>
+                    <span class="step-sep" aria-hidden="true"></span>
+                    <li class="step"><span class="num">4</span><span>Download</span></li>
+                </ol>
+            </div>
+        </section>
+
+        <div class="content">
+
+            <!-- Upload Card -->
+            <section class="card" aria-labelledby="upload-card-title">
+                <div class="card-head">
+                    <h2 class="card-title" id="upload-card-title">
+                        <span class="icon-chip"><i class="bi bi-cloud-arrow-up"></i></span>
+                        Upload Photo
+                    </h2>
+                    <span class="card-sub">Step 1 of 4</span>
+                </div>
+                <div class="card-body">
+                    <div class="upload-section" id="upload-section" tabindex="0" role="button" aria-label="Upload an image of your fence">
+                        <div class="upload-icon" aria-hidden="true"><i class="bi bi-images"></i></div>
+                        <h3>Drop your fence photo here</h3>
+                        <p class="upload-hint">or click to browse from your device</p>
+                        <input type="file" id="file-input" accept="image/*">
+                        <button class="upload-btn" type="button" onclick="document.getElementById('file-input').click()">
+                            <i class="bi bi-folder2-open"></i> Choose Image
+                        </button>
+                        <div class="upload-meta">
+                            <span class="pill"><i class="bi bi-file-image"></i> JPG · PNG · WebP</span>
+                            <span class="pill"><i class="bi bi-hdd"></i> Up to 10 MB</span>
+                        </div>
+                    </div>
+
+                    <div class="status-row">
+                        <div class="loader" id="loader" aria-hidden="true"></div>
+                        <div class="status" id="status">Initializing model...</div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Controls Card -->
+            <section class="card" aria-labelledby="controls-card-title">
+                <div class="card-head">
+                    <h2 class="card-title" id="controls-card-title">
+                        <span class="icon-chip"><i class="bi bi-sliders"></i></span>
+                        Stain Settings
+                    </h2>
+                    <span class="card-sub">Pick your color &amp; blend</span>
+                </div>
+                <div class="card-body">
+                    <div class="controls">
+                        <div class="control-group">
+                            <label for="color-picker-button">
+                                <span><i class="bi bi-palette"></i> Fence Color</span>
+                                <span class="value-display" id="color-name-display">Cedar</span>
+                            </label>
+                            <button class="color-picker-button" id="color-picker-button" type="button">
+                                <span>Choose Color</span>
+                                <div class="current-color-display" id="current-color-display" style="background: #8B4513;"></div>
+                            </button>
+                        </div>
+                        <div class="control-group">
+                            <label for="blend-mode">
+                                <span><i class="bi bi-layers-half"></i> Blend Mode</span>
+                            </label>
+                            <select id="blend-mode">
+                                <option value="normal">Normal</option>
+                                <option value="multiply" selected>Multiply (Realistic)</option>
+                                <option value="overlay">Overlay</option>
+                                <option value="screen">Screen</option>
+                            </select>
+                        </div>
+                        <div class="control-group">
+                            <label for="opacity">
+                                <span><i class="bi bi-circle-half"></i> Opacity</span>
+                                <span class="value-display" id="opacity-value">80%</span>
+                            </label>
+                            <input type="range" id="opacity" min="0" max="100" value="80">
+                        </div>
+                        <div class="control-group" style="display: none;">
+                            <label for="threshold">
+                                Detection Threshold
+                                <span class="value-display" id="threshold-value">0.6</span>
+                            </label>
+                            <input type="range" id="threshold" min="0.1" max="0.9" step="0.01" value="0.6">
+                        </div>
+                        <div class="control-group" style="display: none;">
+                            <label for="edge-smoothing">
+                                Edge Smoothing
+                                <span class="value-display" id="smoothing-value">Medium</span>
+                            </label>
+                            <input type="range" id="edge-smoothing" min="1" max="5" step="1" value="3">
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Action Toolbar -->
+            <div class="btn-group" role="toolbar" aria-label="Image actions">
+                <button class="action-btn btn-detect" id="detect-btn" type="button" disabled>
+                    <i class="bi bi-search"></i> Detect Fence
+                </button>
+                <button class="action-btn btn-recolor" id="recolor-btn" type="button" disabled>
+                    <i class="bi bi-magic"></i> Recolor Fence
+                </button>
+                <button class="action-btn btn-download" id="download-btn" type="button" disabled>
+                    <i class="bi bi-cloud-arrow-down"></i> Download Result
+                </button>
+                <button class="action-btn btn-reset" id="reset-btn" type="button" disabled>
+                    <i class="bi bi-arrow-counterclockwise"></i> Reset
+                </button>
+            </div>
+
+            <!-- Canvas Showcase -->
+            <section class="card" aria-labelledby="canvas-card-title">
+                <div class="card-head">
+                    <h2 class="card-title" id="canvas-card-title">
+                        <span class="icon-chip"><i class="bi bi-grid-3x3-gap"></i></span>
+                        Visual Pipeline
+                    </h2>
+                    <span class="card-sub">Original → Mask → Recolored</span>
+                </div>
+                <div class="card-body">
+                    <div class="canvas-container">
+                        <div class="canvas-wrapper">
+                            <h3><i class="bi bi-image"></i> Original Image <span class="pill">Input</span></h3>
+                            <canvas id="original-canvas" width="300" height="200" aria-label="Original photo preview"></canvas>
+                        </div>
+                        <div class="canvas-wrapper">
+                            <h3><i class="bi bi-bullseye"></i> Detection Mask <span class="pill">AI</span></h3>
+                            <canvas id="mask-canvas" width="300" height="200" aria-label="AI-generated fence mask"></canvas>
+                        </div>
+                        <div class="canvas-wrapper">
+                            <h3><i class="bi bi-stars"></i> Recolored Result <span class="pill">Output</span></h3>
+                            <canvas id="result-canvas" width="300" height="200" aria-label="Recolored fence preview"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- How To Card -->
+            <section class="card" aria-labelledby="howto-card-title">
+                <div class="card-head">
+                    <h2 class="card-title" id="howto-card-title">
+                        <span class="icon-chip"><i class="bi bi-lightbulb"></i></span>
+                        How It Works
+                    </h2>
+                    <span class="card-sub">4 simple steps</span>
+                </div>
+                <div class="card-body">
+                    <div class="info-grid">
+                        <div class="info-tile">
+                            <div class="badge">01</div>
+                            <div class="info-tile-body">
+                                <p class="info-tile-title">Upload</p>
+                                <p class="info-tile-desc">Drag or pick a fence photo (JPG, PNG, WebP up to 10 MB).</p>
+                            </div>
+                        </div>
+                        <div class="info-tile">
+                            <div class="badge">02</div>
+                            <div class="info-tile-body">
+                                <p class="info-tile-title">Detect</p>
+                                <p class="info-tile-desc">The simulator isolates the fence boards from the rest of the scene.</p>
+                            </div>
+                        </div>
+                        <div class="info-tile">
+                            <div class="badge">03</div>
+                            <div class="info-tile-body">
+                                <p class="info-tile-title">Color</p>
+                                <p class="info-tile-desc">Pick any stain. Adjust opacity and blend mode to preview the finish on your actual boards.</p>
+                            </div>
+                        </div>
+                        <div class="info-tile">
+                            <div class="badge">04</div>
+                            <div class="info-tile-body">
+                                <p class="info-tile-title">Download</p>
+                                <p class="info-tile-desc">Save the preview as a PNG.</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <footer class="footer">
+                <div>© Fence Stain Simulator</div>
+                <div class="footer-meta">
+                    <span style="display: none;">model · dinov3-vitl16-phase1-ep1</span>
+                    <span style="display: none;">·</span>
+                    <span style="display: none;">runtime · modal serverless</span>
+                </div>
+            </footer>
+
+        </div><!-- /.content -->
+
+    </div><!-- /.app-shell -->
+
+    <!-- Inference runs server-side on Modal. Browser only uploads photos
+         and decodes the returned PNG mask — no ONNX runtime needed. -->
+    <script>
+        // ============================================================================
+        // FLAGSHIP FENCE MODEL CONFIGURATION (DINOv3-L + ViT-Adapter + Mask2Former + Refinement)
+        // ============================================================================
+        // Model: FenceSegmentationModel from our training/model.py (Phase 1)
+        //   backbone:        facebook/dinov3-vitl16-pretrain-lvd1689m  (patch_size=16, ~300M params)
+        //   adapter:         ViT-Adapter, 4 interactions, 8 heads, 4 deformable points
+        //   pixel_decoder:   MSDeformAttn, 12 layers, 8 heads, FFN dim 3072
+        //   decoder:         Mask2Former, dim=512, queries=64, layers=15, masked-attn ON
+        //   refinement:      3 iterations, 96 ch, with depth teacher (DPT-Hybrid frozen)
+        //                    + edge head + CGM + PointRend MLP + distance regression
+        //   total params:    608M total / 485M trainable
+        // Trained with: training/train.py (configs/phase1.yaml), 120 epochs @ 512px,
+        //   bs=8 + grad_accum=2 (effective batch 16), cosine warmup 5 epochs,
+        //   AdamW8bit, bf16 AMP, EMA. Reported val_iou=0.3673 at epoch 1 (this
+        //   checkpoint — WIP, still training; Phase 2 fine-tune at 1024px not yet run).
+        // INPUT_SIZE=512 because DINOv3 patch_size=16 (32*16=512 exactly).
+        // Output: sigmoid probabilities BAKED INTO the graph — values are [0, 1].
+        // Preprocessing: ImageNet normalization (same as the DINOv2 model).
+        const CONFIG = {
+            // Modal server-side inference endpoint. GPU T4 container loads the
+            // 2.47 GB ONNX once (external-data format: .onnx graph + .onnx.data
+            // weights) and reuses it across requests. Browser sends a downsized
+            // JPEG of the photo and receives a 512x512 PNG mask (~30-100 KB) —
+            // no client-side model download.
+            //
+            // Endpoint URL printed by `modal deploy app_dinov3.py`. KEEP the
+            // `/detect` suffix.
+            MODAL_ENDPOINT: 'https://dev-45325--f-stain-dinov3-inference-web.modal.run/detect',
+            // Max upload dimension on the client side. The server resizes to
+            // 512 anyway, so anything beyond ~1200 is wasted bandwidth. 1024
+            // keeps the upload tiny (~150-400 KB after JPEG) without losing
+            // anything the model cares about.
+            UPLOAD_MAX_DIM: 1024,
+            // JPEG quality for the upload. 0.85 is visually lossless for our
+            // purposes and gives ~3x smaller files than 0.95.
+            UPLOAD_JPEG_QUALITY: 0.85,
+            // DINOv3 patch_size=16 → INPUT_SIZE must be a multiple of 16.
+            // 512 = 32*16 exactly. Used by postprocess for upsample-from-mask resolution.
+            INPUT_SIZE: 512,
+            // Default binarize threshold; the UI threshold slider overrides.
+            DEFAULT_THRESHOLD: 0.5,
+
+            // ── Connected-component cleanup (drop spurious isolated blobs) ──
+            // The model occasionally lights up small non-fence regions (dirt
+            // patches, wood furniture, bark texture) that aren't connected
+            // to the main fence area. Drop any blob below this % of the image.
+            // 2.0% is conservative; in practice fence images have one big blob
+            // that dwarfs everything else.
+            CC_MIN_BLOB_AREA_PCT: 0.05,    // FIX (2026-05-24): lowered from 2.0 (DINOv2-S-tuned). DINOv3-L produces more fragmented per-pixel predictions (observed: 76 blobs / 74k px on a test image, none >20k px). 0.05% keeps blobs >=~1000 px on a 1.95MP image — covers DINOv3-L's typical fragmented detections without admitting tiny noise specks.
+            // KEEP only the K largest blobs (0 = unlimited, 1 = only the
+            // dominant fence). Default 0 = keep ALL blobs that pass the
+            // min-area filter, so genuinely-disconnected fence sections
+            // (front fence + fence behind a tree, sunlit + shaded segments
+            // of the same fence the model split into two components) are
+            // both kept. The 2% min-area floor is enough to suppress
+            // spurious dirt-patch / furniture detections without dropping
+            // real fence regions. Switch to 1 only if your photos always
+            // have a single dominant fence and CC=2% isn't catching enough.
+            CC_KEEP_TOP_K_BLOBS: 0,
+            // Erode the binary mask by N pixels at full resolution. Default
+            // 1 = breaks any thin pixel-chain bridges between the main fence
+            // and spurious noise (so CC cleanup can split + drop them) AND
+            // tightens the over-prediction boundary by 1 px. Bump to 2-3 if
+            // the model is still bleeding into background.
+            POST_ERODE_PX: 0,    // FIX (2026-05-24): disabled (was 1 for DINOv2-S). DINOv3-L has tighter boundaries already (val_boundary_iou=0.34); the 1px erode was eating real fence edges. Re-enable if you see thin pixel-chain bridges between fence and noise.
+
+            // ── SOFT MASK MODE (uses model confidence as alpha multiplier) ──
+            // Binary thresholding throws away the model's calibrated uncertainty:
+            // a pixel with prob=0.51 gets the SAME alpha as one with prob=0.99.
+            // Soft mode preserves the full heatmap as the recolor alpha so:
+            //   - prob >= SOFT_MASK_HIGH (0.7): full confidence, pixel-perfect
+            //   - SOFT_MASK_LOW <= prob < HIGH: smooth anti-aliased transition
+            //   - prob <  SOFT_MASK_LOW  (0.5): zero (suppress foggy bleed)
+            // Result mimics a hand-painted alpha channel — sharp where the model
+            // is sure, fading where it's uncertain, clean elsewhere.
+            //
+            // SOFT_MASK_LOW: 0.7 is fairly aggressive — suppresses anything
+            // below 70% model confidence. Trunks usually sit in 0.5-0.7
+            // confidence range so this drops them. Trade-off: fence anti-
+            // aliasing band shrinks. Dial back to 0.6 if boundary looks too
+            // tight on other images.
+            USE_SOFT_MASK: true,
+            SOFT_MASK_LOW: 0.60,
+            SOFT_MASK_HIGH: 0.75,
+
+            // ── Vegetation / occluder color filter ──────────────────────
+            // The model sometimes includes pixels where TREES occlude the
+            // fence (it learned "fence at this 2D location" but trees are in
+            // front of it). For staining we don't want to stain trees, so we
+            // zero out mask pixels where the ORIGINAL IMAGE is green-dominant
+            // (G - max(R,B) > threshold).
+            //
+            // Wood/cedar/gray/white fences have R >= G, so they always pass.
+            // Foliage has G > R+B, so it gets filtered out.
+            // EDGE CASE: green-painted fences would also get filtered — for
+            // a fence STAINING tool this is fine (green fences are uncommon
+            // staining candidates). Set FILTER_VEGETATION=false to disable.
+            FILTER_VEGETATION: true,
+            // Higher = filters more aggressively (catches darker foliage)
+            // Lower = filters less (preserves edge cases)
+            // 25 is balanced for typical sunlit + shaded foliage.
+            VEGETATION_GREEN_DOMINANCE: 25,
+
+            // ── Bark filter (tree TRUNKS, complementary to vegetation filter) ─
+            // Tree bark shares brown/gray with cedar wood, so green-dominance
+            // can't catch it. But bark tends to be LESS SATURATED than wood
+            // (gray-brown vs warm-orange). This filter drops mask pixels where:
+            //   - Saturation in HSV < BARK_MAX_SATURATION (default 0.22)
+            //   - AND brightness is in BARK_BRIGHT_RANGE (default [40, 140])
+            // i.e., dim and grayish — the classic bark signature.
+            //
+            // EDGE CASES this can wrongly hit:
+            //   - Gray-painted fences (low saturation + medium brightness → filtered)
+            //   - Fence in very deep shadow (very dark, but brightness > 40)
+            //   - Black/charcoal stained fences (typically brightness < 40, safe)
+            // Set FILTER_BARK=false (default) if your photos have gray/painted
+            // fences. Set true if you see tree TRUNKS in the stained output.
+            // DEFAULT off: the DINOv2-Small model's confidence on weathered
+            // cedar overlapped the bark-color band and the filter ate boards.
+            // For this DINOv3-L test build the model is at epoch 1 (val_iou=0.367)
+            // so cedar discrimination isn't yet validated either — leaving off.
+            // Toggle ON if you see tree TRUNKS in the output, then verify it
+            // doesn't eat weathered fence boards.
+            FILTER_BARK: false,
+            BARK_MAX_SATURATION: 0.22,
+            BARK_BRIGHTNESS_MIN: 40,
+            BARK_BRIGHTNESS_MAX: 140
+        };
+
+        // ============================================================================
+        // GLOBAL VARIABLES
+        // ============================================================================
+        let modalReady = false;   // true once the Modal health-check responds
+        let originalImage = null;
+        let maskData = null;
+        
+        const fileInput = document.getElementById('file-input');
+        const uploadSection = document.getElementById('upload-section');
+        const originalCanvas = document.getElementById('original-canvas');
+        const maskCanvas = document.getElementById('mask-canvas');
+        const resultCanvas = document.getElementById('result-canvas');
+        const colorPickerButton = document.getElementById('color-picker-button');
+        const colorPickerModal = document.getElementById('color-picker-modal');
+        const colorPickerClose = document.getElementById('color-picker-close');
+        const colorPickerGrid = document.getElementById('color-picker-grid');
+        const currentColorDisplay = document.getElementById('current-color-display');
+        const colorNameDisplay = document.getElementById('color-name-display');
+        const blendMode = document.getElementById('blend-mode');
+        const opacity = document.getElementById('opacity');
+        const threshold = document.getElementById('threshold');
+        const edgeSmoothing = document.getElementById('edge-smoothing');
+        const status = document.getElementById('status');
+        const loader = document.getElementById('loader');
+        const loadingOverlay = document.getElementById('loading-overlay');
+        const loadingText = document.getElementById('loading-text');
+        
+        const detectBtn = document.getElementById('detect-btn');
+        const recolorBtn = document.getElementById('recolor-btn');
+        const downloadBtn = document.getElementById('download-btn');
+        const resetBtn = document.getElementById('reset-btn');
+
+        // Predefined stain colors
+        const stainColors = [
+            { name: 'Cedar', color: '#8B4513' },
+            { name: 'Mahogany', color: '#7B3F3F' },
+            { name: 'Walnut', color: '#6B4226' },
+            { name: 'Oak', color: '#A0826D' },
+            { name: 'Cherry', color: '#9B4444' },
+            { name: 'Pine', color: '#C19A6B' },
+            { name: 'Redwood', color: '#A45A52' },
+            { name: 'Espresso', color: '#5C4033' },
+            { name: 'Driftwood', color: '#9B8B7E' },
+            { name: 'Hickory', color: '#8D6346' },
+            { name: 'Chestnut', color: '#954535' },
+            { name: 'Teak', color: '#B8860B' },
+            { name: 'Ebony', color: '#3D3635' },
+            { name: 'Maple', color: '#D4A574' },
+            { name: 'Natural', color: '#C9A882' },
+            { name: 'Gray', color: '#707070' },
+            { name: 'Charcoal', color: '#4A4A4A' },
+            { name: 'White Oak', color: '#E8D5C4' },
+            { name: 'Rustic', color: '#8B6F47' },
+            { name: 'Slate', color: '#5F6A6A' }
+        ];
+
+        let selectedColor = '#8B4513'; // Default color
+        let selectedColorName = 'Cedar'; // Default color name
+
+        // Helper functions for loading overlay
+        function showLoading(message) {
+            loadingText.textContent = message;
+            loadingOverlay.classList.add('active');
+        }
+
+        function hideLoading() {
+            loadingOverlay.classList.remove('active');
+        }
+
+        // Initialize custom color picker
+        function initColorPicker() {
+            stainColors.forEach((item, index) => {
+                const colorWrapper = document.createElement('div');
+                
+                const colorDiv = document.createElement('div');
+                colorDiv.className = 'color-option';
+                colorDiv.style.backgroundColor = item.color;
+                colorDiv.title = item.name;
+                
+                if (item.color === selectedColor) {
+                    colorDiv.classList.add('selected');
+                }
+                
+                colorDiv.addEventListener('click', () => {
+                    // Remove selected class from all options
+                    document.querySelectorAll('.color-option').forEach(opt => {
+                        opt.classList.remove('selected');
+                    });
+                    
+                    // Add selected class to clicked option
+                    colorDiv.classList.add('selected');
+                    
+                    // Update selected color
+                    selectedColor = item.color;
+                    selectedColorName = item.name;
+                    
+                    // Update color display
+                    currentColorDisplay.style.backgroundColor = item.color;
+                    colorNameDisplay.textContent = item.name;
+                    
+                    // Close modal
+                    colorPickerModal.classList.remove('active');
+                });
+                
+                colorWrapper.appendChild(colorDiv);
+                
+                const colorName = document.createElement('div');
+                colorName.className = 'color-option-name';
+                colorName.textContent = item.name;
+                colorWrapper.appendChild(colorName);
+                
+                colorPickerGrid.appendChild(colorWrapper);
+            });
+        }
+
+        // Open color picker modal
+        colorPickerButton.addEventListener('click', () => {
+            colorPickerModal.classList.add('active');
+        });
+
+        // Close color picker modal
+        colorPickerClose.addEventListener('click', () => {
+            colorPickerModal.classList.remove('active');
+        });
+
+        // Close modal when clicking outside
+        colorPickerModal.addEventListener('click', (e) => {
+            if (e.target === colorPickerModal) {
+                colorPickerModal.classList.remove('active');
+            }
+        });
+
+        // ============================================================================
+        // INITIALIZE — ping the Modal endpoint so its container is warm by the
+        // time the user clicks Detect. The ping is a cheap GET to the health
+        // route; it returns in ~100ms warm or wakes the container in ~3-5s cold.
+        // Either way we mark the service ready and unlock the upload UI.
+        // ============================================================================
+        async function init() {
+            // Detect unconfigured endpoint early — friendlier than a CORS error.
+            if (!CONFIG.MODAL_ENDPOINT ||
+                CONFIG.MODAL_ENDPOINT.includes('YOUR-WORKSPACE')) {
+                modalReady = false;
+                updateStatus(
+                    'Inference endpoint not configured. ' +
+                    'Set CONFIG.MODAL_ENDPOINT in index2_dinov3.html.',
+                    'error');
+                return;
+            }
+
+            updateStatus('Connecting to inference service...', 'loading');
+            loader.classList.add('active');
+
+            // The health endpoint lives at the base of the Modal app, i.e. the
+            // URL WITHOUT the trailing "/detect". Derive it from MODAL_ENDPOINT.
+            const healthUrl = CONFIG.MODAL_ENDPOINT.replace(/\/detect\/?$/, '/');
+
+            try {
+                const t0 = performance.now();
+                const res = await fetch(healthUrl, { method: 'GET', cache: 'no-store' });
+                const dt = Math.round(performance.now() - t0);
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const info = await res.json().catch(() => ({}));
+                modalReady = true;
+                console.log(`[modal] healthy in ${dt}ms`, info);
+                updateStatus('Ready! Upload an image to begin.', 'success');
+            } catch (error) {
+                modalReady = false;
+                console.error('Modal health check failed:', error);
+                updateStatus(
+                    'Could not reach inference service: ' + error.message +
+                    '. The first request may be slow while the container warms up.',
+                    'error');
+            } finally {
+                loader.classList.remove('active');
+            }
+        }
+
+        // ============================================================================
+        // EVENT LISTENERS
+        // ============================================================================
+        fileInput.addEventListener('change', handleImageUpload);
+        detectBtn.addEventListener('click', detectFence);
+        recolorBtn.addEventListener('click', recolorFence);
+        downloadBtn.addEventListener('click', downloadResult);
+        resetBtn.addEventListener('click', reset);
+        
+        opacity.addEventListener('input', () => {
+            document.getElementById('opacity-value').textContent = opacity.value + '%';
+        });
+        
+        threshold.addEventListener('input', () => {
+            document.getElementById('threshold-value').textContent = threshold.value;
+            // Re-detect if mask exists
+            if (maskData) {
+                detectFence();
+            }
+        });
+        
+        edgeSmoothing.addEventListener('input', () => {
+            const labels = ['None', 'Light', 'Medium', 'Strong', 'Maximum'];
+            document.getElementById('smoothing-value').textContent = labels[edgeSmoothing.value - 1];
+        });
+        
+        // Drag and drop
+        uploadSection.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadSection.classList.add('drag-over');
+        });
+        
+        uploadSection.addEventListener('dragleave', () => {
+            uploadSection.classList.remove('drag-over');
+        });
+        
+        uploadSection.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadSection.classList.remove('drag-over');
+            const file = e.dataTransfer.files[0];
+            if (file && file.type.startsWith('image/')) {
+                handleImageFile(file);
+            }
+        });
+
+        // ============================================================================
+        // IMAGE UPLOAD
+        // ============================================================================
+        function handleImageUpload(event) {
+            const file = event.target.files[0];
+            if (file) {
+                handleImageFile(file);
+            }
+        }
+        
+        function handleImageFile(file) {
+            if (file.size > 10 * 1024 * 1024) {
+                updateStatus('File too large! Max 10MB', 'error');
+                return;
+            }
+            
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const img = new Image();
+                img.onload = () => {
+                    originalImage = img;
+                    drawOriginalImage();
+                    detectBtn.disabled = false;
+                    resetBtn.disabled = false;
+                    updateStatus('Image loaded! Click "Detect Fence" to analyze.', 'success');
+                };
+                img.src = e.target.result;
+            };
+            reader.readAsDataURL(file);
+        }
+
+        function drawOriginalImage() {
+            originalCanvas.width = originalImage.width;
+            originalCanvas.height = originalImage.height;
+            const ctx = originalCanvas.getContext('2d');
+            ctx.drawImage(originalImage, 0, 0);
+        }
+
+        // ============================================================================
+        // UPLOAD HELPER — downsize image to a tiny JPEG before sending to Modal.
+        // The server resizes to 518x518 internally anyway; sending 1024px JPEG
+        // shrinks a 5 MB photo to ~150-400 KB without losing anything the model
+        // can see. Huge bandwidth + latency win, especially on mobile.
+        // ============================================================================
+        async function imageToUploadBlob(img, maxDim, quality) {
+            const srcW = img.naturalWidth || img.width;
+            const srcH = img.naturalHeight || img.height;
+            const scale = Math.min(1.0, maxDim / Math.max(srcW, srcH));
+            const dstW = Math.max(1, Math.round(srcW * scale));
+            const dstH = Math.max(1, Math.round(srcH * scale));
+
+            const canvas = document.createElement('canvas');
+            canvas.width = dstW;
+            canvas.height = dstH;
+            const ctx = canvas.getContext('2d');
+            ctx.imageSmoothingEnabled = true;
+            ctx.imageSmoothingQuality = 'high';
+            ctx.drawImage(img, 0, 0, dstW, dstH);
+
+            return new Promise((resolve, reject) => {
+                canvas.toBlob(
+                    (blob) => blob ? resolve(blob) : reject(new Error('toBlob returned null')),
+                    'image/jpeg', quality
+                );
+            });
+        }
+
+        // ============================================================================
+        // FENCE DETECTION (server-side on Modal)
+        // ============================================================================
+        // Flow:
+        //   1. Client downsizes the photo to ≤1024px JPEG
+        //   2. Multipart POST to Modal /detect endpoint
+        //   3. Modal returns a 518x518 grayscale PNG (uint8 = sigmoid prob * 255)
+        //   4. Client decodes PNG → Float32Array probs in [0, 1]
+        //   5. Existing postprocessMask runs locally (CC cleanup, vegetation
+        //      filter, bark filter, soft-mask threshold, erosion)
+        // ============================================================================
+        async function detectFence() {
+            if (!originalImage) return;
+            if (!modalReady) {
+                updateStatus('Inference service not ready — check console for details.', 'error');
+                return;
+            }
+
+            showLoading('Uploading & detecting...');
+            updateStatus('Uploading & detecting...', 'loading');
+            detectBtn.disabled = true;
+
+            try {
+                // 1. Compress for upload
+                const uploadBlob = await imageToUploadBlob(
+                    originalImage,
+                    CONFIG.UPLOAD_MAX_DIM || 1024,
+                    CONFIG.UPLOAD_JPEG_QUALITY || 0.85
+                );
+                console.log(`[detect] upload size: ${(uploadBlob.size / 1024).toFixed(1)} KB`);
+
+                // 2. POST to Modal
+                const formData = new FormData();
+                formData.append('image', uploadBlob, 'fence.jpg');
+
+                const t0 = performance.now();
+                const response = await fetch(CONFIG.MODAL_ENDPOINT, {
+                    method: 'POST',
+                    body: formData,
+                });
+                if (!response.ok) {
+                    const txt = await response.text().catch(() => '');
+                    throw new Error(`HTTP ${response.status}: ${txt.slice(0, 200)}`);
+                }
+                const totalMs = performance.now() - t0;
+                const serverMs = response.headers.get('X-Inference-Ms') || '?';
+                console.log(`[detect] round-trip ${totalMs.toFixed(0)} ms ` +
+                            `(server: ${serverMs} ms)`);
+
+                // 3. Decode PNG mask
+                const maskBlob = await response.blob();
+                const maskBitmap = await createImageBitmap(maskBlob);
+
+                // 4. Read grayscale → Float32Array of probabilities in [0, 1].
+                //    Use the same INPUT_SIZE the postprocess expects so the
+                //    bilinear upsample math is unchanged.
+                const w = maskBitmap.width;
+                const h = maskBitmap.height;
+                const maskCanvas = document.createElement('canvas');
+                maskCanvas.width = w;
+                maskCanvas.height = h;
+                const mctx = maskCanvas.getContext('2d');
+                mctx.imageSmoothingEnabled = false;
+                mctx.drawImage(maskBitmap, 0, 0);
+                const px = mctx.getImageData(0, 0, w, h).data;
+                const N = w * h;
+                const probData = new Float32Array(N);
+                for (let i = 0; i < N; i++) {
+                    probData[i] = px[i * 4] / 255.0;   // R channel; G==B for grayscale PNG
+                }
+
+                // 5. Wrap as pseudo-tensor so the existing postprocess code is unchanged.
+                const output = { data: probData, dims: [1, 1, w, h] };
+
+                const smoothingKernel = parseInt(edgeSmoothing.value);
+                const thresholdValue = parseFloat(threshold.value);
+                const origImageData = getOriginalImagePixelData(originalImage);
+                maskData = postprocessMask(
+                    output, originalImage.width, originalImage.height,
+                    smoothingKernel, thresholdValue, origImageData
+                );
+                drawMask(maskData);
+
+                updateStatus('Fence detected successfully!', 'success');
+                recolorBtn.disabled = false;
+            } catch (error) {
+                console.error('Detection error:', error);
+                updateStatus('Detection failed: ' + error.message, 'error');
+            } finally {
+                hideLoading();
+                detectBtn.disabled = false;
+            }
+        }
+
+        // ============================================================================
+        // POSTPROCESSING (correct minimal pipeline for calibrated sigmoid output)
+        // ============================================================================
+        // The ONNX model outputs CALIBRATED sigmoid probabilities in [0, 1] —
+        // sigmoid is BAKED INTO the graph. The right operations are:
+        //   1. Hole-fill at MODEL resolution via morphological close (cheap +
+        //      avoids picket-gap erosion at high res)
+        //   2. Bilinear upsample from CONFIG.INPUT_SIZE (518 for DINOv2,
+        //      512 for SegFormer) to ORIGINAL image resolution
+        //   3. Hard threshold at the slider value (0.5 default)
+        //   4. (Output retains [0, 1] mask values: 1.0 = fence, 0.0 = bg)
+        //
+        // What was REMOVED vs the prior version (which was tuned for the OLD UNet++):
+        //   - enhanceContrast (min-max + power) — distorted calibrated probs,
+        //     inflated near-zero probs into the threshold band → false positives
+        //   - gaussianBlur sigma=1.2 — wiped out 1-2 px fence details
+        //   - bilateralFilter — slow + marginal benefit on calibrated output
+        //   - unsharpMask — introduced ringing at edges
+        //   - "soft threshold" — kept partial probs that bypassed the user's
+        //     threshold setting and bled through into the recolor step
+        //
+        // Edge softening for VISUAL blending is now done in recolorFence() via
+        // a small alpha-band falloff, NOT by distorting the segmentation mask.
+        // Draw original image to an offscreen canvas to get RGBA pixel data
+        // at the full image resolution. Used by the vegetation filter so it
+        // can read the actual pixel color at each mask location.
+        function getOriginalImagePixelData(img) {
+            const c = document.createElement('canvas');
+            c.width = img.naturalWidth || img.width;
+            c.height = img.naturalHeight || img.height;
+            const ctx = c.getContext('2d');
+            ctx.imageSmoothingEnabled = true;
+            ctx.imageSmoothingQuality = 'high';
+            ctx.drawImage(img, 0, 0);
+            return ctx.getImageData(0, 0, c.width, c.height).data;
+        }
+
+        // Color-aware BARK filter — drops mask pixels that look like tree
+        // trunks. Bark is typically gray-brown (LOW saturation) at medium
+        // brightness, vs warm-saturated wood (HIGHER saturation). Specifically
+        // targets the trunks/bark that the green-dominance filter can't catch
+        // (since bark shares brown with wood).
+        // Computes HSV saturation and brightness inline for speed; doesn't
+        // need a full RGB→HSV library call.
+        function filterBark(mask, pixelData, width, height, maxSat, brightMin, brightMax) {
+            const N = width * height;
+            const out = new Float32Array(N);
+            let dropped = 0;
+            for (let i = 0; i < N; i++) {
+                if (mask[i] > 0) {
+                    const r = pixelData[i * 4];
+                    const g = pixelData[i * 4 + 1];
+                    const b = pixelData[i * 4 + 2];
+                    const max = Math.max(r, g, b);
+                    const min = Math.min(r, g, b);
+                    // Saturation in [0, 1]: 0 = gray, 1 = pure color.
+                    const sat = max > 0 ? (max - min) / max : 0;
+                    // Use mean as brightness proxy (cheaper than HSV V)
+                    const bright = (r + g + b) / 3;
+                    // Bark signature: low saturation in mid-brightness band
+                    if (sat < maxSat && bright >= brightMin && bright <= brightMax) {
+                        out[i] = 0;
+                        dropped++;
+                    } else {
+                        out[i] = mask[i];
+                    }
+                }
+            }
+            console.log(`[bark-filter] dropped ${dropped} low-sat mid-bright px ` +
+                        `(sat < ${maxSat}, bright in [${brightMin}, ${brightMax}])`);
+            return out;
+        }
+
+        // Color-aware vegetation filter — drops mask pixels where the original
+        // image is green-dominant (likely a tree/leaf/bush occluding the fence).
+        // Preserves the soft mask value where pixels are wood/gray/white/etc.
+        // No-op for pixels where mask[i] == 0 (already excluded).
+        function filterVegetation(mask, pixelData, width, height, threshold) {
+            const N = width * height;
+            const out = new Float32Array(N);
+            let dropped = 0;
+            for (let i = 0; i < N; i++) {
+                if (mask[i] > 0) {
+                    const r = pixelData[i * 4];
+                    const g = pixelData[i * 4 + 1];
+                    const b = pixelData[i * 4 + 2];
+                    // Pixel is "vegetation-colored" if green is more than
+                    // `threshold` units higher than both red and blue.
+                    if (g - Math.max(r, b) > threshold) {
+                        out[i] = 0;
+                        dropped++;
+                    } else {
+                        out[i] = mask[i];
+                    }
+                }
+            }
+            console.log(`[veg-filter] dropped ${dropped} green-dominant px ` +
+                        `(threshold G - max(R,B) > ${threshold})`);
+            return out;
+        }
+
+        function postprocessMask(output, width, height, smoothingKernel = 1, thresholdValue = 0.5, origPixelData = null) {
+            const probData = output.data;
+            const ms = CONFIG.INPUT_SIZE;
+
+            // Step 1: Optional morphological close at MODEL resolution (cheaper +
+            // avoids destroying thin fence structures at high res). Kernel 1 = no-op.
+            let maskAtModelRes = probData;
+            if (smoothingKernel > 1) {
+                maskAtModelRes = morphologicalClose(probData, ms, ms, smoothingKernel);
+            }
+
+            // Step 2: Bilinear upsample from model resolution (ms x ms) to
+            // original image resolution
+            const maskOrig = bilinearResize(maskAtModelRes, ms, ms, width, height);
+
+            // Step 3: Build mask. Two modes:
+            //   HARD:  binary {0, 1} thresholding (legacy behavior)
+            //   SOFT:  keep model confidence as alpha, suppress foggy regions
+            //          → recolor uses mask value directly as alpha multiplier
+            //          → preserves the pixel-perfect quality visible in the heatmap
+            const useSoftMask = (CONFIG.USE_SOFT_MASK !== false);
+            const softLow = (CONFIG.SOFT_MASK_LOW != null) ? CONFIG.SOFT_MASK_LOW : 0.3;
+            const softHigh = (CONFIG.SOFT_MASK_HIGH != null) ? CONFIG.SOFT_MASK_HIGH : 0.7;
+            let mask = new Float32Array(width * height);
+            if (useSoftMask) {
+                // SOFT: clip-low + linear ramp + as-is above HIGH
+                //   p <= LOW           → 0.0  (suppress fog)
+                //   p >= HIGH          → p    (keep full confidence)
+                //   LOW < p < HIGH     → p * t  where t = (p-LOW)/(HIGH-LOW)
+                //   → smooth, anti-aliased boundary; pixel-perfect cores
+                const range = Math.max(1e-6, softHigh - softLow);
+                for (let i = 0; i < maskOrig.length; i++) {
+                    const p = maskOrig[i];
+                    if (p <= softLow) {
+                        mask[i] = 0.0;
+                    } else if (p >= softHigh) {
+                        mask[i] = p;
+                    } else {
+                        const t = (p - softLow) / range;
+                        mask[i] = p * t;
+                    }
+                }
+            } else {
+                // HARD: legacy binary threshold (sharp visible edges; loses
+                // confidence info; can look chunky at the boundaries)
+                for (let i = 0; i < maskOrig.length; i++) {
+                    mask[i] = maskOrig[i] >= thresholdValue ? 1.0 : 0.0;
+                }
+            }
+
+            // Step 4-5: Erode + CC cleanup. These operate on a BINARY view of
+            // the mask (any value > 0 = "fence"), but for soft mode we then
+            // ZERO OUT pixels NOT in the kept set while PRESERVING the soft
+            // values inside kept components. This way:
+            //   - Spurious blobs still get dropped
+            //   - 1-px boundary still gets tightened
+            //   - But the survivors keep their model-confidence alpha
+            const erodePx = CONFIG.POST_ERODE_PX || 0;
+            const ccMinPct = CONFIG.CC_MIN_BLOB_AREA_PCT || 0;
+            const ccTopK = CONFIG.CC_KEEP_TOP_K_BLOBS || 0;
+            if (erodePx > 0 || ccMinPct > 0 || ccTopK > 0) {
+                // Binary view of current mask
+                let keep = new Float32Array(width * height);
+                for (let i = 0; i < mask.length; i++) {
+                    keep[i] = mask[i] > 0 ? 1.0 : 0.0;
+                }
+                if (erodePx > 0) {
+                    keep = erode(keep, width, height, 2 * erodePx + 1);
+                }
+                if (ccMinPct > 0 || ccTopK > 0) {
+                    const minArea = Math.max(1, Math.floor(width * height * ccMinPct / 100.0));
+                    keep = connectedComponentClean(keep, width, height, minArea, ccTopK);
+                }
+                // Apply the kept-mask to (potentially soft) values
+                for (let i = 0; i < mask.length; i++) {
+                    if (keep[i] < 0.5) mask[i] = 0.0;
+                }
+            }
+
+            // Step 6: Vegetation / occluder color filter — drop mask pixels
+            // where the ORIGINAL IMAGE is green-dominant. Targets LEAVES.
+            // No-op if pixelData not provided (graceful fallback).
+            if (CONFIG.FILTER_VEGETATION && origPixelData) {
+                const greenThr = (CONFIG.VEGETATION_GREEN_DOMINANCE != null)
+                    ? CONFIG.VEGETATION_GREEN_DOMINANCE : 25;
+                mask = filterVegetation(mask, origPixelData, width, height, greenThr);
+            }
+
+            // Step 7: Bark filter — drops mask pixels where the original image
+            // is desaturated mid-brightness (tree TRUNKS). Targets bark that
+            // the green filter can't catch. Off by default in some users'
+            // configs because of edge-case risk (gray-painted fences).
+            if (CONFIG.FILTER_BARK && origPixelData) {
+                const maxSat = (CONFIG.BARK_MAX_SATURATION != null)
+                    ? CONFIG.BARK_MAX_SATURATION : 0.22;
+                const brightMin = (CONFIG.BARK_BRIGHTNESS_MIN != null)
+                    ? CONFIG.BARK_BRIGHTNESS_MIN : 40;
+                const brightMax = (CONFIG.BARK_BRIGHTNESS_MAX != null)
+                    ? CONFIG.BARK_BRIGHTNESS_MAX : 140;
+                mask = filterBark(mask, origPixelData, width, height,
+                                    maxSat, brightMin, brightMax);
+            }
+
+            return mask;
+        }
+
+        // ============================================================================
+        // CONNECTED-COMPONENT CLEANUP
+        // ============================================================================
+        // Two-pass union-find labeling: identifies all 4-connected white regions
+        // in a binary mask, computes their pixel areas, then KEEPS only those
+        // whose area is >= minArea (and optionally only the top-K largest).
+        // O(N) time, O(N) space. N ≈ image pixel count.
+        function connectedComponentClean(mask, width, height, minArea, keepTopK) {
+            const N = width * height;
+            const labels = new Int32Array(N);     // 0 = background / unlabeled
+            // Union-find parent array (sized for max possible labels = N/2)
+            const maxLabels = (N >> 1) + 2;
+            const parent = new Int32Array(maxLabels);
+            let nextLabel = 1;
+
+            const find = (x) => {
+                while (parent[x] !== x) {
+                    parent[x] = parent[parent[x]];   // path compression
+                    x = parent[x];
+                }
+                return x;
+            };
+            const union = (a, b) => {
+                const ra = find(a), rb = find(b);
+                if (ra !== rb) parent[Math.max(ra, rb)] = Math.min(ra, rb);
+            };
+
+            // Pass 1: assign provisional labels with 4-connectivity
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    const idx = y * width + x;
+                    if (mask[idx] < 0.5) continue;          // background
+                    const left = (x > 0) ? labels[idx - 1] : 0;
+                    const up   = (y > 0) ? labels[idx - width] : 0;
+                    if (left === 0 && up === 0) {
+                        labels[idx] = nextLabel;
+                        parent[nextLabel] = nextLabel;
+                        nextLabel++;
+                    } else if (left !== 0 && up === 0) {
+                        labels[idx] = left;
+                    } else if (left === 0 && up !== 0) {
+                        labels[idx] = up;
+                    } else {
+                        labels[idx] = Math.min(left, up);
+                        if (left !== up) union(left, up);
+                    }
+                }
+            }
+
+            // Pass 2: compute area per ROOT label
+            const areas = new Map();   // root -> pixel count
+            for (let i = 0; i < N; i++) {
+                if (labels[i] === 0) continue;
+                const root = find(labels[i]);
+                areas.set(root, (areas.get(root) || 0) + 1);
+            }
+
+            // Decide which roots to keep
+            let keepSet;
+            if (keepTopK > 0) {
+                const sorted = [...areas.entries()].sort((a, b) => b[1] - a[1]);
+                keepSet = new Set(sorted.slice(0, keepTopK)
+                                          .filter(([_, a]) => a >= minArea)
+                                          .map(([r, _]) => r));
+            } else {
+                keepSet = new Set([...areas.entries()]
+                                    .filter(([_, a]) => a >= minArea)
+                                    .map(([r, _]) => r));
+            }
+
+            // Pass 3: rebuild output mask, keeping only labeled-and-kept pixels
+            const out = new Float32Array(N);
+            for (let i = 0; i < N; i++) {
+                if (labels[i] === 0) continue;
+                const root = find(labels[i]);
+                if (keepSet.has(root)) out[i] = 1.0;
+            }
+
+            // Logging — useful for debugging "model detected wrong region" cases
+            const totalBlobs = areas.size;
+            const keptBlobs = keepSet.size;
+            const droppedArea = [...areas.entries()]
+                .filter(([r, _]) => !keepSet.has(r))
+                .reduce((s, [_, a]) => s + a, 0);
+            console.log(`[CC] blobs found=${totalBlobs}  kept=${keptBlobs}  ` +
+                        `dropped_area=${droppedArea} px (min=${minArea})`);
+
+            return out;
+        }
+        
+        
+        // Enhance contrast to separate fence from background
+        function enhanceContrast(src, width, height, factor) {
+            const result = new Float32Array(width * height);
+            
+            // Find min and max values
+            let minVal = 1, maxVal = 0;
+            for (let i = 0; i < src.length; i++) {
+                minVal = Math.min(minVal, src[i]);
+                maxVal = Math.max(maxVal, src[i]);
+            }
+            
+            // Apply contrast stretching
+            const range = maxVal - minVal;
+            if (range > 0) {
+                for (let i = 0; i < src.length; i++) {
+                    let normalized = (src[i] - minVal) / range;
+                    // Apply power law transformation for contrast
+                    normalized = Math.pow(normalized, 1.0 / factor);
+                    result[i] = normalized;
+                }
+            } else {
+                return src;
+            }
+            
+            return result;
+        }
+        
+        // Apply threshold with soft transition
+        function applyThreshold(src, width, height, thresholdValue) {
+            const result = new Float32Array(width * height);
+            const softness = 0.1; // Soft transition range
+            
+            for (let i = 0; i < src.length; i++) {
+                const value = src[i];
+                
+                if (value < thresholdValue - softness) {
+                    result[i] = 0;
+                } else if (value > thresholdValue + softness) {
+                    result[i] = value;
+                } else {
+                    // Smooth transition
+                    const t = (value - (thresholdValue - softness)) / (2 * softness);
+                    result[i] = value * t;
+                }
+            }
+            
+            return result;
+        }
+        
+        // Gaussian blur for noise reduction
+        function gaussianBlur(src, width, height, sigma) {
+            const kernelSize = Math.ceil(sigma * 3) * 2 + 1;
+            const kernel = generateGaussianKernel(kernelSize, sigma);
+            const halfKernel = Math.floor(kernelSize / 2);
+            const result = new Float32Array(width * height);
+            
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    let sum = 0;
+                    let weightSum = 0;
+                    
+                    for (let ky = -halfKernel; ky <= halfKernel; ky++) {
+                        for (let kx = -halfKernel; kx <= halfKernel; kx++) {
+                            const ny = Math.max(0, Math.min(height - 1, y + ky));
+                            const nx = Math.max(0, Math.min(width - 1, x + kx));
+                            const weight = kernel[(ky + halfKernel) * kernelSize + (kx + halfKernel)];
+                            sum += src[ny * width + nx] * weight;
+                            weightSum += weight;
+                        }
+                    }
+                    
+                    result[y * width + x] = sum / weightSum;
+                }
+            }
+            
+            return result;
+        }
+        
+        function generateGaussianKernel(size, sigma) {
+            const kernel = new Float32Array(size * size);
+            const center = Math.floor(size / 2);
+            const sigma2 = 2 * sigma * sigma;
+            
+            for (let y = 0; y < size; y++) {
+                for (let x = 0; x < size; x++) {
+                    const dx = x - center;
+                    const dy = y - center;
+                    kernel[y * size + x] = Math.exp(-(dx * dx + dy * dy) / sigma2);
+                }
+            }
+            
+            return kernel;
+        }
+        
+        // Bilateral filter for edge-preserving smoothing
+        function bilateralFilter(src, width, height, diameter, sigmaColor, sigmaSpace) {
+            const result = new Float32Array(width * height);
+            const radius = Math.floor(diameter / 2);
+            
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    let sum = 0;
+                    let weightSum = 0;
+                    const centerValue = src[y * width + x];
+                    
+                    for (let dy = -radius; dy <= radius; dy++) {
+                        for (let dx = -radius; dx <= radius; dx++) {
+                            const ny = Math.max(0, Math.min(height - 1, y + dy));
+                            const nx = Math.max(0, Math.min(width - 1, x + dx));
+                            const neighborValue = src[ny * width + nx];
+                            
+                            // Spatial weight
+                            const spatialDist = dx * dx + dy * dy;
+                            const spatialWeight = Math.exp(-spatialDist / (2 * sigmaSpace * sigmaSpace));
+                            
+                            // Color weight
+                            const colorDist = (centerValue - neighborValue) * (centerValue - neighborValue);
+                            const colorWeight = Math.exp(-colorDist / (2 * sigmaColor * sigmaColor));
+                            
+                            const weight = spatialWeight * colorWeight;
+                            sum += neighborValue * weight;
+                            weightSum += weight;
+                        }
+                    }
+                    
+                    result[y * width + x] = sum / weightSum;
+                }
+            }
+            
+            return result;
+        }
+        
+        // Unsharp masking for edge enhancement
+        function unsharpMask(src, width, height, sigma, amount) {
+            // Create blurred version
+            const blurred = gaussianBlur(src, width, height, sigma);
+            const result = new Float32Array(width * height);
+            
+            // Subtract blurred from original and add back with strength
+            for (let i = 0; i < src.length; i++) {
+                const detail = src[i] - blurred[i];
+                result[i] = Math.max(0, Math.min(1, src[i] + detail * amount));
+            }
+            
+            return result;
+        }
+        
+        // Bilinear interpolation for high-quality resizing
+        function bilinearResize(src, srcW, srcH, dstW, dstH) {
+            const dst = new Float32Array(dstW * dstH);
+            const xRatio = srcW / dstW;
+            const yRatio = srcH / dstH;
+            
+            for (let y = 0; y < dstH; y++) {
+                for (let x = 0; x < dstW; x++) {
+                    const srcX = x * xRatio;
+                    const srcY = y * yRatio;
+                    
+                    const x1 = Math.floor(srcX);
+                    const y1 = Math.floor(srcY);
+                    const x2 = Math.min(x1 + 1, srcW - 1);
+                    const y2 = Math.min(y1 + 1, srcH - 1);
+                    
+                    const dx = srcX - x1;
+                    const dy = srcY - y1;
+                    
+                    const v11 = src[y1 * srcW + x1];
+                    const v21 = src[y1 * srcW + x2];
+                    const v12 = src[y2 * srcW + x1];
+                    const v22 = src[y2 * srcW + x2];
+                    
+                    // Bilinear interpolation formula
+                    const value = v11 * (1 - dx) * (1 - dy) +
+                                  v21 * dx * (1 - dy) +
+                                  v12 * (1 - dx) * dy +
+                                  v22 * dx * dy;
+                    
+                    dst[y * dstW + x] = value;
+                }
+            }
+            
+            return dst;
+        }
+        
+        // Morphological closing (dilation followed by erosion) to clean edges
+        function morphologicalClose(mask, width, height, kernelSize) {
+            // Dilate to fill small holes
+            const dilated = dilate(mask, width, height, kernelSize);
+            // Erode to restore original size while smoothing edges
+            const eroded = erode(dilated, width, height, kernelSize);
+            return eroded;
+        }
+        
+        function dilate(mask, width, height, kernelSize) {
+            const result = new Float32Array(width * height);
+            const halfKernel = Math.floor(kernelSize / 2);
+            
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    let maxVal = 0;
+                    
+                    for (let ky = -halfKernel; ky <= halfKernel; ky++) {
+                        for (let kx = -halfKernel; kx <= halfKernel; kx++) {
+                            const ny = Math.max(0, Math.min(height - 1, y + ky));
+                            const nx = Math.max(0, Math.min(width - 1, x + kx));
+                            maxVal = Math.max(maxVal, mask[ny * width + nx]);
+                        }
+                    }
+                    
+                    result[y * width + x] = maxVal;
+                }
+            }
+            
+            return result;
+        }
+        
+        function erode(mask, width, height, kernelSize) {
+            const result = new Float32Array(width * height);
+            const halfKernel = Math.floor(kernelSize / 2);
+            
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    let minVal = 1;
+                    
+                    for (let ky = -halfKernel; ky <= halfKernel; ky++) {
+                        for (let kx = -halfKernel; kx <= halfKernel; kx++) {
+                            const ny = Math.max(0, Math.min(height - 1, y + ky));
+                            const nx = Math.max(0, Math.min(width - 1, x + kx));
+                            minVal = Math.min(minVal, mask[ny * width + nx]);
+                        }
+                    }
+                    
+                    result[y * width + x] = minVal;
+                }
+            }
+            
+            return result;
+        }
+
+        function drawMask(mask) {
+            const width = originalImage.width;
+            const height = originalImage.height;
+
+            maskCanvas.width = width;
+            maskCanvas.height = height;
+            const ctx = maskCanvas.getContext('2d');
+            const imageData = ctx.createImageData(width, height);
+
+            for (let i = 0; i < mask.length; i++) {
+                const value = Math.floor(mask[i] * 255);
+                imageData.data[i * 4] = value;
+                imageData.data[i * 4 + 1] = value;
+                imageData.data[i * 4 + 2] = value;
+                imageData.data[i * 4 + 3] = 255;
+            }
+
+            ctx.putImageData(imageData, 0, 0);
+        }
+
+        // ============================================================================
+        // FENCE RECOLORING
+        // ============================================================================
+        async function recolorFence() {
+            if (!originalImage || !maskData) return;
+            
+            showLoading('Recoloring fence...');
+            updateStatus('Recoloring fence...', 'loading');
+            
+            try {
+                // Use setTimeout to allow UI to update
+                await new Promise(resolve => setTimeout(resolve, 50));
+                
+                resultCanvas.width = originalImage.width;
+                resultCanvas.height = originalImage.height;
+                const ctx = resultCanvas.getContext('2d');
+                
+                ctx.drawImage(originalImage, 0, 0);
+                const imageData = ctx.getImageData(0, 0, originalImage.width, originalImage.height);
+                const data = imageData.data;
+                
+                const rgb = hexToRgb(selectedColor);
+                const alpha = parseInt(opacity.value) / 100;
+                const mode = blendMode.value;
+
+                // Mask is in [0.0, 1.0]. In HARD mode it's {0, 1} (binary).
+                // In SOFT mode (default), mask values BETWEEN 0 and 1 represent
+                // model confidence — used as alpha multiplier for natural
+                // anti-aliased staining that mirrors the heatmap quality.
+                for (let i = 0; i < maskData.length; i++) {
+                    const maskVal = maskData[i];
+                    if (maskVal > 0) {
+                        const idx = i * 4;
+                        const r = data[idx];
+                        const g = data[idx + 1];
+                        const b = data[idx + 2];
+
+                        const blended = applyBlendMode(r, g, b, rgb.r, rgb.g, rgb.b, mode);
+
+                        // alpha = user's opacity * model's confidence at this pixel.
+                        // HARD mode: maskVal is 0 or 1 → finalAlpha is 0 or alpha
+                        //   (legacy behavior preserved).
+                        // SOFT mode: maskVal in [0, 1] → finalAlpha proportional
+                        //   to confidence → pixel-perfect blending.
+                        const finalAlpha = alpha * maskVal;
+                        data[idx]     = r + (blended.r - r) * finalAlpha;
+                        data[idx + 1] = g + (blended.g - g) * finalAlpha;
+                        data[idx + 2] = b + (blended.b - b) * finalAlpha;
+                    }
+                }
+                
+                ctx.putImageData(imageData, 0, 0);
+                downloadBtn.disabled = false;
+                updateStatus('Recoloring complete!', 'success');
+            } finally {
+                hideLoading();
+            }
+        }
+
+        function applyBlendMode(r, g, b, cr, cg, cb, mode) {
+            switch (mode) {
+                case 'multiply':
+                    return {
+                        r: (r / 255) * (cr / 255) * 255,
+                        g: (g / 255) * (cg / 255) * 255,
+                        b: (b / 255) * (cb / 255) * 255
+                    };
+                case 'overlay':
+                    return {
+                        r: r < 128 ? 2 * r * cr / 255 : 255 - 2 * (255 - r) * (255 - cr) / 255,
+                        g: g < 128 ? 2 * g * cg / 255 : 255 - 2 * (255 - g) * (255 - cg) / 255,
+                        b: b < 128 ? 2 * b * cb / 255 : 255 - 2 * (255 - b) * (255 - cb) / 255
+                    };
+                case 'screen':
+                    return {
+                        r: 255 - (255 - r) * (255 - cr) / 255,
+                        g: 255 - (255 - g) * (255 - cg) / 255,
+                        b: 255 - (255 - b) * (255 - cb) / 255
+                    };
+                case 'color':
+                    return { r: cr, g: cg, b: cb };
+                default:
+                    return { r, g, b };
+            }
+        }
+
+        function hexToRgb(hex) {
+            const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+            return result ? {
+                r: parseInt(result[1], 16),
+                g: parseInt(result[2], 16),
+                b: parseInt(result[3], 16)
+            } : { r: 139, g: 69, b: 19 };
+        }
+
+        // ============================================================================
+        // DOWNLOAD & RESET
+        // ============================================================================
+        async function downloadResult() {
+            showLoading('Preparing download...');
+            
+            try {
+                await new Promise(resolve => setTimeout(resolve, 300));
+                const link = document.createElement('a');
+                link.download = 'fence_stained.png';
+                link.href = resultCanvas.toDataURL();
+                link.click();
+                updateStatus('Downloaded!', 'success');
+            } finally {
+                hideLoading();
+            }
+        }
+
+        async function reset() {
+            showLoading('Resetting...');
+            
+            try {
+                await new Promise(resolve => setTimeout(resolve, 200));
+                
+                originalImage = null;
+                maskData = null;
+                
+                // Properly reset canvases to default empty state
+                const ctx1 = originalCanvas.getContext('2d');
+                const ctx2 = maskCanvas.getContext('2d');
+                const ctx3 = resultCanvas.getContext('2d');
+                
+                // Clear any existing content
+                ctx1.clearRect(0, 0, originalCanvas.width, originalCanvas.height);
+                ctx2.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+                ctx3.clearRect(0, 0, resultCanvas.width, resultCanvas.height);
+                
+                // Reset to default canvas size (matches initial page load)
+                originalCanvas.width = 300;
+                originalCanvas.height = 200;
+                maskCanvas.width = 300;
+                maskCanvas.height = 200;
+                resultCanvas.width = 300;
+                resultCanvas.height = 200;
+                
+                // Clear the canvases again after resizing
+                ctx1.clearRect(0, 0, originalCanvas.width, originalCanvas.height);
+                ctx2.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+                ctx3.clearRect(0, 0, resultCanvas.width, resultCanvas.height);
+                
+                detectBtn.disabled = true;
+                recolorBtn.disabled = true;
+                downloadBtn.disabled = true;
+                resetBtn.disabled = true;
+                fileInput.value = '';
+                updateStatus(modalReady ? 'Ready! Upload an image to begin.' : 'Inference service not reachable', modalReady ? 'success' : 'error');
+            } finally {
+                hideLoading();
+            }
+        }
+
+        function updateStatus(message, type = '') {
+            status.textContent = message;
+            status.className = 'status ' + type;
+        }
+
+        // ============================================================================
+        // INITIALIZE ON LOAD
+        // ============================================================================
+        window.addEventListener('load', () => {
+            init();
+            initColorPicker();
+        });
+    </script>
+</body>
+</html>

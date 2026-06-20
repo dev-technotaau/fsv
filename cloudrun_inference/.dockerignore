@@ -1,0 +1,22 @@
+# Don't bake build artifacts / dev tooling into the container
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.git/
+.gitignore
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Editor / OS junk
+.env
+.env.local
+
+# Do NOT exclude *.onnx or *.onnx.data — the Dockerfile COPYs them.

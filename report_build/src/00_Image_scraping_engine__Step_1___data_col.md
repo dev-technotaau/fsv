@@ -1,0 +1,139 @@
+# AREA: Image-scraping engine (Step 1 — data collection)
+
+## SUMMARY
+The `data_scraper/` package is a production-grade, fully async (asyncio + httpx) multi-source image collector built to assemble the training corpus for the fence-segmentation model. It pulls from up to 13 wired-in sources (5 keyed APIs: Google CSE, Pexels, Unsplash, Pixabay, Flickr; 2 keyless APIs: Wikimedia Commons, Reddit; 5 Playwright browser scrapers: Google, Bing, DuckDuckGo, Pinterest, Houzz; plus a direct company-gallery HTML scraper). It enforces a deep quality/dedup pipeline: pre-download URL filtering, per-host adaptive rate limiting + circuit breakers + proxy rotation, SHA256 exact dedup, perceptual dHash + BK-tree near-dedup, PIL decompression-bomb hardening, resolution/aspect/size gating, an optional Google Cloud Vision label-detection QA gate, disk-space guarding, and optional Redis-backed distributed coordination. State (image hashes, URLs-seen, failures, per-query page progress) lives in a WAL-mode SQLite DB so runs are fully resumable. Three config profiles drive distinct runs: positives (target 17,000), a hard-positive top-up (target 22,000, Vision threshold relaxed to 0.4), and a separate negatives run (target 12,000, Vision OFF, its own output dir/DB). On-disk evidence shows the runs were actually executed: 21,518 positive rows and 12,009 negative rows in the dedup DBs.
+
+## KEY_FACTS
+- Package entry point is `python -m data_scraper.cli`; CLI built with typer exposing 8 commands: run, preflight, queries, stats, export, repair, retry-failures, vision-qa (data_scraper/cli.py:1-12, 296).
+- 13 source classes are wired in the coordinator: GoogleCSE, Pexels, Unsplash, Pixabay, Flickr, Wikimedia, Reddit, pw_google, pw_bing, pw_ddg, pw_pinterest, pw_houzz, company_sites (data_scraper/coordinator.py:165-178). README claims '10 total' (README.md:5) — stale, predates pinterest/houzz/company_sites additions.
+- Google Cloud Vision is a post-download VERIFIER only, never a discovery source (config.py:73-76, google_vision.py:1-5).
+- API endpoints: Google CSE https://www.googleapis.com/customsearch/v1 (10 results/page, paginates start=1..91, imgSize=large, imgType=photo, safe=active) (sources/google_cse.py:16,27-39); Pexels https://api.pexels.com/v1/search (80/page, up to 8 pages=640/query, prefers large2x) (sources/pexels.py:13,24,37); Unsplash https://api.unsplash.com/search/photos (30/page, 6 pages=180/query, prefers 'regular' 1080px) (sources/unsplash.py:13,27,40); Pixabay https://pixabay.com/api/ (200/page, 5 pages=1000/query, min 1024x720) (sources/pixabay.py:13,23,33-34); Flickr https://api.flickr.com/services/rest/ (250/page, 6 pages=1500/query, CC licenses '1,2,3,4,5,6,7,9,10') (sources/flickr.py:16-17,30); Wikimedia https://commons.wikimedia.org/w/api.php (generator=search, 50/page, 5 pages, namespace 6) (sources/wikimedia.py:13,73-86).
+- Wikimedia ignores the coordinator's specific queries and substitutes its own hardcoded _BROAD_QUERIES list (~80 broad fence terms) because Commons doesn't catalogue at segmentation granularity (sources/wikimedia.py:23-59,64-66).
+- Wikimedia requires a contact-info User-Agent ('ninja-fence-scraper/0.1 (https://github.com/technotau/ninja-fence; send@technotau.com) httpx/python'); browser UAs get 403 (sources/wikimedia.py:16-18; also enforced in downloader._host_ua_suffix at downloader.py:78-82).
+- Reddit supports two modes: unauthenticated (~10 req/min, www.reddit.com) and OAuth2 client-credentials or password flow (60 req/min, oauth.reddit.com); token auto-refreshes 60s before expiry (sources/reddit.py:1-16,37-101,119-121).
+- Downloader uses one shared httpx.AsyncClient (max_connections=64, max_keepalive=32, follow_redirects=True, http2=False), rotates 3 desktop User-Agents, auto-adds Referer, caps per-host concurrency at 4 (max_per_host) (downloader.py:48-63).
+- Adaptive rate limiting: on HTTP 429/503 it parses Retry-After or X-RateLimit-Reset (or defaults 30s), sets a per-host cooldown clamped to max_cool_s=120s (downloader.py:133-139,204-209). Pixabay CDN gets a pre-emptive 3.0s min inter-request interval (downloader.py:69-72).
+- Retry logic: exponential backoff min(2**attempt,10)+jitter, default max_retries from config (scraper.yaml sets 2) (downloader.py:228-243).
+- Circuit breaker per host: CLOSED/OPEN/HALF_OPEN, failure_threshold=5, cool_down_s=60.0; one probe in HALF_OPEN (circuit_breaker.py:26-82; defaults also in config.py:166-170).
+- Proxy rotator: round-robin via itertools.cycle, loads from config or SCRAPER_PROXIES env, evicts failing proxies for failure_cool_down_s=300s (proxy_rotator.py:13-57). Disabled by default (config.py:159-163).
+- Dedup is two-tier: exact SHA256 (sha256_of_bytes) plus perceptual dHash (8x8 difference hash, 64-bit) stored in SQLite and indexed by a thread-safe BK-tree for O(log N) Hamming search (dedup.py:28-63,177-197; bk_tree.py:30-78).
+- Near-duplicate threshold is Hamming distance <= 5 (phash_hamming_threshold=5) across all three configs (config.py:118; scraper.yaml:108).
+- dHash is unsigned 64-bit; stored in signed SQLite INTEGER via two's-complement round-trip (_u64_to_i64/_i64_to_u64) (dedup.py:32-44).
+- SQLite uses WAL journal mode, synchronous=NORMAL, busy_timeout=30000ms for safe concurrent thread access; schema has 4 tables: images, urls_seen, failures, query_progress (dedup.py:70-110,134-143).
+- Quality gate (check_bytes): min 800x600, max 8000x8000, aspect 0.4-2.5, bytes 40KB-25MB; rejects .svg/.gif/.bmp/.ico/.tif by extension pre-download (quality.py:42-87; config.py:99-113).
+- Quality blocks 9 stock-photo domains by default (istockphoto, shutterstock, gettyimages, alamy, dreamstime, 123rf, depositphotos, stock.adobe, adobestock) (config.py:109-113).
+- PIL hardening: MAX_IMAGE_PIXELS = max_megapixels*1e6 (default 100MP cap), LOAD_TRUNCATED_IMAGES=False, DecompressionBombWarning elevated to exception (quality.py:21-30).
+- Content filter blocks NSFW/violence/illustration keywords in title+page (NOT in our own query) and 2 off-topic domains (deviantart, artstation) (content_filter.py:15-29,53-57).
+- Google Vision QA: LABEL_DETECTION + OBJECT_LOCALIZATION (max 15 each), accepts if any label in labels_to_accept scores >= min_fence_confidence (0.6 default); deterministic per-image SHA-based sampling so re-runs don't re-bill; batch_annotate up to 16/call; URI mode sends URL so Google fetches server-side (no upload); cost ~$1.50/1000 (google_vision.py:76-133,267-310; config.py:73-94).
+- Vision is permissive on any API/batch failure or 60s watchdog timeout — never drops images on transient errors (google_vision.py:191-196,233-265).
+- Static query corpus is actually 144 queries (not '~200' as README/queries.py docstring claim): A wood=26, non-wood=9, B scenes=16, C occlusion=24, D humans/animals=15, E distractors=15, F scales=10, G conditions=14, H variations=15 (verified via import; README.md:123, queries.py:1 are overstated).
+- Optional Gemini query expansion prefers Vertex AI (uses $300 Cloud credits) then falls back to AI Studio; tries 6 models (gemini-2.0-flash, gemini-2.5-flash, gemini-1.5-flash-002, gemini-1.5-flash, gemini-flash-latest, gemini-pro), temperature 0.9 (queries.py:249-381).
+- Query-priority scheduler boosts under-saturated queries: score = saved*1000 + attempts, skips queries at/above target_per_query (80 in all configs) (query_priority.py:50-72; scraper.yaml:51).
+- Disk guard: preflight raises if free < min_free_disk_gb (2.0 default), background monitor checks every 30s and signals graceful stop (disk_guard.py:18-61; config.py:154-155).
+- Coordinator uses per-source bounded asyncio.Queues (maxsize 256) with a round-robin consumer to prevent any one fast source monopolizing the 16 download workers (coordinator.py:59-63,331-379).
+- Resume model: target_total_images is ABSOLUTE — counters seed from existing dedup rows on startup (coordinator.py:213-226); per-source-x-query page progress in query_progress table skips completed work (base.py:109-117).
+- Distributed mode (Redis) is optional/off by default; shares urls/shas/query-progress sets, falls back to NullDistributedStore on any failure (distributed.py:24-95; config.py:186-190).
+- Positive config target 17,000; hard-positive 22,000 (+~5000) with SAME output_root/dedup DB and Vision threshold relaxed 0.6->0.4; negative 12,000 with SEPARATE data_scraped_neg/ dir + own dedup DB, Vision OFF, wikimedia+company_sites disabled to avoid positive contamination (scraper.yaml:14; scraper_hard_positive.yaml:30,357-360; scraper_negative.yaml:18,23,360-361,407-408,484-485).
+- VERIFIED on disk: data_scraped/dedup.sqlite has 21,518 image rows, 92,091 urls_seen, 43,711 failures; 21,414 files in images/, 336 in rejected/. Top sources: pexels 5010, pw_bing 4166, wikimedia 3519, pw_google 3038, pw_houzz 1859, unsplash 1160, pixabay 1014, company_sites 935, pw_pinterest 817.
+- VERIFIED on disk: data_scraped_neg/dedup.sqlite has 12,009 image rows, 25,828 urls_seen, 9,679 failures; 12,009 files on disk. Top sources: pw_google 2740, pw_houzz 2545, pexels 1759, unsplash 1654, pixabay 1629, pw_pinterest 1150, pw_bing 532.
+- pw_google is documented as ToS-violating emergency fallback (README.md:195-203, scraper.yaml:217-222) yet is ENABLED in all three live configs and produced 3038 positive + 2740 negative saved images — the warning is contradicted by actual usage.
+
+## FILE_ROLES
+- [current] data_scraper/README.md — User-facing docs for the scraper: sources, install, keys, quick-start, tuning, Vision cost table, Reddit OAuth. Partly stale (says '10 sources', '~200 queries').
+- [current] data_scraper/cli.py — Typer CLI entry; 8 commands incl. run, preflight, vision-qa (parallel post-hoc Vision QA with checkpoint/resume).
+- [current] data_scraper/config.py — Pydantic config schema + YAML loader with ${ENV} expansion and --set override coercion. Defines every per-source and pipeline sub-config.
+- [current] data_scraper/coordinator.py — Core orchestrator: builds sources, per-source queues, 16 download workers, dedup/quality/vision pipeline, progress + stall detection, resume seeding.
+- [current] data_scraper/downloader.py — Async httpx downloader: retry/backoff, per-host circuit breakers, proxy rotation, adaptive 429 cooldowns, per-host UA/Referer/min-interval, fetch_image/json/text.
+- [current] data_scraper/dedup.py — SQLite WAL dedup + resume state: SHA256, dHash, BK-tree near-dup, urls_seen, failures, query_progress, repair/stats.
+- [current] data_scraper/bk_tree.py — Thread-safe BK-tree for O(log N) Hamming nearest-neighbor over 64-bit dHashes.
+- [current] data_scraper/content_filter.py — Lightweight keyword/domain blocklist for off-topic/NSFW titles+pages.
+- [current] data_scraper/google_vision.py — Optional Vision verifier: deterministic SHA sampling, batched async annotate, URI mode, permissive-on-failure.
+- [current] data_scraper/proxy_rotator.py — Round-robin proxy pool with failure cooldown; off by default.
+- [current] data_scraper/circuit_breaker.py — Per-host async circuit breaker (CLOSED/OPEN/HALF_OPEN).
+- [current] data_scraper/disk_guard.py — Disk-space preflight + periodic monitor that signals graceful stop.
+- [current] data_scraper/distributed.py — Optional Redis multi-machine coordination; Null fallback. Off by default.
+- [current] data_scraper/quality.py — Resolution/aspect/size/domain/extension quality gate + PIL bomb hardening.
+- [current] data_scraper/queries.py — 144 static fence queries in 9 categories + Gemini (Vertex/AI-Studio) expansion. Docstring claims ~200 (overstated).
+- [current] data_scraper/query_priority.py — Shortage-aware query reordering/dispensing scheduler.
+- [unknown] data_scraper/sqlite_writer.py — BatchedSQLiteWriter helper to coalesce inserts. Config exists and defaults enabled, but coordinator writes via DedupStore directly — appears UNUSED by the main run path.
+- [current] data_scraper/storage.py — Image save (re-encode JPEG q92, strip EXIF) + metadata/failure JSONL append; filenames source__query__sha8.jpg.
+- [current] data_scraper/logger.py — Structured JSON/rich console logger with levels, correlation IDs, stdlib bridge.
+- [current] data_scraper/__init__.py — Package marker, version 0.1.0.
+- [current] data_scraper/sources/base.py — Source ABC + adaptive TokenBucket rate limiter + per-query progress helpers.
+- [current] data_scraper/sources/_playwright_base.py — PlaywrightSupervisor (auto-restart, stealth init script) + scroll_and_collect helper.
+- [current] data_scraper/sources/google_cse.py — Google Custom Search image API source (paid).
+- [current] data_scraper/sources/pexels.py — Pexels API source.
+- [current] data_scraper/sources/unsplash.py — Unsplash API source.
+- [current] data_scraper/sources/pixabay.py — Pixabay API source.
+- [current] data_scraper/sources/flickr.py — Flickr CC-licensed search source.
+- [current] data_scraper/sources/wikimedia.py — Wikimedia Commons keyless source with hardcoded broad queries.
+- [current] data_scraper/sources/reddit.py — Reddit JSON source with OAuth2 token manager.
+- [current] data_scraper/sources/company_sites.py — Direct HTML scraper of 30 fence-company galleries (regex img/srcset + WP size upgrade).
+- [current] data_scraper/sources/playwright_google.py — Playwright Google Images scraper (script-tag URL regex). ToS-risky but enabled in all configs.
+- [current] data_scraper/sources/playwright_bing.py — Playwright Bing Images scraper with 4 filter variants.
+- [current] data_scraper/sources/playwright_ddg.py — Playwright DuckDuckGo i.js JSON scraper. Disabled in all configs.
+- [current] data_scraper/sources/playwright_pinterest.py — Playwright Pinterest pin scraper (upgrade to /originals/).
+- [current] data_scraper/sources/playwright_houzz.py — Playwright Houzz photo scraper (upgrade to w1600-h1600).
+- [current] data_scraper/sources/__init__.py — Sources package marker.
+- [current] configs/scraper.yaml — Positive-run config, target 17,000, Vision ON @0.6, Gemini expansion ON (+150), 22 custom cedar queries, 30 company URLs.
+- [current] configs/scraper_hard_positive.yaml — Hard-positive top-up, target 22,000, SAME DB, 191 curated custom queries (18 categories), Vision @0.4 with 35-label accept list.
+- [current] configs/scraper_negative.yaml — Negatives run, target 12,000, SEPARATE data_scraped_neg/ + DB, 226 custom queries (10 categories), Vision OFF, wikimedia+company_sites disabled.
+- [artifact] data_scraped/dedup.sqlite — Positive run state DB: 21,518 image rows, 92,091 urls_seen, 43,711 failures. Proof the run executed.
+- [artifact] data_scraped/images/ — 21,414 saved positive JPEGs.
+- [artifact] data_scraped/metadata.jsonl — Per-image metadata for positive run (~15MB).
+- [backup] data_scraped/metadata.jsonl.bak — Backup of an earlier metadata.jsonl (15.2MB, dated before current).
+- [artifact] data_scraped/rejected/ — 336 images moved out by post-hoc vision-qa.
+- [artifact] data_scraped/vision_qa_processed.txt — vision-qa resume checkpoint (processed filenames).
+- [artifact] data_scraped/scraper.log.jsonl — Structured run log (~9MB).
+- [artifact] data_scraped_neg/dedup.sqlite — Negative run state DB: 12,009 image rows, 25,828 urls_seen, 9,679 failures.
+- [artifact] data_scraped_neg/images/ — 12,009 saved negative JPEGs.
+- [current] requirements/scraper.txt — Pip dependencies for the scraper (referenced by README install).
+
+## NARRATIVE
+## Step 1 — The image-scraping engine
+
+The first stage of the whole project is getting enough varied photographs of fences (and deliberately, of things that aren't fences) to train a segmentation model on. Rather than hand-collecting images or relying on a single search engine, the team built a proper standalone Python package, `data_scraper/`, that behaves like a small piece of production infrastructure. It is fully asynchronous (built on `asyncio` and `httpx`), pulls from more than a dozen sources at once, deduplicates aggressively, quality-filters everything, and is completely resumable if it crashes or is interrupted. You drive it from the command line with `python -m data_scraper.cli run`, and there are companion commands for sanity-checking the setup (`preflight`), previewing the query list (`queries`), reporting progress (`stats`), exporting a CSV (`export`), garbage-collecting orphaned DB rows (`repair`), retrying earlier failures (`retry-failures`), and running a separate post-hoc Google Vision quality pass (`vision-qa`).
+
+### Where the images come from
+
+The coordinator wires in 13 sources, organised by how they're accessed. Five are keyed third-party APIs: Google Custom Search (`google_cse`, the paid one — 100 free image queries/day then $5/1000), Pexels, Unsplash, Pixabay, and Flickr. Two are keyless public APIs: Wikimedia Commons and Reddit. Five are browser-driven scrapers running real Chromium through Playwright: Google Images, Bing Images, DuckDuckGo, Pinterest, and Houzz. The last one, `company_sites`, is a plain HTML scraper pointed at 30 hand-verified fence-and-staining company galleries — most of those are static WordPress sites whose gallery pages have direct `<img src=…/wp-content/uploads/…>` links, so a regex plus a "strip the `-300x200` WordPress size suffix to get full-res" trick is enough, no browser needed.
+
+Each API source is well-behaved about the underlying service's catalogue. Pexels pulls up to 8 pages of 80 (640/query) and deliberately grabs the `large2x` (~1880px) rendition rather than the 20-40MB original, because for segmentation training at ~640px input that's plenty and 10x faster to fetch. Unsplash takes the 1080px `regular` size, Pixabay the `largeImageURL`, and Flickr is restricted to Creative Commons licences (`1,2,3,4,5,6,7,9,10`) so the imagery is safe to redistribute. Wikimedia is a special case: it requires a descriptive contact-info User-Agent (browser-like agents get a 403 "respect our robot policy"), and because Commons doesn't tag photos at the granularity of prompts like "cedar fence behind climbing roses," the source quietly ignores the coordinator's specific queries and substitutes its own hardcoded list of ~80 broad terms ("wooden fence", "picket fence", "paddock fence", and so on). Reddit can run unauthenticated (~10 requests/minute) or, far better, via OAuth2 client-credentials against `oauth.reddit.com` (60/minute), with a small token manager that refreshes 60 seconds before expiry.
+
+One important caveat worth flagging to the client: `pw_google` (Playwright-driven Google Images) is documented in big warning boxes as a Terms-of-Service-violating "emergency fallback only" — yet it is actually enabled in all three live configs and, on disk, was responsible for 3,038 images in the positive set and 2,740 in the negative set. So the documentation and the real usage disagree.
+
+### Rate-limiting, retries, circuit-breaking, and proxies
+
+This is where the engineering depth shows. All HTTP goes through a single shared `httpx.AsyncClient` with a 64-connection pool, redirect-following, three rotating desktop User-Agents, and an auto-injected `Referer` (many CDNs 403 without one). On top of that sit several independent throttling mechanisms. Each source has its own `TokenBucket` rate limiter that can also adapt downward when the server sends `Retry-After` or `X-RateLimit-*` headers. The downloader additionally enforces a per-host concurrency cap of 4 (so 16 workers can't all hammer one CDN and trip its anti-DDoS), and a per-host adaptive cooldown: a 429 or 503 parses out the suggested wait (or defaults to 30s) and benches that host, but clamped to a maximum of 120 seconds so repeated 429s can't snowball into unbounded backoff. Pixabay's CDN is fragile enough that it gets a hardcoded pre-emptive 3-second minimum interval between requests. Retries use exponential backoff (`min(2**attempt,10)` plus jitter), with `max_retries` set to 2 in the live configs to keep workers moving.
+
+Layered over that is a per-host circuit breaker (CLOSED → OPEN → HALF_OPEN): after 5 consecutive failures a host is short-circuited for 60 seconds, then a single probe decides whether to close it again. There's also a proxy rotator (round-robin with a 300-second eviction cooldown for failing proxies, loadable from `SCRAPER_PROXIES`), though it's disabled by default in all three configs.
+
+### Deduplication — SHA, dHash, and the BK-tree
+
+Because the same fence photo turns up on Pexels, Pinterest, and three company sites, live deduplication is essential. It works in two tiers. First, exact dedup: every downloaded image's SHA256 is checked against the `images` table before anything is saved. Second, near-duplicate detection: each image gets an 8x8 difference hash ("dHash"), a 64-bit perceptual fingerprint. Comparing one dHash against tens of thousands of stored ones by brute force would be slow, so the stored hashes are kept in a thread-safe BK-tree, which answers "is anything within Hamming distance N of this hash?" in roughly O(log N). The threshold is Hamming ≤ 5 (configurable as `phash_hamming_threshold`, 5 in every config). A subtle correctness detail: the dHash is an unsigned 64-bit integer, but SQLite's INTEGER is signed 64-bit, so the code round-trips it through a two's-complement transform (`_u64_to_i64`/`_i64_to_u64`) to store the exact bit pattern losslessly. The whole DB runs in WAL mode with `synchronous=NORMAL` and a 30-second busy timeout so the 16 worker threads can read and write concurrently without corrupting state.
+
+### Quality gate, content filter, and the Vision QA gate
+
+Before an image is accepted it must pass `check_bytes`: resolution between 800x600 and 8000x8000, aspect ratio 0.4-2.5, file size 40KB-25MB, and a successful PIL decode. PIL is hardened against decompression-bomb attacks — `MAX_IMAGE_PIXELS` is capped (100 megapixels), truncated images are rejected, and the decompression-bomb warning is promoted to a hard error. Pre-download, URLs are filtered too: nine stock-photo domains (Shutterstock, Getty, iStock, Alamy, etc.) are blocked outright, and `.svg/.gif/.bmp/.ico/.tif` extensions are dropped. A lightweight content filter additionally rejects titles/pages containing NSFW, violence, or "illustration/clipart/wallpaper" keywords, plus DeviantArt and ArtStation domains.
+
+The optional but real heavy artillery is the Google Cloud Vision gate. After download, an image can be sent to Vision for LABEL_DETECTION + OBJECT_LOCALIZATION; it's accepted only if some label in an accept-list (Fence, Picket fence, Wood, Yard, Wall, Garden, etc.) scores at or above `min_fence_confidence` (0.6 by default). To control cost (~$1.50 per 1,000 images) there's deterministic per-image sampling derived from the SHA, so a 20% sample rate checks one in five images and re-runs never re-bill the same image. Calls are batched (up to 16 per request) and can run in "URI mode," where Google fetches the image from its URL server-side so no upload bandwidth is spent. Crucially, the gate is permissive on any failure — API error, partial batch, or a 60-second watchdog timeout all resolve as "accept" so a Vision hiccup never silently throws away good images.
+
+### Orchestration, resumability, and distribution
+
+The coordinator gives each source its own bounded queue (256 items) and a round-robin consumer, so one fast source like Pexels can't starve the slower ones. Sixteen download workers pull candidates, run them through the full pipeline, and on completion log per-stage timings for anything that takes over 5 seconds. Resumption is first-class: `target_total_images` is treated as an absolute on-disk target (counters seed from existing DB rows at startup), and a `query_progress` table records the last page reached per source-and-query so completed work is skipped on the next run. A disk guard refuses to start (or stops gracefully mid-run) if free space drops below 2GB. There's even optional Redis-backed distributed coordination to run the scraper across multiple machines sharing one URL/SHA-seen set, though it's off by default.
+
+### The three config profiles
+
+The same engine is pointed at three different jobs. **`scraper.yaml`** is the positive run: target 17,000 images, Vision ON at 0.6, the 144-query static corpus plus Gemini expansion (+150) plus 22 hand-written cedar-specific queries plus 30 company galleries. **`scraper_hard_positive.yaml`** is a top-up that extends the same dataset and dedup DB up to 22,000, disables the static/Gemini corpus, and instead runs 191 curated "hard" queries across 18 categories (extreme occlusion, harsh lighting, damage, mid-staining, multi-class boundaries, etc.); its Vision threshold is relaxed to 0.4 with a much wider 35-label accept list, on the reasoning that genuinely hard positives have low fence-label confidence and 0.6 would throw away 30-50% of exactly the edge cases they want. **`scraper_negative.yaml`** builds a deliberately separate negative set: target 12,000, its own `data_scraped_neg/` output dir and dedup DB so there's zero cross-contamination, 226 hand-crafted queries covering things that look like fences but aren't (deck railings, pergolas, vinyl/chain-link/iron fences, brick walls, hedges, boardwalks, slatted furniture), Vision turned OFF (the fence-positive label list would wrongly accept negatives), and both Wikimedia and `company_sites` disabled because their hardcoded fence terms would inject positives.
+
+The on-disk artifacts confirm all this actually ran: the positive dedup DB holds 21,518 image rows (21,414 JPEGs on disk after a Vision-QA pass moved 336 to `rejected/`), with the top contributors being Pexels (5,010), Bing (4,166), Wikimedia (3,519), and Google (3,038); the negative DB holds 12,009 rows, led by Google (2,740) and Houzz (2,545).
+
+## UNCERTAINTIES
+- README.md says '10 sources' and 'queries.py ships ~200 static queries'; both are stale — there are 13 wired sources and exactly 144 static queries (verified by import). The '~200' likely counts the static corpus plus Gemini expansion plus custom, but as written it overstates the static count.
+- BatchedSQLiteWriter (sqlite_writer.py) and its config (batched_writer, enabled by default) exist, but the coordinator's _process_candidate writes through DedupStore.save_image directly, not through the batched writer. I could not find any code path that instantiates/starts BatchedSQLiteWriter in the run path — it appears to be dead/unused infrastructure. Worth confirming.
+- pw_google is labelled ToS-violating 'do not enable' in README and YAML comments, yet enabled: true in all three configs and has thousands of saved images. This is an internal contradiction the client may want addressed (legal/reproducibility risk).
+- The positive dedup DB has 21,518 rows and the hard-positive config targets 22,000 against the SAME DB, so it's likely the positive (17,000) and hard-positive top-up runs were both executed into data_scraped/. I cannot definitively attribute which rows came from which run because they share the DB and metadata.jsonl. The 'metadata.jsonl.bak' suggests at least one prior overwrite.
+- Reddit and Flickr are enabled:false in every config and have 0 rows in both DBs, so despite full source implementations they contributed nothing to the actual datasets. README/queries docstrings still describe them as active.
+- I did not read requirements/scraper.txt contents; its existence is confirmed but exact pinned dependency versions were not inspected.
+- TokenBucket.adjust_from_headers exists but I did not find a call site that feeds response headers back into the bucket during the run; adaptive throttling appears to happen primarily via the Downloader's per-host cooldown path, not the bucket's adaptive mode. The two mechanisms may be partly redundant.
+- DuckDuckGo (pw_ddg) is disabled in all three configs despite the README calling it 'enabled — DDG is more permissive'; another doc/config mismatch.

@@ -1,0 +1,1670 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<title>Fence Stain Simulator — Technical Report</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:wght@500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+:root {
+  --brand: #C06B1A; --brand-light: #E58939; --brand-dark: #8A4A0F;
+  --brand-50: #FDF4EC; --brand-100: #F8E3CC;
+  --ink-900: #0B0D0E; --ink-800:#16191C; --ink-700: #1F2326; --ink-600: #3A4047;
+  --ink-500: #5B636B; --ink-400:#8B939B; --ink-300: #C7CCD2; --ink-200: #E5E8EB;
+  --ink-100: #F0F2F4; --ink-50: #F7F8FA; --paper: #FFFFFF;
+  --ok:#16A34A; --warn:#D97706; --err:#DC2626; --info:#2563EB;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+  font-size: 10.6pt; line-height: 1.55; color: var(--ink-700);
+  background: var(--ink-50); -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
+}
+.page { max-width: 880px; margin: 0 auto; padding: 36px 46px 56px; background: var(--paper); }
+
+/* Cover — matches the live app hero (index4_dinov3.html): dark charcoal + warm orange */
+header.cover {
+  background: linear-gradient(155deg, #14171A 0%, #0A0C0E 100%); color: #fff;
+  padding: 64px 50px 56px; margin: -36px -46px 0; position: relative; overflow: hidden;
+  min-height: 96vh; display: flex; flex-direction: column; justify-content: center;
+  page-break-after: always; break-after: page;
+}
+header.cover::before {
+  content: ''; position: absolute; top: -120px; right: -80px; width: 480px; height: 480px;
+  background: radial-gradient(closest-side, rgba(192,107,26,0.45), transparent 70%);
+  filter: blur(40px); pointer-events: none;
+}
+header.cover::after {
+  content: ''; position:absolute; inset:0;
+  background:
+    linear-gradient(transparent 0, transparent calc(100% - 1px), rgba(255,255,255,0.06) 100%),
+    repeating-linear-gradient(90deg, transparent 0, transparent 60px, rgba(255,255,255,0.02) 60px, rgba(255,255,255,0.02) 61px);
+  pointer-events:none;
+}
+.cover-tag {
+  display: inline-block; font-family: 'JetBrains Mono', Consolas, monospace; font-size: 0.72rem;
+  color: rgba(255,255,255,0.7); background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12);
+  padding: 5px 14px; border-radius: 999px; letter-spacing: 0.08em; text-transform: uppercase;
+  margin-bottom: 22px; position: relative; z-index: 1; width: fit-content;
+}
+.cover-title {
+  display: block; font-family: 'Plus Jakarta Sans', 'Inter', sans-serif; font-size: 3.7rem; font-weight: 800;
+  letter-spacing: -0.03em; margin: 0 0 8px; color: #ffffff; position: relative; z-index: 1; line-height: 1.0;
+}
+/* Solid brand-orange accent (no background-clip:text — that renders transparent in some PDF viewers). */
+.cover-title .accent { color: #E58939; }
+.cover-subtitle { font-family:'Plus Jakarta Sans','Inter',sans-serif; font-size:1.35rem; font-weight:700; color:rgba(255,255,255,0.92); margin:0 0 22px; position:relative; z-index:1; }
+.cover-lede { color: rgba(255,255,255,0.74); font-size: 1.02rem; max-width: 660px; margin: 0 0 30px; position: relative; z-index: 1; line-height:1.6; }
+.cover-link { position:relative; z-index:1; margin:0 0 10px; font-size:0.95rem; color:rgba(255,255,255,0.9); }
+.cover-link .lbl { color:rgba(255,255,255,0.55); font-family:'JetBrains Mono',Consolas,monospace; font-size:0.72rem; letter-spacing:0.08em; text-transform:uppercase; display:block; margin-bottom:3px; }
+.cover-link a { color:#FFB76A; border-bottom:1px solid rgba(255,183,106,0.4); font-weight:600; }
+.cover-foot { margin-top:18px; color:rgba(255,255,255,0.5); font-size:0.8rem; position:relative; z-index:1; font-family:'JetBrains Mono',Consolas,monospace; }
+
+/* markdown H1 is stripped in build(); the cover title is the only h1 and must stay visible — so no global h1{display:none} */
+h2 {
+  font-family: 'Plus Jakarta Sans', 'Inter', sans-serif; color: var(--ink-900); font-weight: 800;
+  font-size: 1.7rem; letter-spacing:-0.02em; margin: 0 0 16px; padding: 14px 0 10px;
+  border-bottom: 2px solid var(--brand-100); page-break-before: always; break-after: avoid;
+}
+h2:first-of-type { page-break-before: avoid; }
+h3 { font-family: 'Plus Jakarta Sans','Inter',sans-serif; font-size: 1.18rem; font-weight:700; margin: 26px 0 8px; color: var(--ink-900); letter-spacing:-0.01em; break-after: avoid; }
+h4 { font-family:'Plus Jakarta Sans','Inter',sans-serif; font-size:1.0rem; font-weight:700; margin:18px 0 6px; color: var(--brand-dark); break-after: avoid; }
+p { margin: 0 0 11px; }
+ul, ol { margin: 0 0 13px; padding-left: 24px; }
+li { margin: 4px 0; }
+strong { color: var(--ink-900); }
+hr { border:0; border-top:1px dashed var(--ink-200); margin: 26px 0; }
+a { color: var(--brand-dark); text-decoration: none; border-bottom: 1px solid var(--brand-100); }
+
+code { font-family: 'JetBrains Mono', Consolas, Menlo, monospace; font-size: 0.86em; background: var(--ink-100); padding: 1px 6px; border-radius: 4px; color: var(--brand-dark); }
+pre { background: #0E1012; color: #E5E8EB; padding: 15px 18px; border-radius: 10px; overflow-x: auto; font-family: 'JetBrains Mono', Consolas, Menlo, monospace; font-size: 0.78rem; line-height: 1.5; margin: 13px 0 17px; border: 1px solid #1F2326; page-break-inside: avoid; }
+pre code { background: transparent; color: inherit; padding: 0; font-size: inherit; }
+
+table { width: 100%; border-collapse: collapse; margin: 13px 0 20px; font-size: 0.84rem; background: var(--paper); border: 1px solid var(--ink-200); border-radius: 10px; overflow: hidden; page-break-inside: avoid; }
+th { background: linear-gradient(135deg, var(--brand-50), #fff); color: var(--ink-900); font-family: 'Plus Jakarta Sans','Inter',sans-serif; font-weight: 700; text-align: left; padding: 9px 13px; border-bottom: 2px solid var(--brand-100); font-size: 0.78rem; }
+td { padding: 8px 13px; border-top: 1px solid var(--ink-100); vertical-align: top; color: var(--ink-700); }
+tr:nth-child(even) td { background: rgba(247,248,250,0.6); }
+
+blockquote { margin: 14px 0; padding: 12px 18px; background: var(--brand-50); border-left: 4px solid var(--brand); border-radius: 0 10px 10px 0; color: var(--ink-800); }
+blockquote p { margin: 0; }
+
+/* Table of contents */
+.toc { background: linear-gradient(180deg,#FAFBFC,#F4F6F8); border:1px solid var(--ink-200); border-radius:14px; padding: 20px 26px; margin: 8px 0 0; page-break-after: always; }
+.toc-title { font-family:'Plus Jakarta Sans','Inter',sans-serif; font-weight:800; font-size:1.3rem; color:var(--ink-900); margin:0 0 10px; }
+.toc ul { list-style:none; padding-left:0; margin:0; }
+.toc > ul > li { margin: 7px 0; font-weight:700; color:var(--ink-900); font-size:0.95rem; }
+.toc ul ul { padding-left:18px; margin:4px 0; }
+.toc ul ul li { font-weight:500; color:var(--ink-600); font-size:0.86rem; margin:2px 0; }
+.toc a { border-bottom:none; color:inherit; }
+
+/* Callout note styling via blockquote starting with NOTE/WARN */
+@page { size: A4; margin: 16mm 14mm; }
+@media print {
+  body { background: var(--paper); }
+  .page { box-shadow: none; padding: 0; max-width: none; }
+  header.cover { margin: 0; min-height: 96vh; page-break-after: always; }
+  h2 { page-break-before: always; }
+  h2:first-of-type { page-break-before: avoid; }
+  table, pre, blockquote { page-break-inside: avoid; }
+}
+footer.foot { margin: 50px -46px -56px; padding: 22px 46px; background: var(--ink-50); border-top: 1px solid var(--ink-200); color: var(--ink-500); font-size: 0.82rem; text-align: center; font-style: italic; }
+</style></head>
+<body><article class="page">
+<header class="cover">
+  <span class="cover-tag">June 2026</span>
+  <h1 class="cover-title">Fence Stain<br><span class="accent">Simulator</span></h1>
+  <p class="cover-subtitle">End-to-End Technical Walkthrough &amp; Project Report</p>
+  <p class="cover-lede">A complete, plain-English walk-through of how the Fence Stain Simulator is built &mdash; from scraping tens of thousands of fence photos, through AI-assisted labelling and a two-phase deep-learning model, to the live browser experience your customers use at ninjafencestaining.com &mdash; with the exact numbers, costs, and decisions behind each step.</p>
+  <p class="cover-link"><span class="lbl">Live tool</span><a href="https://ninjafencestaining.com/fence-staining-color-simulator/">ninjafencestaining.com/fence-staining-color-simulator</a></p>
+  <div class="cover-foot">Prepared for Ninja Fence Staining &middot; by TechnoTaau &middot; DINOv3 ViT-L/16 segmentation</div>
+</header>
+<div class="toc"><span class="toctitle">Contents</span><ul>
+<li><a href="#executive-summary">Executive Summary</a></li>
+<li><a href="#1-what-the-product-is-and-the-pipeline-at-a-glance">1. What the product is, and the pipeline at a glance</a><ul>
+<li><a href="#the-product">The product</a></li>
+<li><a href="#the-pipeline-behind-it">The pipeline behind it</a></li>
+<li><a href="#a-note-on-accuracy-and-honesty-in-this-report">A note on accuracy and honesty in this report</a></li>
+</ul>
+</li>
+<li><a href="#2-step-1-collecting-the-images-the-scraper">2. Step 1 — Collecting the images (the scraper)</a><ul>
+<li><a href="#why-negatives-matter-as-much-as-positives">Why "negatives" matter as much as "positives"</a></li>
+<li><a href="#where-the-photos-come-from">Where the photos come from</a></li>
+<li><a href="#the-engineering-that-keeps-it-reliable">The engineering that keeps it reliable</a></li>
+<li><a href="#the-google-vision-quality-check">The Google Vision quality check</a></li>
+<li><a href="#the-three-collection-runs">The three collection runs</a></li>
+<li><a href="#what-we-actually-ended-up-with">What we actually ended up with</a></li>
+</ul>
+</li>
+<li><a href="#3-step-2-refining-validating-and-cataloguing-the-data">3. Step 2 — Refining, validating and cataloguing the data</a><ul>
+<li><a href="#the-integrity-check">The integrity check</a></li>
+<li><a href="#cross-set-de-duplication-and-why-direction-matters">Cross-set de-duplication (and why direction matters)</a></li>
+<li><a href="#cataloguing-by-subcategory">Cataloguing by subcategory</a></li>
+<li><a href="#the-audit-reports-that-ship-alongside-the-data">The audit reports that ship alongside the data</a></li>
+</ul>
+</li>
+<li><a href="#4-step-3-ai-assisted-labelling-and-manual-mask-refinement">4. Step 3 — AI-assisted labelling and manual mask refinement</a><ul>
+<li><a href="#the-three-class-idea-the-clever-bit">The three-class idea (the clever bit)</a></li>
+<li><a href="#stage-1-the-automatic-pipeline">Stage 1 — the automatic pipeline</a></li>
+<li><a href="#stage-2-automatic-triage-so-humans-only-see-hard-cases">Stage 2 — automatic triage (so humans only see hard cases)</a></li>
+<li><a href="#stage-3-manual-refinement-with-segment-anything-3">Stage 3 — manual refinement with Segment Anything 3</a></li>
+<li><a href="#the-most-important-single-fact-in-the-whole-data-pipeline">The most important single fact in the whole data pipeline</a></li>
+</ul>
+</li>
+<li><a href="#5-step-4-the-golden-set-the-quality-yardstick">5. Step 4 — The Golden Set (the quality yardstick)</a></li>
+<li><a href="#6-step-5-splitting-into-train-validation-test">6. Step 5 — Splitting into Train / Validation / Test</a></li>
+<li><a href="#7-step-6-augmentation-teaching-the-model-to-generalise">7. Step 6 — Augmentation (teaching the model to generalise)</a></li>
+<li><a href="#8-the-model-architecture-in-full">8. The model architecture, in full</a><ul>
+<li><a href="#stage-1-the-backbone-dinov3-vit-l16">Stage 1 — The backbone: DINOv3 ViT-L/16</a></li>
+<li><a href="#stage-2-the-vit-adapter">Stage 2 — The ViT-Adapter</a></li>
+<li><a href="#stage-3-the-pixel-decoder-mask2former-msdeformattn">Stage 3 — The pixel decoder (Mask2Former / MSDeformAttn)</a></li>
+<li><a href="#stage-4-the-mask2former-transformer-decoder">Stage 4 — The Mask2Former transformer decoder</a></li>
+<li><a href="#stage-5-the-refinement-head-the-boundary-specialist">Stage 5 — The refinement head (the boundary specialist)</a></li>
+<li><a href="#stage-6-the-midas-depth-teacher">Stage 6 — The MiDaS depth teacher</a></li>
+<li><a href="#ema-the-smoothed-copy-of-the-model">EMA — the "smoothed" copy of the model</a></li>
+<li><a href="#memory-engineering-gradient-checkpointing">Memory engineering: gradient checkpointing</a></li>
+<li><a href="#putting-numbers-to-it">Putting numbers to it</a></li>
+</ul>
+</li>
+<li><a href="#9-step-7-training-the-model-on-vastai">9. Step 7 — Training the model on vast.ai</a><ul>
+<li><a href="#the-two-phase-plan">The two-phase plan</a></li>
+<li><a href="#the-training-signal-the-loss">The training signal (the loss)</a></li>
+<li><a href="#optimizer-and-schedule">Optimizer and schedule</a></li>
+<li><a href="#the-hardware-and-the-cost">The hardware and the cost</a></li>
+<li><a href="#where-training-stands-today">Where training stands today</a></li>
+<li><a href="#where-the-model-is-already-strong-and-where-it-needs-work">Where the model is already strong, and where it needs work</a></li>
+<li><a href="#checkpoints-and-resumability">Checkpoints and resumability</a></li>
+</ul>
+</li>
+<li><a href="#10-step-8-exporting-the-model-to-onnx">10. Step 8 — Exporting the model to ONNX</a></li>
+<li><a href="#11-step-9-hosting-the-model-on-a-gpu-server">11. Step 9 — Hosting the model on a GPU server</a><ul>
+<li><a href="#modalcom-the-first-production-host">Modal.com — the first production host</a></li>
+<li><a href="#google-cloud-run-the-current-production-host">Google Cloud Run — the current production host</a></li>
+<li><a href="#the-cold-start-behaviour-the-crux-of-the-hosting-question">The cold-start behaviour (the crux of the hosting question)</a></li>
+</ul>
+</li>
+<li><a href="#12-step-10-the-browser-app-how-the-javascript-actually-works">12. Step 10 — The browser app: how the JavaScript actually works</a><ul>
+<li><a href="#121-upload-and-preprocessing">12.1 Upload and preprocessing</a></li>
+<li><a href="#122-the-detection-call-and-the-warm-up">12.2 The detection call and the warm-up</a></li>
+<li><a href="#123-confidence-as-the-blending-alpha-the-core-idea">12.3 Confidence as the blending alpha — the core idea</a></li>
+<li><a href="#124-the-detection-cascade-up-to-five-passes">12.4 The detection cascade (up to five passes)</a></li>
+<li><a href="#125-the-post-processing-gauntlet-15-filters">12.5 The post-processing gauntlet (~15 filters)</a></li>
+<li><a href="#126-apply-stain">12.6 Apply Stain</a></li>
+<li><a href="#127-clean-fence">12.7 Clean Fence</a></li>
+<li><a href="#128-webassembly-making-the-maths-fast">12.8 WebAssembly — making the maths fast</a></li>
+<li><a href="#129-webgpu-optional-gpu-acceleration">12.9 WebGPU — optional GPU acceleration</a></li>
+<li><a href="#1210-download">12.10 Download</a></li>
+</ul>
+</li>
+<li><a href="#13-the-on-device-fence-gate-blocking-junk-before-the-server">13. The on-device "fence gate" (blocking junk before the server)</a><ul>
+<li><a href="#why-object-detection-not-image-classification">Why object detection, not image classification</a></li>
+<li><a href="#the-model-and-how-it-runs">The model and how it runs</a></li>
+<li><a href="#the-decision-rule">The decision rule</a></li>
+<li><a href="#fail-open-and-identical-on-both-buttons">Fail-open, and identical on both buttons</a></li>
+</ul>
+</li>
+<li><a href="#14-step-11-deployment-huggingface-and-wordpress">14. Step 11 — Deployment: HuggingFace and WordPress</a><ul>
+<li><a href="#the-rd-ladder-and-why-several-files-look-like-models-but-arent">The R&amp;D ladder (and why several files look like "models" but aren't)</a></li>
+<li><a href="#how-the-winning-architecture-was-chosen">How the winning architecture was chosen</a></li>
+</ul>
+</li>
+<li><a href="#15-the-dataset-folder-demystified">15. The dataset/ folder, demystified</a><ul>
+<li><a href="#the-manifest-lineage-read-left-to-right-by-pipeline-stage">The manifest lineage (read left to right by pipeline stage)</a></li>
+<li><a href="#what-training-actually-reads">What training actually reads</a></li>
+<li><a href="#the-masks-and-the-rest">The masks and the rest</a></li>
+</ul>
+</li>
+<li><a href="#16-current-model-state-future-training-and-the-road-to-maximum-quality">16. Current model state, future training, and the road to maximum quality</a><ul>
+<li><a href="#exactly-where-we-are">Exactly where we are</a></li>
+<li><a href="#why-there-is-so-much-headroom">Why there is so much headroom</a></li>
+<li><a href="#the-enterprise-grade-path-to-absolute-best-quality">The enterprise-grade path to absolute best quality</a></li>
+<li><a href="#fixing-the-cleaning-result-specifically">Fixing the cleaning result specifically</a></li>
+</ul>
+</li>
+<li><a href="#17-hosting-what-247-warm-costs-and-the-paths-to-choose">17. Hosting: what 24/7-warm costs, and the paths to choose</a><ul>
+<li><a href="#the-current-spec-being-priced">The current spec being priced</a></li>
+<li><a href="#option-a-keep-it-warm-247-on-cloud-run-min-instances-1">Option A — Keep it warm 24/7 on Cloud Run (min-instances 1)</a></li>
+<li><a href="#option-b-stay-scale-to-zero-the-current-setup">Option B — Stay scale-to-zero (the current setup)</a></li>
+<li><a href="#option-c-a-cheaper-serverless-gpu-modal-on-t4">Option C — A cheaper serverless GPU (Modal on T4)</a></li>
+<li><a href="#option-d-a-dedicated-cloud-gpu-vm">Option D — A dedicated cloud GPU VM</a></li>
+<li><a href="#option-e-buybuild-your-own-small-gpu-server">Option E — Buy/build your own small GPU server</a></li>
+<li><a href="#the-recommendation">The recommendation</a></li>
+</ul>
+</li>
+<li><a href="#18-a-single-photos-journey-end-to-end">18. A single photo's journey, end to end</a></li>
+<li><a href="#19-risks-caveats-and-recommended-fixes">19. Risks, caveats, and recommended fixes</a></li>
+<li><a href="#20-appendix-a-technology-stack-at-a-glance">20. Appendix A — Technology stack at a glance</a></li>
+<li><a href="#21-appendix-b-key-numbers-in-one-place">21. Appendix B — Key numbers, in one place</a></li>
+<li><a href="#22-appendix-c-glossary">22. Appendix C — Glossary</a></li>
+</ul>
+</div>
+<h2 id="executive-summary">Executive Summary</h2>
+<p>The Fence Stain Simulator is the tool a homeowner uses on ninjafencestaining.com to upload a photo of their fence, have the software automatically find the fence boards, and preview any stain colour on those boards in seconds — before spending a dollar on materials or labour. This report is the full story of how that tool is built, written for the client rather than for engineers, but without skipping any of the moving parts.</p>
+<p>There are, in plain terms, three things going on behind the screen. First, an enormous amount of preparation work that the customer never sees: we collected, cleaned, and hand-checked roughly <strong>33,000 fence and non-fence photos</strong>, and turned them into pixel-perfect training labels. Second, we trained a large, modern AI segmentation model — a <strong>DINOv3 ViT-L/16</strong> network with several specialised add-ons — to look at any photo and decide, pixel by pixel, "this is wooden fence" versus "this is not." Third, we wrapped that model in a fast, private, browser-based experience: the photo is sent to a GPU server only for the one detection step, and everything else (colour picking, staining, cleaning, downloading) happens instantly on the user's own device.</p>
+<p>A few headline facts the rest of this report supports in detail:</p>
+<ul>
+<li><strong>The data.</strong> 21,414 fence ("positive") photos and 12,009 deliberately-chosen look-alike ("negative") photos were scraped from 13 sources, de-duplicated, quality-filtered, and catalogued into a single 33,423-image master list. Every image carries its source, search query, and (where available) its licence.</li>
+<li><strong>The labels.</strong> Each image was auto-labelled by a two-model AI pipeline (Grounding DINO + Segment Anything 2.1), quality-scored, and the uncertain cases were hand-refined by a human using Segment Anything 3. During that human review, about <strong>8,000 images the AI had called "fence" were corrected to "not fence,"</strong> which is exactly the kind of correction that lifts a model's real-world accuracy.</li>
+<li><strong>The model.</strong> A DINOv3 ViT-L/16 backbone, a ViT-Adapter, a Mask2Former decoder, and a learnable refinement head with depth guidance — roughly <strong>half a billion trainable parameters</strong>. It is trained in two phases (512-pixel, then 1024-pixel).</li>
+<li><strong>The training cost.</strong> Training ran on rented data-centre GPUs for a total spend of <strong>$220</strong> at <strong>$1.14 per GPU-hour</strong>, which works out to about <strong>193 GPU-hours — roughly eight days</strong> of continuous GPU time, all-in (including bandwidth).</li>
+<li><strong>Where it stands.</strong> We have completed <strong>24 of a planned 120 training epochs (20%)</strong> of phase one. At this early checkpoint the <strong>staining</strong> preview is already close — you're <em>almost</em> satisfied with it — while the <strong>cleaning</strong> result is <strong>not there yet</strong> and needs dedicated work (see the roadmap). That is exactly what you'd expect at a fifth of the planned training: there is enormous remaining headroom — ~96 more phase-one epochs and the entire second phase are still ahead, and the validation accuracy was <strong>still climbing, not plateauing,</strong> when we paused.</li>
+<li><strong>How it is served.</strong> The model runs on <strong>Google Cloud Run</strong> on an NVIDIA L4 GPU, currently in "scale-to-zero" mode — it costs almost nothing when idle but takes 30–60 seconds to wake up on the first request after a quiet period. This report prices the alternative (keeping it warm 24/7) and the other hosting paths you could choose.</li>
+<li><strong>The browser app.</strong> A single web page (also packaged as a WordPress plugin) does the upload, talks to the server, and then runs a deep client-side pipeline — confidence-based blending, fifteen-plus cleanup filters, WebAssembly-accelerated maths, and a small on-device AI "gate" that blocks obvious non-fence uploads before they ever reach the paid server.</li>
+</ul>
+<p>The short version: the foundations are enterprise-grade and the current model is already useful, but it is an early checkpoint of a much larger training plan. The path to "absolute best quality" is clear and is laid out near the end of this document.</p>
+<hr />
+<h2 id="1-what-the-product-is-and-the-pipeline-at-a-glance">1. What the product is, and the pipeline at a glance</h2>
+<h3 id="the-product">The product</h3>
+<p>From the customer's point of view, the Fence Stain Simulator is dead simple:</p>
+<ol>
+<li><strong>Upload</strong> a photo of a fence (drag-and-drop or pick a file, up to 10 MB).</li>
+<li><strong>Pick a colour</strong> from 19 curated stains across three families (General, Semi-transparent, Semi-solid) and set the opacity.</li>
+<li><strong>Apply Stain</strong> — the app finds the fence and recolours it in the chosen stain; changing the colour or opacity afterwards re-renders the preview instantly.</li>
+<li><strong>Clean Fence</strong> — alternatively, see what the existing weathered wood would look like pressure-washed and restored.</li>
+<li><strong>Download</strong> the result as an image.</li>
+</ol>
+<p>Everything that feels instant — changing colours, opacity, switching between Clean and Stain — happens locally in the browser. The only step that talks to a server is the one-time "find the fence" detection, and even that photo is processed in memory and discarded; it is never stored.</p>
+<h3 id="the-pipeline-behind-it">The pipeline behind it</h3>
+<p>Getting from "an idea" to "a working tool" took a long, disciplined pipeline. Here is the whole thing end to end:</p>
+<pre><code>  1. Image collection        2. Refine &amp; catalogue       3. AI labelling
+     (13 sources,        →      (validate, dedup,    →     (Grounding DINO +
+      ~33k photos)               licence/PII audit)         SAM 2.1, 3-class)
+                                                                  │
+                                                                  ▼
+  6. Split + Golden set  ←   5. Manual refinement     ←   4. Auto QA + triage
+     (70/15/15,                (SAM 3, human-in-loop,       (auto-accept /
+      leak-proof)               ~8k reclassified)            auto-review)
+          │
+          ▼
+  7. Augment &amp; Train       8. Export to ONNX           9. Serve on a GPU
+     (DINOv3 ViT-L/16,  →     (single portable     →      (Google Cloud Run,
+      2 phases, vast.ai)       model file)                  Modal as sibling)
+                                                                  │
+                                                                  ▼
+                          10. The browser app
+                              (HuggingFace + WordPress; on-device fence-gate,
+                               WASM/WebGPU post-processing, stain &amp; clean)
+</code></pre>
+<p>The rest of this report walks through each of those boxes in order, with the real numbers, the engineering decisions, and the trade-offs. Two sections at the end are written specifically for your decisions: the <strong>roadmap to maximum quality</strong> (what "finishing" the model looks like) and the <strong>hosting cost analysis</strong> (warm vs. cold vs. your own server).</p>
+<h3 id="a-note-on-accuracy-and-honesty-in-this-report">A note on accuracy and honesty in this report</h3>
+<p>Every figure in this document was read directly out of the project's own files — the configuration files, the training logs, the model metadata, the deployment scripts, and the data manifests — rather than from memory or from the older, shorter summary that existed before. Where the project's own files disagree with each other (and a few do, because they were written at different times), this report uses the most authoritative source and notes the discrepancy plainly. A handful of internal documents are now out of date relative to the shipping product; those are flagged where relevant so they don't mislead anyone later.</p>
+<h2 id="2-step-1-collecting-the-images-the-scraper">2. Step 1 — Collecting the images (the scraper)</h2>
+<p>An AI segmentation model is only ever as good as the photos it learns from. So the first real piece of work was building a tool that could gather a very large, very varied library of fence photographs — and, just as importantly, a library of things that <em>look</em> like fences but aren't. This is the <code>data_scraper/</code> subsystem, and it is a genuine piece of production software, not a throwaway script.</p>
+<h3 id="why-negatives-matter-as-much-as-positives">Why "negatives" matter as much as "positives"</h3>
+<p>It is obvious why you need photos of fences. It is less obvious — but just as important — that you need photos of <em>non</em>-fences that share the fence's most confusing feature: repetitive wooden slats. A deck, a pergola, wooden stairs, a slatted bench, barn siding, a wooden privacy screen, even a close-up of a wooden table — all of these can fool a naive detector into shouting "fence!" So the project deliberately built two corpora: a <strong>positive</strong> set of real wooden fences, and a <strong>negative</strong> set engineered to contain exactly the hard look-alikes. Teaching the model what <em>not</em> to stain is what keeps it from colouring a customer's deck or their neighbour's brick wall.</p>
+<h3 id="where-the-photos-come-from">Where the photos come from</h3>
+<p>The scraper pulls from <strong>13 different sources</strong>, grouped by how they are accessed:</p>
+<table>
+<thead>
+<tr>
+<th>Type</th>
+<th>Sources</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Keyed photo APIs</td>
+<td>Google Custom Search, Pexels, Unsplash, Pixabay, Flickr (Creative-Commons-only)</td>
+</tr>
+<tr>
+<td>Keyless public APIs</td>
+<td>Wikimedia Commons, Reddit</td>
+</tr>
+<tr>
+<td>Browser-driven scrapers</td>
+<td>Google Images, Bing Images, DuckDuckGo, Pinterest, Houzz (real Chromium via Playwright)</td>
+</tr>
+<tr>
+<td>Direct gallery scraper</td>
+<td>30 hand-picked fence-and-staining company websites</td>
+</tr>
+</tbody>
+</table>
+<p>Each source is handled respectfully and correctly. The licensed photo APIs (Pexels, Unsplash, Pixabay) grab a sensible web-resolution rendition rather than the full 20–40 MB original, which is faster and kinder to the service. Flickr is restricted to Creative-Commons licences so the imagery is safe to reuse. Wikimedia requires a polite "who is this and how do I contact you" identifier in every request, which the scraper provides. Reddit can use proper OAuth2 authentication for a higher rate limit. The company-gallery scraper is clever but simple: most fence-company sites are WordPress, so their gallery pages link directly to full-size images, and a small "strip the thumbnail size suffix" trick recovers the originals without needing a browser at all.</p>
+<p>A point of full disclosure for the record: the Google Images scraper (<code>pw_google</code>) is documented internally as a "Terms-of-Service-risky, emergency fallback only" source, yet it was in fact enabled and contributed several thousand images to both sets. That is noted here because it matters for licensing diligence (see §3).</p>
+<h3 id="the-engineering-that-keeps-it-reliable">The engineering that keeps it reliable</h3>
+<p>What separates this from a weekend script is everything it does to stay correct and resumable while pulling tens of thousands of images over flaky networks:</p>
+<ul>
+<li><strong>Adaptive rate limiting.</strong> Every host has its own request budget. When a server replies "slow down" (HTTP 429/503), the scraper reads the suggested wait time and benches that host — but never for more than two minutes, so one rude server can't stall everything.</li>
+<li><strong>Per-host circuit breakers.</strong> If a host fails five times in a row it is "tripped" for a minute, then probed once to see if it has recovered. This stops the scraper from hammering a dead endpoint.</li>
+<li><strong>Proxy rotation</strong> is available (off by default) for sources that block data-centre IPs.</li>
+<li><strong>Two-tier de-duplication.</strong> Every image is hashed two ways: an exact byte-for-byte SHA-256 (catches literal copies) and a <em>perceptual</em> hash (an 8×8 "dHash" that captures what the image looks like). The perceptual hashes are stored in a specialised data structure (a "BK-tree") so the scraper can ask "is anything visually within a hair's breadth of this new image?" in a fraction of a second, even against tens of thousands of stored hashes. The similarity threshold is a Hamming distance of 5. This is what stops the same fence photo — which appears on Pexels, Pinterest, and three company sites — from entering the dataset five times.</li>
+<li><strong>A quality gate.</strong> Before an image is accepted it must be between 800×600 and 8000×8000 pixels, have a sensible aspect ratio, be 40 KB–25 MB, and actually decode as a valid image. Nine stock-photo watermark domains (Shutterstock, Getty, iStock, etc.) are blocked outright. The image decoder is hardened against "decompression bomb" attacks.</li>
+<li><strong>A content filter</strong> drops anything whose title or page mentions NSFW, violence, or "clipart/wallpaper/illustration" keywords.</li>
+<li><strong>An optional Google Vision verification gate</strong> (described below).</li>
+<li><strong>Full resumability.</strong> All state — every hash seen, every URL tried, every failure, and how far it got on each search query — lives in a local SQLite database, so a run that crashes or is stopped picks up exactly where it left off. The positive corpus was assembled over roughly <strong>16 separate scraper sessions</strong>.</li>
+</ul>
+<h3 id="the-google-vision-quality-check">The Google Vision quality check</h3>
+<p>For the positive set, an optional but powerful second opinion was used: after download, an image could be sent to Google Cloud Vision, which returns a list of labels ("Fence," "Wood," "Yard," "Wall," "Garden," etc.). The image is accepted only if a fence-related label scores above a confidence threshold. To control cost (Vision bills about $1.50 per 1,000 images), the scraper samples deterministically — the same image always gets the same accept/reject decision and is never re-billed on a re-run — and it is permissive on any error, so a Vision outage never throws away good photos. The threshold was set to <strong>0.6 for the normal positive run</strong> and deliberately relaxed to <strong>0.4 for the "hard positives"</strong> run, on the sound logic that a genuinely difficult fence photo (heavily occluded, oddly lit) will score low on the fence label, and a strict cutoff would discard exactly the hard examples the model most needs.</p>
+<h3 id="the-three-collection-runs">The three collection runs</h3>
+<p>The same engine was pointed at three different jobs, each with its own configuration file:</p>
+<table>
+<thead>
+<tr>
+<th>Run</th>
+<th>Target</th>
+<th>Vision</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Positives</strong> (<code>scraper.yaml</code>)</td>
+<td>17,000</td>
+<td>On @ 0.6</td>
+<td>144 base fence queries + AI-expanded queries + 22 cedar-specific + 30 company galleries</td>
+</tr>
+<tr>
+<td><strong>Hard positives</strong> (<code>scraper_hard_positive.yaml</code>)</td>
+<td>22,000 (top-up)</td>
+<td>On @ 0.4</td>
+<td>191 curated "hard" queries (occlusion, damage, harsh light, mid-staining), same database as positives</td>
+</tr>
+<tr>
+<td><strong>Negatives</strong> (<code>scraper_negative.yaml</code>)</td>
+<td>12,000</td>
+<td><strong>Off</strong></td>
+<td>Separate folder &amp; database; 226 look-alike queries; Wikimedia &amp; company sites disabled to avoid accidentally pulling in fences</td>
+</tr>
+</tbody>
+</table>
+<h3 id="what-we-actually-ended-up-with">What we actually ended up with</h3>
+<p>The on-disk reality, verified directly from the files and databases:</p>
+<ul>
+<li><strong>Positives:</strong> 21,414 images on disk. Top contributors: Pexels (≈5,000), Bing (≈4,200), Wikimedia (≈3,500), Google (≈3,000), Houzz (≈1,900). The top search queries are exactly what you'd hope — "cedar fence," "cedar privacy fence," "cedar horizontal slat fence," "bamboo fence."</li>
+<li><strong>Negatives:</strong> 12,009 images on disk. Led by Google (≈2,700) and Houzz (≈2,500). Its queries are a careful mix of obvious non-fences (forest trails, mountains, beaches) and the deliberate hard negatives (wooden lattice panels, louvered doors, deck boards, log-cabin walls, horizontal blinds).</li>
+<li><strong>Combined raw harvest:</strong> <strong>33,423 images</strong> after the cross-set clean-up described in the next section.</li>
+</ul>
+<p>Each image is stored with a filename that encodes its own provenance (<code>source__query__hash.jpg</code>) and a line in a master <code>metadata.jsonl</code> catalogue recording where it came from, what query found it, its dimensions, and its hashes.</p>
+<p><strong>Where each set's images actually came from</strong> (counts verified from the catalogues):</p>
+<table>
+<thead>
+<tr>
+<th>Source</th>
+<th>Positive</th>
+<th>Negative</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Pexels</td>
+<td>5,166</td>
+<td>1,759</td>
+</tr>
+<tr>
+<td>Bing (Playwright)</td>
+<td>4,166</td>
+<td>532</td>
+</tr>
+<tr>
+<td>Wikimedia Commons</td>
+<td>3,519</td>
+<td>—</td>
+</tr>
+<tr>
+<td>Google (Playwright)</td>
+<td>3,038</td>
+<td>2,740</td>
+</tr>
+<tr>
+<td>Houzz (Playwright)</td>
+<td>1,859</td>
+<td>2,545</td>
+</tr>
+<tr>
+<td>Unsplash</td>
+<td>1,160</td>
+<td>1,654</td>
+</tr>
+<tr>
+<td>Pixabay</td>
+<td>1,014</td>
+<td>1,629</td>
+</tr>
+<tr>
+<td>Company galleries</td>
+<td>935</td>
+<td>—</td>
+</tr>
+<tr>
+<td>Pinterest (Playwright)</td>
+<td>817</td>
+<td>1,150</td>
+</tr>
+<tr>
+<td><strong>Total</strong></td>
+<td><strong>21,674</strong></td>
+<td><strong>12,009</strong></td>
+</tr>
+</tbody>
+</table>
+<p>(Reddit, Flickr, and DuckDuckGo are fully implemented but were left disabled in the live runs, so they contributed nothing — worth knowing if those sources are ever needed later.)</p>
+<p><strong>The search-query strategy.</strong> Beyond a hand-written set of <strong>144 base queries</strong> organised into nine themed groups, the positive run added AI-generated query variations and 22 cedar-specific phrasings, and the hard-positive run used a separate set of 191 deliberately difficult queries. The nine base groups are a good window into how carefully the variety was engineered:</p>
+<table>
+<thead>
+<tr>
+<th>Group</th>
+<th>Queries</th>
+<th>Targets</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Wood styles</td>
+<td>26</td>
+<td>cedar, pine, redwood, picket, shadowbox, board-on-board, stockade, split-rail</td>
+</tr>
+<tr>
+<td>Non-wood styles</td>
+<td>9</td>
+<td>vinyl, chain-link, wrought-iron, aluminium (as edge cases)</td>
+</tr>
+<tr>
+<td>Scenes</td>
+<td>16</td>
+<td>backyard, front yard, garden, suburban, along driveway/sidewalk</td>
+</tr>
+<tr>
+<td>Occlusion</td>
+<td>24</td>
+<td>behind plants, vines, bushes, snow, tall grass</td>
+</tr>
+<tr>
+<td>Humans / animals</td>
+<td>15</td>
+<td>pets, children, people staining/installing</td>
+</tr>
+<tr>
+<td>Distractors</td>
+<td>15</td>
+<td>next-to shed/pergola/deck/gazebo</td>
+</tr>
+<tr>
+<td>Scales</td>
+<td>10</td>
+<td>close-up, macro, aerial, distant, long perspective</td>
+</tr>
+<tr>
+<td>Conditions</td>
+<td>14</td>
+<td>golden hour, rain, frost, fog, dramatic shadow</td>
+</tr>
+<tr>
+<td>Variations</td>
+<td>15</td>
+<td>broken, rotting, gates, half-finished, missing boards</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>A small honesty note for the record.</strong> On the positive side, three different tallies don't perfectly agree — the catalogue lists 21,674 entries, the scraper's database holds 21,518, and 21,414 files actually sit on disk. This is the normal drift you get when files are pruned after the catalogue was last written. The number that matters — what physically exists and feeds the next stage — is the 21,414, and the negative side reconciles perfectly at 12,009. It is mentioned only so nobody is later confused by the small gaps.</p>
+</blockquote>
+<h2 id="3-step-2-refining-validating-and-cataloguing-the-data">3. Step 2 — Refining, validating and cataloguing the data</h2>
+<p>Raw scraped data is always a little dirty. Before a single photo is allowed near the model, it goes through one disciplined pass — the <code>prepare_dataset.py</code> script — whose entire job is to produce one trustworthy master catalogue (<code>manifest.jsonl</code>) that the rest of the pipeline can rely on absolutely.</p>
+<h3 id="the-integrity-check">The integrity check</h3>
+<p>Every image is opened and tested in four escalating stages: does the file exist and have non-zero size; compute a fresh SHA-256 over the actual bytes (deliberately <em>not</em> trusting any hash already recorded, so corruption is caught); a quick structural check; and finally a full pixel decode to prove the image isn't a half-downloaded grey smear. Truncated JPEGs are rejected rather than silently accepted. This runs across all CPU cores at once, and if interrupted it throws away partial results rather than writing a half-finished catalogue. On the real run, <strong>33,674 files were scanned and zero were found corrupt</strong> — a testament to the quality gate already applied during scraping.</p>
+<h3 id="cross-set-de-duplication-and-why-direction-matters">Cross-set de-duplication (and why direction matters)</h3>
+<p>Because the positive and negative sets were scraped separately, the same image can land in both. The script finds every positive whose byte-hash matches a negative and <strong>removes it from the positives, keeping the negative copy.</strong> The reasoning is deliberate and documented: these collisions are almost always a stock API serving a loose match, or a non-wood fence that was wrongly scraped as a positive — and in both cases the negative label is the more trustworthy one. This removed exactly <strong>251 images</strong>, every one logged in <code>removed.jsonl</code> with the reason "cross-set-dup." After this step the catalogue holds <strong>33,423 images</strong>.</p>
+<h3 id="cataloguing-by-subcategory">Cataloguing by subcategory</h3>
+<p>Every surviving image is tagged with a fine-grained subcategory derived from its original search query — about 20 positive subcategories (e.g. <code>style_cedar</code>, <code>style_wood</code>, <code>occlusion</code>, <code>damaged_construction</code>, <code>lighting</code>, <code>scene_context</code>) and a dozen negative ones (e.g. <code>neg_masonry</code>, <code>neg_pure_random</code>, <code>neg_nonwood_fence</code>, <code>neg_siding</code>). This taxonomy is what later lets us (a) split the data <em>evenly</em> across every category, (b) over-sample the rare hard cases during training, and (c) report accuracy broken down by category so we can see exactly which situations the model finds hard. The largest positive buckets are cedar fences (≈4,800), generic wood fences (≈3,900), and general fence scenes; the largest negative bucket is "pure random" non-fence imagery.</p>
+<h3 id="the-audit-reports-that-ship-alongside-the-data">The audit reports that ship alongside the data</h3>
+<p>Three governance reports are produced and kept with the dataset — these are real enterprise due-diligence artifacts:</p>
+<ul>
+<li><strong>Resolution report.</strong> Every image is sorted into resolution tiers (Ultra ≥2048 px, HD, Standard, Low). Everything with a shorter edge of at least 1024 px — <strong>20,700 images (62%)</strong> — forms the "HQ subset" reserved for the high-resolution second training phase.</li>
+<li><strong>Licence audit.</strong> Every source is classified SAFE (Pexels/Unsplash/Pixabay — 12,367 images, 37%), SAFE-with-attribution (Wikimedia — 3,519 images, 10.5%), or RISKY (search-engine and company-site scrapes — 17,537 images, 52.5%). The audit recommends, for a fully clean commercial deployment, training on the <strong>15,886-image SAFE subset</strong> (<code>manifest_safe.jsonl</code>). This is an important strategic option and is revisited in the roadmap section.</li>
+<li><strong>PII scan.</strong> A face-detection pass (Google Vision) over the images most likely to contain people, flagging any significant faces for GDPR/CCPA review.</li>
+</ul>
+<blockquote>
+<p><strong>Licensing is a real decision, not a footnote.</strong> Just over half the current training corpus comes from sources whose reuse rights are ambiguous (browser-scraped search results and company galleries). For training an internal model this is the industry norm; for a commercial product it is worth a conscious decision. The project already produced the clean 15,886-image subset that sidesteps the issue entirely. Whether to retrain the production model on only the SAFE subset is a business/legal call covered in the roadmap.</p>
+</blockquote>
+<h2 id="4-step-3-ai-assisted-labelling-and-manual-mask-refinement">4. Step 3 — AI-assisted labelling and manual mask refinement</h2>
+<p>This is the stage that turns a folder of photos into the pixel-perfect "answer key" the model learns from. For each image we need to know <em>exactly which pixels are wooden fence.</em> Drawing that by hand for 33,000 images would take months, so the project uses a two-layer system: a fully automatic labelling pipeline that produces a first-pass mask for every image, and a human-in-the-loop layer that only ever touches the images the automatic pass was unsure about.</p>
+<h3 id="the-three-class-idea-the-clever-bit">The three-class idea (the clever bit)</h3>
+<p>The labelling uses a deliberately-designed <strong>three-class scheme</strong>:</p>
+<ul>
+<li><strong>Class 1 — <code>fence_wood</code></strong>: the only thing the simulator will ever stain.</li>
+<li><strong>Class 2 — <code>not_target</code></strong>: a "decoy" / absorber class for wood-like things that are <em>not</em> a stainable fence (wood siding, decks, furniture, vinyl/metal fences).</li>
+<li><strong>Class 0 — background</strong>: everything else.</li>
+</ul>
+<p>The trick is in the priorities. When the AI ambiguously matches something as both "cedar fence" and "wood siding," the <code>not_target</code> class is given <em>higher</em> priority and wins the pixel — so it does <strong>not</strong> get stained. From the app's point of view the output is still simply "fence vs. not fence," but giving the AI an explicit "wood-like-but-not-fence" category dramatically cuts the false positives that a pure yes/no scheme would be forced into.</p>
+<p>For completeness: a richer <strong>24-class</strong> labelling schema was actually built first (<code>configs/annotation_schema.yaml</code>) — with fine-grained fence materials, several occluder types, and scene-context classes across five tiers, each with its own detection prompts and thresholds. It was deliberately collapsed down to today's 3-class scheme because, from the stainer's point of view, the only distinction that ultimately matters is fence-wood versus everything-else, and the simpler scheme labels faster and more reliably. The 24-class schema remains in the repository as the superseded original.</p>
+<h3 id="stage-1-the-automatic-pipeline">Stage 1 — the automatic pipeline</h3>
+<p>For each image, in order:</p>
+<ol>
+<li><strong>Scene pre-filter (CLIP).</strong> A zero-shot CLIP classifier (<code>openai/clip-vit-base-patch32</code>) checks whether the photo is even an outdoor fence scene or an out-of-distribution one (an interior, a document, a product shot). OOD images aren't dropped, but they're flagged for review and their confidence is halved.</li>
+<li><strong>Detection (Grounding DINO).</strong> <code>IDEA-Research/grounding-dino-base</code>, an open-vocabulary detector (~680M parameters), is given a long list of text phrasings ("wooden fence," "cedar fence," "wood plank fence," …) and draws boxes around what it finds. It detects on the original <em>and</em> a mirrored copy for a few extra points of recall, and if it finds nothing it retries once with relaxed thresholds.</li>
+<li><strong>Segmentation (SAM 2.1).</strong> Each box is handed to <code>facebook/sam2.1-hiera-large</code> (Segment Anything 2.1), which turns the box into a pixel-accurate mask. SAM is asked for three candidate masks per box and the best is kept — which is exactly what preserves the gaps between fence slats. Each mask is then snapped to the true image edges with a guided filter.</li>
+<li><strong>Fusion.</strong> All the per-object masks are merged into one class map by priority, with two protective rules: a confident fence is shielded from being eaten by overlapping "occluder" detections, and a <code>not_target</code> decoy can only overwrite a fence pixel if it beats the fence's confidence by a clear margin. This single margin is what stops a real cedar fence being "absorbed" by a spurious "wood siding" match.</li>
+<li><strong>Scoring &amp; flagging.</strong> A confidence score and a set of quality flags are computed; any flag at all routes the image to the human review queue.</li>
+</ol>
+<p>Up to three artifacts are written per image — the machine-readable class mask, a black-and-white preview (white only where the stain target is), and a colourised overlay for human review. The overlay is generated by default but was pruned from the full 33k set to save disk space (it's retained for the QA and golden-set subsets).</p>
+<h3 id="stage-2-automatic-triage-so-humans-only-see-hard-cases">Stage 2 — automatic triage (so humans only see hard cases)</h3>
+<p>Rather than make a person look at all 33,000 images, two bulk scripts pre-decide the obvious ones. <code>auto_accept_positives.py</code> stamps high-confidence, clearly-wood-fence positives as "reviewed" without changing their masks — but <em>only</em> if the image is already a positive, its subcategory is on a trusted whitelist, and its coverage and confidence are in a sensible band. <code>auto_review_negatives.py</code> does the mirror image for known negatives, wiping their masks to empty and stamping them reviewed. Whatever survives triage is, by construction, the genuinely ambiguous set — and that is what a human sees first.</p>
+<h3 id="stage-3-manual-refinement-with-segment-anything-3">Stage 3 — manual refinement with Segment Anything 3</h3>
+<p>The polished review tool (<code>manual_refine_sam3.py</code>, ~2,300 lines) loads Meta's newest <strong>Segment Anything 3</strong> image model with interactive editing. A reviewer clicks to add or remove regions, drags a box, cycles through SAM's candidates, or paints with a manual brush. When they save, an edge-refinement cascade (a DenseCRF pass, then a guided filter, then morphology) cleans up the boundary — but each stage is only kept if it doesn't erode the mask too much. The reviewer only ever sees images that genuinely need attention, ordered worst-first, so human time scales with the number of <em>hard</em> cases, not with the size of the dataset.</p>
+<h3 id="the-most-important-single-fact-in-the-whole-data-pipeline">The most important single fact in the whole data pipeline</h3>
+<p>During this human review, the class balance of the dataset <strong>changed dramatically.</strong> The automatic pipeline had labelled 21,414 images as fence and 12,009 as not-fence. After human review, the final catalogue (<code>manifest_final.jsonl</code>) is <strong>13,328 fence and 20,095 not-fence</strong> — meaning roughly <strong>8,000 images the AI confidently called "fence" were corrected to "not fence" by a human.</strong> That is an enormous, deliberate correction. It is exactly the kind of label cleaning that separates a demo-quality model from a production one, and it is the reason the deployed model is as conservative (in the good sense) about <em>not</em> staining the wrong things as it is. Any older document that still quotes "21,414 fence images" is describing the pre-review state.</p>
+<p><code>export_final.py</code> is the script that merges the immutable automatic results with the human override log to produce that final catalogue. Every row's class provenance is stamped via that review log (<code>class_source: manual_review</code>) — all 33,423 images pass through review, with the ~8,000 genuine class flips recorded there too — so the provenance of every label is auditable.</p>
+<h2 id="5-step-4-the-golden-set-the-quality-yardstick">5. Step 4 — The Golden Set (the quality yardstick)</h2>
+<p>Before training a model, you need a ruler you trust. The <strong>Golden Set</strong> is that ruler: a small, hand-curated, hand-masked benchmark used to answer the only question that matters during development — "did this change make the model better or worse?"</p>
+<p>It is built by <code>select_golden_set.py</code>, which picks <strong>100 images drawn exclusively from the held-out test split</strong> (so they are never seen during training), stratified across <strong>20 subcategories</strong> so the hard cases are all represented — the common cedar and wood fences alongside a guaranteed slot for the genuinely difficult corners (extreme occlusion, harsh lighting, reflections on water, painted fences, odd angles, weather extremes). The selection is fully reproducible (fixed random seed, and the source split is hashed so the set is invalidated if the underlying data ever changes). A senior annotator then hand-masks all 100 images at pixel quality — budgeted at three to five hours of careful work.</p>
+<p>The Golden Set has four documented jobs, each with a numeric bar:</p>
+<ul>
+<li><strong>Auto-label quality check</strong> — the automatic pipeline should score above <strong>0.70 IoU</strong> against these hand masks.</li>
+<li><strong>Inter-annotator agreement</strong> — a second human re-masking the same images should agree above <strong>0.90 IoU</strong>.</li>
+<li><strong>Per-version regression guard</strong> — every model update is scored against the Golden Set, and any drop is treated as a regression.</li>
+<li><strong>Deployment sign-off</strong> — the Golden Set is the sanity floor that should always sit above the test-set average.</li>
+</ul>
+<p>("IoU," Intersection-over-Union, is the standard segmentation accuracy score: of all the pixels that are <em>either</em> truly fence <em>or</em> predicted fence, what fraction are both? 1.0 is perfect; for this kind of natural-image fence segmentation, scores in the 0.5–0.7 range on the full diverse test set are strong, and higher on the cleaner subsets.)</p>
+<h2 id="6-step-5-splitting-into-train-validation-test">6. Step 5 — Splitting into Train / Validation / Test</h2>
+<p>The 33,423-image catalogue is divided into three slices that the model is never allowed to confuse:</p>
+<table>
+<thead>
+<tr>
+<th>Split</th>
+<th>Count</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Train</strong></td>
+<td>23,394 (70%)</td>
+<td>What the model learns from</td>
+</tr>
+<tr>
+<td><strong>Validation</strong></td>
+<td>5,013 (15%)</td>
+<td>Checked every epoch to track progress and pick the best model</td>
+</tr>
+<tr>
+<td><strong>Test</strong></td>
+<td>5,016 (15%)</td>
+<td>Held back, untouched, for the final honest score</td>
+</tr>
+</tbody>
+</table>
+<p>Two pieces of engineering make this trustworthy, and both are the kind of thing that quietly separates a credible result from an inflated one:</p>
+<p><strong>Stratification.</strong> The split is balanced by (class × subcategory), so every one of the ~50 (class × subcategory) strata is proportionally represented in all three slices. The model never gets surprised at test time by a category it barely saw in training.</p>
+<p><strong>Leak-proofing against near-duplicates.</strong> This is the subtle one. Even after de-duplication, the dataset contains <em>near</em>-duplicate photos (the same fence shot from a slightly different angle, or the same image at two resolutions). If a near-duplicate of a test image sneaks into the training set, the model can "memorise" it and the test score becomes a lie. To prevent this, the splitter clusters all visually-similar images (using the same perceptual-hash technique from scraping) and forces every cluster to travel <em>together</em> into a single slice. Before writing anything, it asserts two things that "cannot silently fail": the three slices sum exactly to the input count, and no image appears in more than one slice. The test set is then made <strong>read-only on disk</strong> so it cannot be accidentally overwritten.</p>
+<p>The whole split is reproducible from a fixed seed (42) and recorded in an audit file (<code>split_info.json</code>) that captures the exact command, the catalogue's hash, and the resulting counts. A parallel <strong>high-resolution split</strong> (train 14,529 / val 3,087 / test 3,084, all from the 20,700 HQ images) is prepared for the second training phase. And a parallel set of <strong>mask manifests</strong> links each image to its pixel-mask file, so the training code can load image and answer-key together.</p>
+<blockquote>
+<p><strong>One naming clarification for the folder.</strong> The <code>dataset/</code> directory contains several files with similar names because each is a checkpoint in this pipeline; a full disambiguation table is in §15. The short version: <code>manifest_final.jsonl</code> (post-human-review) is the current source of truth, the splits under <code>dataset/splits/</code> are what training actually reads, and the various <code>manifest_hq*</code>, <code>manifest_safe</code>, and <code>.bak</code> files are the high-res subset, the licence-clean subset, and backups respectively.</p>
+</blockquote>
+<h2 id="7-step-6-augmentation-teaching-the-model-to-generalise">7. Step 6 — Augmentation (teaching the model to generalise)</h2>
+<p>A model that only ever sees each training photo once tends to memorise rather than understand. Augmentation fixes this by showing the model thousands of randomly-perturbed variations of every image, so it learns the <em>concept</em> of "wooden fence" rather than the specific pixels of any one photo. The augmentation here is unusually fence-specific rather than generic.</p>
+<p><strong>Geometric and "distance" variety.</strong> Random flips, rotations, perspective warps, and a "distance scaling" block that either zooms in on a fence, shrinks-and-pads it (to simulate a far-away fence), or does a <strong>boundary-aware crop</strong> centred on a fence edge — so the model spends its learning budget where it matters: the fence-vs-grass and fence-vs-sky boundaries.</p>
+<p><strong>Photometric variety.</strong> Strong, deliberate colour, brightness, contrast, and sharpness jitter (applied to most images), plus simulated harsh sun, shadows, lens flare, blur, noise, and JPEG compression. The heavy colour jitter is intentional: it breaks the model's lazy habit of assuming "brown = fence," forcing it to rely on shape and structure.</p>
+<p><strong>Mixing.</strong> Two images are blended together (CutMix), and four images are tiled into one (Mosaic), so the model learns to handle scenes with multiple things going on.</p>
+<p><strong>The two custom fence augmentations.</strong> These are the clever ones:</p>
+<ul>
+<li><strong>Copy-paste occluder.</strong> Real cut-out objects — people, cars, and the like — from a pool of 621 cutouts (421 extracted from the COCO dataset plus 200 procedurally-generated occluders) are pasted <em>in front of</em> the fence, and the answer-key mask is correctly carved away wherever the occluder sits. This teaches the model to handle the branch, the parked bike, the garden hose in front of the fence.</li>
+<li><strong>Hard-negative wood paste.</strong> Wooden <em>non</em>-fence objects (planks, deck patches, garden beds) are pasted into the background, with the mask left unchanged — explicitly teaching "wood texture alone is not a fence."</li>
+</ul>
+<p><strong>Balanced sampling.</strong> During each pass over the data, rare-but-important subcategories (occlusion, complex backgrounds, damaged fences) are over-sampled so the model doesn't ignore the long tail of edge cases just because they're uncommon.</p>
+<p>The augmentation is aggressive in phase one (512 px) for maximum generalisation and deliberately gentler in phase two (1024 px) to preserve the fine boundary detail that the higher resolution exists to capture. (All of this lives in the data-loading code, <code>tools/dataset.py</code>; the aggressive-vs-gentle split and the RandAugment strength are driven by the <code>train.*</code> keys in <code>configs/phase1.yaml</code> and <code>configs/phase2.yaml</code>, so the exact augmentation regimen is traceable to those files.)</p>
+<h2 id="8-the-model-architecture-in-full">8. The model architecture, in full</h2>
+<p>This is the heart of the system and the part you asked to have spelled out completely — the backbone, the decoder, the ViT-Adapter, the refinement head, the MiDaS depth model, the EMA, and everything else. The model is large and modern: a six-stage pipeline of roughly <strong>half a billion trainable parameters.</strong> Each stage exists for a concrete reason, explained below in plain terms followed by the precise settings.</p>
+<p>First, the single most important clarification, because it is a common point of confusion in the project's own files: <strong>the production model uses the DINOv3 ViT-L/16 backbone</strong> (<code>facebook/dinov3-vitl16-pretrain-lvd1689m</code>), <em>not</em> the larger "H+" variant. The H+ model appears only as a leftover default in one code file and as a "use this if you run out of memory" comment — it is <strong>not</strong> what was trained or deployed. The shipped model's own metadata confirms ViT-L/16 at 512-pixel input. Wherever an older note says "H+" or quotes a ~1-billion-parameter count, it is stale.</p>
+<p>Here is the full stack, in the order a photo flows through it:</p>
+<h3 id="stage-1-the-backbone-dinov3-vit-l16">Stage 1 — The backbone: DINOv3 ViT-L/16</h3>
+<p>The backbone is the "eyes" of the model — the part that looks at the raw pixels and produces a rich numerical description of what's in the image. We use <strong>DINOv3 ViT-L/16</strong> from Meta, a Vision Transformer with about 300 million parameters, pre-trained by Meta on 1.7 billion images using self-supervised learning (no human labels). Starting from such a strong pre-trained backbone is what lets us reach good accuracy with "only" tens of thousands of fence images instead of millions.</p>
+<p>Key specifics:</p>
+<ul>
+<li><strong>Vision Transformer, Large, patch size 16.</strong> The image is cut into a grid of 16×16-pixel patches; a 512-pixel input becomes a 32×32 grid of patch "tokens." (This is exactly why the input is 512, not 518 — 512 ÷ 16 is a clean 32, whereas the older DINOv2 used patch size 14 and needed 518. Getting this wrong caused visible banding artifacts once, and the app's own configuration now carries an explicit warning never to use 518, which is DINOv2's value.)</li>
+<li><strong>Hidden dimension 1024, 24 transformer layers, 4 "register" tokens</strong> (DINOv3's mechanism for cleaner attention).</li>
+<li><strong>Multi-block aggregation.</strong> Instead of using only the final layer's output, the model fuses the last <strong>6 layers</strong> with a learnable weighted sum — dense pixel prediction benefits from combining several depths of features.</li>
+<li><strong>Fully trainable, but gently.</strong> The whole backbone is fine-tuned on fence data, but at a learning rate ten times lower than the rest of the network, so it adapts to fences without forgetting the powerful general vision it learned from 1.7 billion images.</li>
+</ul>
+<h3 id="stage-2-the-vit-adapter">Stage 2 — The ViT-Adapter</h3>
+<p>A plain Vision Transformer only produces one coarse scale of features (one feature per 16×16 patch). Pixel-accurate fence masks — especially thin pickets — need fine, multi-scale detail. The <strong>ViT-Adapter</strong> (Chen et al., ICLR 2023) is the bridge: a small convolutional network runs alongside the transformer and, at four points during the transformer's processing, the two exchange information through "deformable attention." The result is a proper feature pyramid at four scales (strides 4, 8, 16, 32) instead of one.</p>
+<p>Specifics: a Spatial Prior Module (a small CNN, 64 base channels) produces the four scales; four interaction stages (8 attention heads, 4 sampling points each) are spaced evenly through the 24 transformer layers (at layers 6, 12, 18, 24); the injection starts at zero strength and ramps up during training so it never disturbs the pre-trained backbone at the start. The deformable-attention maths is implemented in pure PyTorch (no custom GPU kernels), which is part of why the model exports cleanly to a portable format later.</p>
+<h3 id="stage-3-the-pixel-decoder-mask2former-msdeformattn">Stage 3 — The pixel decoder (Mask2Former / MSDeformAttn)</h3>
+<p>The four-scale feature pyramid is refined by a <strong>multi-scale deformable-attention pixel decoder</strong> — the real Mask2Former pixel decoder, 12 layers deep, 8 heads, operating across three scales at once. Its job is to mix information across scales and locations so that, for example, a faint picket at the top of the frame is interpreted in the context of the strong fence structure below it. It produces a high-resolution feature map used to draw the actual masks.</p>
+<h3 id="stage-4-the-mask2former-transformer-decoder">Stage 4 — The Mask2Former transformer decoder</h3>
+<p>This is where the masks are actually predicted. A <strong>Mask2Former-style decoder</strong> holds <strong>64 learnable "query" vectors</strong> — think of them as 64 hypotheses, each of which learns to grab one coherent region — and refines them over <strong>15 decoder layers</strong> (512-dimensional, 8 heads). Each layer uses Mask2Former's two defining features:</p>
+<ul>
+<li><strong>Masked attention:</strong> each query is restricted to attend only inside its own current best guess of its region, which sharpens masks and speeds convergence.</li>
+<li><strong>Global tokens:</strong> the backbone's summary tokens (the CLS token plus the 4 register tokens) are made available to every layer as whole-image context.</li>
+</ul>
+<p>The decoder also emits a prediction after <em>every</em> layer (16 in total) for "deep supervision" during training, which gives the earlier layers a direct learning signal.</p>
+<h3 id="stage-5-the-refinement-head-the-boundary-specialist">Stage 5 — The refinement head (the boundary specialist)</h3>
+<p>The Mask2Former mask is good but slightly soft at the edges. A learnable <strong>UNet3+-style refinement head</strong> sharpens it, and runs for <strong>3 iterations</strong>, each time taking its own previous output as input and improving it. It is fed the original RGB image, the coarse mask, features from the pixel decoder, a "vertical position" hint (sky is up, ground is down), and a depth map (next stage). It is configured at 96 channels with 4 blocks, and carries a small zoo of specialist sub-heads, all of which exist to make boundaries crisp and to suppress mistakes:</p>
+<ul>
+<li>an <strong>edge head</strong> that predicts the fence outline directly;</li>
+<li>a <strong>signed-distance head</strong> that learns how far each pixel is from the nearest boundary (sub-pixel sharpness);</li>
+<li><strong>full-scale deep supervision</strong> side outputs;</li>
+<li>a <strong>PointRend</strong> module that re-examines the 4,096 <em>most uncertain</em> pixels through a small dedicated network — concentrating effort exactly on the ambiguous boundary pixels;</li>
+<li>a <strong>Classification-Guided Module (CGM)</strong> — a whole-image "does this picture contain any fence at all?" classifier that, at inference time, multiplicatively suppresses the mask on no-fence images. This is a major weapon against false positives on negatives.</li>
+</ul>
+<h3 id="stage-6-the-midas-depth-teacher">Stage 6 — The MiDaS depth teacher</h3>
+<p>This is the part many people are curious about. The refinement head is given a <strong>monocular depth map</strong> — an estimate of how far away each pixel is — produced by a frozen, pre-trained <strong>MiDaS / DPT model</strong> (<code>Intel/dpt-hybrid-midas</code>). Depth is a strong cue for fences: a fence is usually a roughly-flat surface at a consistent distance, distinct from the deep background behind it and the foliage in front. The depth model is <strong>frozen</strong> (never trained — it is a fixed "teacher"), run without gradients, and its output is normalised to a 0–1 relative-depth map and handed to the refinement head as an extra input channel. There's even a deliberate safeguard that keeps the depth model in evaluation mode across the whole multi-day training run so its internal statistics never drift.</p>
+<h3 id="ema-the-smoothed-copy-of-the-model">EMA — the "smoothed" copy of the model</h3>
+<p>Throughout training, the system maintains an <strong>Exponential Moving Average</strong> of the model's weights — a second copy that is a smoothed, running average of the model as it trains (decay 0.999, i.e. roughly a 1,000-step window). Training is noisy and the weights oscillate from batch to batch; the EMA copy is calmer and almost always generalises better. <strong>Validation is run on the EMA copy, and the EMA copy is what gets saved as "best" and ultimately deployed.</strong> So the model serving customers is the smoothed average, not the jittery instantaneous one. (In phase two, the EMA also acts as a "teacher" that the live model is gently pulled toward — a self-distillation technique that further stabilises fine-tuning.)</p>
+<h3 id="memory-engineering-gradient-checkpointing">Memory engineering: gradient checkpointing</h3>
+<p>A half-billion-parameter model with a 15-layer decoder and a 3-iteration refinement head is a lot to fit in GPU memory. <strong>Gradient checkpointing</strong> is enabled, which trades a little extra computation for a large memory saving (it recomputes intermediate values during the backward pass instead of storing them all). This is what lets the model train at a useful batch size on a single 80 GB GPU.</p>
+<h3 id="putting-numbers-to-it">Putting numbers to it</h3>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Setting</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Backbone</td>
+<td>DINOv3 ViT-L/16, 1024-dim, 24 layers, 4 register tokens, last-6-block weighted-sum</td>
+</tr>
+<tr>
+<td>ViT-Adapter</td>
+<td>64 base channels, 8 heads, 4 points, 4 interaction stages</td>
+</tr>
+<tr>
+<td>Pixel decoder</td>
+<td>MSDeformAttn, 12 layers, 8 heads, 3 scales</td>
+</tr>
+<tr>
+<td>Transformer decoder</td>
+<td>Mask2Former, 512-dim, 64 queries, 15 layers, masked attention + global tokens</td>
+</tr>
+<tr>
+<td>Refinement head</td>
+<td>UNet3+, 96 channels, 4 blocks, 3 iterations; edge + distance + PointRend + CGM + depth</td>
+</tr>
+<tr>
+<td>Depth teacher</td>
+<td>Intel/dpt-hybrid-midas (frozen)</td>
+</tr>
+<tr>
+<td>Stabiliser</td>
+<td>EMA (decay 0.999), gradient checkpointing</td>
+</tr>
+<tr>
+<td>Output</td>
+<td>Single-channel fence probability map</td>
+</tr>
+<tr>
+<td>Trainable size</td>
+<td>~485 million parameters (engineer's estimate; computed at runtime)</td>
+</tr>
+</tbody>
+</table>
+<p>Phase one and phase two use the <strong>identical architecture</strong> — deliberately, so phase two can pick up exactly where phase one left off. Only the regimen differs (resolution, learning rate, augmentation strength), covered next.</p>
+<h2 id="9-step-7-training-the-model-on-vastai">9. Step 7 — Training the model on vast.ai</h2>
+<h3 id="the-two-phase-plan">The two-phase plan</h3>
+<p>Training is designed in two phases that share the same architecture:</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>Phase 1</th>
+<th>Phase 2</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Resolution</td>
+<td>512 px</td>
+<td>1024 px</td>
+</tr>
+<tr>
+<td>Data</td>
+<td>Full 33k split</td>
+<td>HQ subset (≥1024 px)</td>
+</tr>
+<tr>
+<td>Epochs (planned)</td>
+<td>120</td>
+<td>70</td>
+</tr>
+<tr>
+<td>Starting point</td>
+<td>Pre-trained DINOv3</td>
+<td>Phase-1 best checkpoint</td>
+</tr>
+<tr>
+<td>Purpose</td>
+<td>Maximum data exposure</td>
+<td>Recover fine boundary detail</td>
+</tr>
+</tbody>
+</table>
+<p>Phase one trains on everything at moderate resolution to learn the concept broadly; phase two is a gentler fine-tune at high resolution to sharpen the edges that 512 pixels simply can't represent. Because the two phases use an identical network, phase two starts from phase one's best weights rather than from scratch.</p>
+<h3 id="the-training-signal-the-loss">The training signal (the loss)</h3>
+<p>The model is taught with a carefully-balanced combination of about <strong>a dozen loss components</strong>, each targeting a different aspect of mask quality. You don't need the maths, but the <em>shape</em> of it tells you how much care went in:</p>
+<ul>
+<li><strong>Pixel classification</strong> (weighted cross-entropy) with three fence-friendly tweaks: a positive-class weight of 3.0 (fence pixels are rarer than background, so they count for more), a "focal" term that concentrates effort on the hard look-alike pixels, and an "online hard-example mining" term that focuses on the worst-scoring 25% of pixels each step.</li>
+<li><strong>Region overlap</strong> losses (Dice, Tversky) that directly optimise the IoU-style overlap, tilted slightly toward recall so the model doesn't miss fence.</li>
+<li><strong>Boundary, edge, and signed-distance</strong> losses that specifically reward crisp, correctly-placed fence outlines.</li>
+<li><strong>A Lovász term</strong> (a direct IoU surrogate) and a <strong>connectivity</strong> term (discourages broken, speckled masks).</li>
+<li><strong>PointRend importance sampling</strong> — the loss is concentrated on the most uncertain boundary pixels.</li>
+<li><strong>The CGM classifier loss</strong> — teaches the whole-image "is there any fence here?" gate.</li>
+<li><strong>Deep supervision</strong> — every intermediate decoder layer gets its own learning signal.</li>
+</ul>
+<p>The exact phase-1 weights, for the record:</p>
+<table>
+<thead>
+<tr>
+<th>Loss component</th>
+<th>Weight</th>
+<th>What it rewards</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Cross-entropy (BCE)</td>
+<td>1.0</td>
+<td>Correct per-pixel fence/not call (pos-weight 3.0, focal γ 2.0, hard-25% mining)</td>
+</tr>
+<tr>
+<td>Dice</td>
+<td>1.0</td>
+<td>Region overlap</td>
+</tr>
+<tr>
+<td>Tversky</td>
+<td>0.5</td>
+<td>Overlap, tilted to recall (α 0.6 / β 0.4)</td>
+</tr>
+<tr>
+<td>Boundary</td>
+<td>0.4</td>
+<td>Pixels near the true fence edge</td>
+</tr>
+<tr>
+<td>Lovász</td>
+<td>0.25</td>
+<td>Direct IoU surrogate</td>
+</tr>
+<tr>
+<td>Connectivity</td>
+<td>0.02</td>
+<td>Discourages broken/speckled masks</td>
+</tr>
+<tr>
+<td>Deep supervision</td>
+<td>0.3</td>
+<td>Every decoder layer gets a signal</td>
+</tr>
+<tr>
+<td>PointRend</td>
+<td>(12,544 pts)</td>
+<td>Concentrates loss on uncertain boundary pixels (distinct from the refinement head's 4,096 inference-time points)</td>
+</tr>
+<tr>
+<td>Edge head</td>
+<td>0.8</td>
+<td>A crisp predicted outline (edge pos-weight 4.0)</td>
+</tr>
+<tr>
+<td>CGM classifier</td>
+<td>1.0</td>
+<td>The whole-image "is there any fence?" gate</td>
+</tr>
+<tr>
+<td>Boundary-distance</td>
+<td>0.3</td>
+<td>Sub-pixel distance-to-edge regression</td>
+</tr>
+</tbody>
+</table>
+<p>(The refinement head's own copies of BCE/Dice/boundary/Tversky are applied at half weight, plus extra terms for the iterative refinement and the UNet3+ side heads.) Many of these weights carry visible "tuning history" in the configuration — they were adjusted across numerous rounds (the files literally label them "FIX A" through "FIX I" and "audit fix") to stop the model from developing bad habits like producing solid blobs instead of respecting the gaps between pickets. That iterative, evidence-driven tuning is exactly the unglamorous work that makes a model production-quality.</p>
+<h3 id="optimizer-and-schedule">Optimizer and schedule</h3>
+<p>Standard, well-chosen modern settings: the AdamW optimizer; a head learning rate of 1.5e-4 and a backbone learning rate ten times lower; layer-wise learning-rate decay (earlier backbone layers learn more slowly); cosine schedule with an 8-epoch warm-up; gradient clipping for stability; mixed-precision (bf16) maths for speed and memory; and gradient accumulation to reach an effective batch size of 16 on a single GPU. There is robust crash-resilience throughout — bad batches that produce non-finite losses are skipped, out-of-memory spikes are caught and the batch retried, and the whole run can resume from a checkpoint with its random state intact.</p>
+<h3 id="the-hardware-and-the-cost">The hardware and the cost</h3>
+<p>Training ran on a <strong>rented cloud GPU instance via vast.ai</strong>, configured as:</p>
+<ul>
+<li><strong>1× NVIDIA A100-SXM4-80GB GPU</strong></li>
+<li><strong>128 GB system RAM</strong></li>
+<li><strong>Intel Xeon Platinum CPU</strong></li>
+</ul>
+<p>The economics, derived directly from the spend:</p>
+<blockquote>
+<p><strong>Total spend: $220.</strong> At the <strong>$1.14 per GPU-hour</strong> on-demand rate, that is <strong>$220 ÷ $1.14 ≈ 193 GPU-hours — about 8 days of continuous GPU time.</strong> This figure is "all-in": it includes the bandwidth and storage charges that sit on top of raw compute, so the pure-compute slice is slightly under 193 hours.</p>
+</blockquote>
+<p>It's worth being transparent about where those ~193 hours went, because not all of it was the final clean training run. Cross-checking the training logs: the clean, deployed phase-one run was about <strong>3.9 hours per epoch</strong> for <strong>24 epochs ≈ 94 hours</strong>. Training was restarted about four times (a normal reality of multi-day cloud runs — a code fix here, an interruption there), and counting the re-run epochs the logs show roughly <strong>146 hours</strong> of actual training compute. The remaining time was consumed by the earlier model generation (the DINOv2 experiment described later), repeated model exports, and — significantly — the sheer time spent <strong>downloading the multi-gigabyte model files off the rented box</strong> over a throttled connection, which the project worked around with elaborate multi-stream download tooling. All of it bills GPU rental while the box is up, which is why the money-derived ~193 hours is the honest total and an epoch-only estimate would undercount.</p>
+<h3 id="where-training-stands-today">Where training stands today</h3>
+<p>This is the most important status fact in the report, stated plainly:</p>
+<blockquote>
+<p><strong>Phase one is 24 of a planned 120 epochs complete — 20%. Phase two (a further 70 epochs) has not started.</strong> The deployed model is the <strong>epoch-24 checkpoint</strong>, and it is the best checkpoint produced so far.</p>
+</blockquote>
+<p>The validation accuracy climbed steadily and was <strong>still rising, with no sign of plateauing,</strong> when the run was paused:</p>
+<table>
+<thead>
+<tr>
+<th>Epoch</th>
+<th>Validation IoU</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>0.4244</td>
+</tr>
+<tr>
+<td>8</td>
+<td>0.4603</td>
+</tr>
+<tr>
+<td>15</td>
+<td>0.4787</td>
+</tr>
+<tr>
+<td>18</td>
+<td>0.4855</td>
+</tr>
+<tr>
+<td>23</td>
+<td>0.4918</td>
+</tr>
+<tr>
+<td><strong>24 (deployed)</strong></td>
+<td><strong>0.5014</strong></td>
+</tr>
+</tbody>
+</table>
+<h3 id="where-the-model-is-already-strong-and-where-it-needs-work">Where the model is already strong, and where it needs work</h3>
+<p>Because the data was tagged by subcategory, training logs the accuracy <em>per category</em> — which is far more useful than a single average, because it tells us exactly where to aim the remaining work. These are the logged per-subcategory validation IoUs from around epoch 18 (the overall has since improved to 0.50 at epoch 24), rounded and best read as <em>indicative of relative strength</em> rather than exact:</p>
+<table>
+<thead>
+<tr>
+<th>Category</th>
+<th>Val IoU</th>
+<th>Read as</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Non-fence: random scenes, siding, shutters, masonry</td>
+<td>0.93 – 1.00</td>
+<td><strong>Excellent</strong> — it almost never stains the wrong thing</td>
+</tr>
+<tr>
+<td>Non-fence wooden look-alikes (decks, panels, dividers)</td>
+<td>0.88 – 0.96</td>
+<td><strong>Excellent</strong> — the hard-negative work paid off</td>
+</tr>
+<tr>
+<td>Scene-context fences (typical backyard shots)</td>
+<td>~0.67</td>
+<td><strong>Strong</strong> — the bread-and-butter case</td>
+</tr>
+<tr>
+<td>Mildly occluded fences</td>
+<td>~0.66</td>
+<td><strong>Good</strong></td>
+</tr>
+<tr>
+<td>Cedar fences</td>
+<td>~0.57</td>
+<td><strong>Good</strong></td>
+</tr>
+<tr>
+<td>Heavily occluded fences</td>
+<td>~0.58</td>
+<td><strong>Good</strong></td>
+</tr>
+<tr>
+<td>Generic wood fences</td>
+<td>~0.51</td>
+<td><strong>Fair</strong></td>
+</tr>
+<tr>
+<td>Damaged / under-construction fences</td>
+<td>~0.38 – 0.41</td>
+<td><strong>Needs work</strong></td>
+</tr>
+<tr>
+<td>Extreme scale (very close / very distant)</td>
+<td>~0.38</td>
+<td><strong>Needs work</strong></td>
+</tr>
+<tr>
+<td>Ambiguous "general fence"</td>
+<td>~0.27 – 0.30</td>
+<td><strong>Weak</strong></td>
+</tr>
+<tr>
+<td>Painted / unusually-coloured fences</td>
+<td>~0.26</td>
+<td><strong>Weak</strong></td>
+</tr>
+<tr>
+<td>Harsh / dramatic lighting</td>
+<td>~0.23</td>
+<td><strong>Weak</strong></td>
+</tr>
+<tr>
+<td>Complex / cluttered backgrounds</td>
+<td>~0.21</td>
+<td><strong>Weak</strong></td>
+</tr>
+</tbody>
+</table>
+<p>The shape of this is encouraging for a model only a fifth of the way through training: it is <strong>outstanding at not staining the wrong things</strong> (every non-fence category sits in the 0.9s), solid on ordinary fences, and weakest on the genuinely hard cases — harsh lighting, painted fences, cluttered scenes, damage. Those weak buckets are precisely the targets for the "more hard data" and "finish training" steps in the roadmap (§16). A model this conservative about false positives is a good foundation; the remaining job is lifting the hard positives, which more training and more targeted data directly address.</p>
+<p>Two honest caveats that belong in front of the client:</p>
+<ol>
+<li><strong>These are validation numbers, not final test numbers.</strong> Because the run was paused mid-stream, the automatic held-out <em>test</em> evaluation (which runs only at the very end, with test-time augmentation and full post-processing) never executed. The model is promising — the <strong>staining</strong> previews are already close to what you want — but a single headline "test IoU" number doesn't exist yet because the run hasn't reached its finish line, and the <strong>cleaning</strong> result still needs work (addressed directly in the roadmap, §16).</li>
+<li><strong>The curve was still going up.</strong> An IoU of 0.50 at epoch 24, climbing, on a plan that budgeted 120 epochs plus a whole second high-resolution phase, means the model you're seeing today is an <em>early</em> checkpoint of a much larger plan — not a finished product hitting its ceiling. That is the good-news framing of the roadmap in §16.</li>
+</ol>
+<h3 id="checkpoints-and-resumability">Checkpoints and resumability</h3>
+<p>Every save writes several files: the full training state (for resuming), a stripped weights-only file (for deployment), the EMA copy, and periodic snapshots. Each checkpoint also embeds full provenance — the git commit, the library versions, the exact GPU, and a timestamp — so any result is reproducible and auditable. Resuming is a single command and picks up at the exact epoch, optimizer state, and random seed where it stopped. <strong>In other words, finishing the training is not a restart — it is a resume.</strong></p>
+<h2 id="10-step-8-exporting-the-model-to-onnx">10. Step 8 — Exporting the model to ONNX</h2>
+<p>A model trained in PyTorch can't be served efficiently as-is. The export step (<code>tools/export_onnx.py</code>) converts the trained checkpoint into <strong>ONNX</strong>, an open, framework-neutral format that any inference runtime can load. This is the bridge between "research artifact" and "thing on a server."</p>
+<p>The export is thoughtful in ways that matter for production:</p>
+<ul>
+<li><strong>It bakes the calibration into the model.</strong> The trained model's temperature calibration is folded directly into the exported graph, so the server doesn't have to (and must not) re-apply it. The output is a clean probability map in the 0–1 range under a single output named <code>mask_prob</code>. (For the current epoch-24 model the baked temperature is 1.0 — an identity, i.e. no-op — and the per-subcategory thresholds aren't set yet, because the calibration pass only runs at the <em>end</em> of a finished training phase, which hasn't happened (see §16). The mechanism is in place and will apply real calibration the moment training completes.)</li>
+<li><strong>It ships the refined output.</strong> By default it exports the full refinement-head output (the production-quality boundaries), not the coarser intermediate mask.</li>
+<li><strong>It records the full input contract.</strong> A sidecar JSON file is written next to the model documenting exactly how to feed it: a 512×512 RGB image, normalised with standard ImageNet statistics, in the precise channel order — plus the model's training config, provenance, recommended post-processing, and the parity-check result. This sidecar is what makes the model genuinely portable; every server that hosts it reads the same contract.</li>
+<li><strong>It verifies itself.</strong> After export, it runs the same input through both the original PyTorch model and the new ONNX model and checks they agree to within a tiny tolerance (5e-3). The earlier (epoch-18) export passed this with a maximum difference of 0.00003 — essentially identical.</li>
+</ul>
+<p>The resulting model is two files: a small <strong>13.9 MB graph</strong> (13,902,638 bytes) and a <strong>2.45 GB weights file</strong> (2,451,570,688 bytes — the weights exceed ONNX's 2 GB single-file limit, so they live in an external <code>.onnx.data</code> file). The two are inseparable and travel together everywhere the model is deployed.</p>
+<blockquote>
+<p><strong>One honest caveat.</strong> The currently-deployed epoch-24 export's <em>self-check</em> didn't get to finish — ONNX Runtime hit a memory-allocation error on the laptop running the check (the parity check runs on the CPU, so this was a host-memory limit, not a model problem or a GPU issue). The model file was written correctly before the check ran, and the architecture is identical to the epoch-18 export that <em>did</em> pass cleanly, so it is almost certainly correct. (The same crash also meant the epoch-24 export's fresh sidecar JSON wasn't written — the only sidecars currently on disk are the epoch-18 and epoch-23 backups.) Re-running the export on a larger machine is a sensible, cheap thing to tick off: it both validates parity and regenerates the live sidecar.</p>
+</blockquote>
+<h2 id="11-step-9-hosting-the-model-on-a-gpu-server">11. Step 9 — Hosting the model on a GPU server</h2>
+<p>The trained model is too large to run inside a web browser (2.45 GB), so it runs on a GPU server and the browser talks to it over the internet for the one detection step. The project built this twice: first on <strong>Modal</strong>, then migrated the live service to <strong>Google Cloud Run</strong>. Both are described because both exist in the codebase, and the Modal version remains a perfectly good fallback.</p>
+<h3 id="modalcom-the-first-production-host">Modal.com — the first production host</h3>
+<p>Modal is a serverless GPU platform. The project's Modal app (<code>app_dinov3.py</code>) wraps the ONNX model in a small web service exposing two endpoints: a health check and the <code>/detect</code> endpoint that takes an uploaded photo and returns the mask. It runs on Modal's cheapest GPU (an NVIDIA <strong>T4</strong>, 16 GB), scales to zero when idle, and keeps a warm container for 10 minutes after the last request.</p>
+<p>The single most interesting piece of engineering here — and it carried directly over to Cloud Run — is getting the GPU to actually engage. A lean container image ships only the GPU <em>driver</em>, not the CUDA <em>libraries</em> the model needs; if those libraries aren't found at exactly the right moment, the model silently falls back to the CPU and runs about <strong>25× slower</strong>. The solution is precise: install the CUDA libraries as Python packages, set the library search path <em>before</em> Python starts (setting it from inside Python is too late — the dynamic linker only reads it once at launch), and explicitly pre-load the eight critical libraries at import time. The container logs which GPU providers are active on startup so a CPU-fallback regression is immediately visible. This is the kind of detail that's invisible when it works and catastrophic when it's missing.</p>
+<p>There is also an older Modal app (<code>app.py</code>) that served the previous-generation DINOv2 model on CPU, and a local development server (<code>local_server.py</code>) that runs the exact same <code>/detect</code> protocol on a developer's own machine for testing without redeploying. A standalone diagnostic tool (<code>diagnose_mask.py</code>) can replay the entire browser pipeline against the model to pinpoint which post-processing filter is responsible if a mask ever comes out wrong.</p>
+<h3 id="google-cloud-run-the-current-production-host">Google Cloud Run — the current production host</h3>
+<p>The live service today runs on <strong>Google Cloud Run</strong> on a single NVIDIA <strong>L4</strong> GPU. It is a plain, robust FastAPI container — deliberately boring, which is what you want for production. Its exact specification, read straight from the deploy script:</p>
+<table>
+<thead>
+<tr>
+<th>Setting</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GPU</td>
+<td>1× NVIDIA L4 (24 GB), single-zone (no zonal redundancy)</td>
+</tr>
+<tr>
+<td>CPU / RAM</td>
+<td>4 vCPU / 16 GiB</td>
+</tr>
+<tr>
+<td>Concurrency</td>
+<td>4 requests per instance</td>
+</tr>
+<tr>
+<td>Scaling</td>
+<td><strong>min-instances 0</strong>, max-instances 1 (scale-to-zero)</td>
+</tr>
+<tr>
+<td>Region</td>
+<td>us-central1</td>
+</tr>
+<tr>
+<td>Execution</td>
+<td>gen2, CPU always allocated, 300 s request timeout</td>
+</tr>
+<tr>
+<td>Access</td>
+<td>Public endpoint, port 8080</td>
+</tr>
+</tbody>
+</table>
+<p>The model files are <strong>baked into the container image</strong> rather than downloaded at startup, a deliberate choice that shaves 5–15 seconds and the egress cost off every cold start. Preprocessing is verified to exactly match training (512 px, bilinear resize, ImageNet normalisation) — a segmentation model fed even slightly-wrong inputs degrades badly, so this parity is treated as a hard contract. The endpoint returns the mask as a compact grayscale PNG (~30–100 KB) where each pixel's brightness is the model's confidence.</p>
+<h3 id="the-cold-start-behaviour-the-crux-of-the-hosting-question">The cold-start behaviour (the crux of the hosting question)</h3>
+<p>Because the service is set to <strong>scale-to-zero</strong> (min-instances 0), it genuinely turns itself off when nobody is using it — which is why it costs almost nothing at idle. The trade-off is the <strong>cold start</strong>: the first request after an idle period has to boot a fresh GPU instance, initialise CUDA, and load the 2.45 GB of weights into GPU memory, which takes roughly <strong>30–60 seconds</strong>. Every request after that, on the now-warm instance, is fast (sub-second to a couple of seconds). When traffic stops and the idle window elapses, the instance is torn down and the next visitor pays the cold-start penalty again.</p>
+<p>To hide this from users, the browser app fires a "wake-up" ping at the server the moment the page loads, so the container is already warming up in the background before the visitor clicks "Apply Stain," and it shows a friendly "the simulator is starting up" message if the first request is slow.</p>
+<p>One operational detail worth confirming: the exact idle window before an instance is torn down is left at Cloud Run's platform default — it isn't pinned in the deploy script (whereas the Modal sibling pins a 10-minute warm window). How <em>often</em> a cold start recurs therefore depends on that default, so it's worth confirming and, if useful, pinning it explicitly to tune the balance between idle cost and cold-start frequency.</p>
+<p>This cold-vs-warm trade-off is exactly the decision laid out, with costs, in §17.</p>
+<h2 id="12-step-10-the-browser-app-how-the-javascript-actually-works">12. Step 10 — The browser app: how the JavaScript actually works</h2>
+<p>This section answers, in detail, your request to explain exactly how the web inference works — detection, staining, cleaning, preprocessing, the passes, the post-processing, WebGPU, WebAssembly, and the on-device fence gate. The current app is a single page, <code>index4_dinov3.html</code> (about 10,600 lines), and it is also packaged as a WordPress plugin (<code>wordpress/app.js</code>) with byte-for-byte identical logic.</p>
+<p>The key mental model: <strong>the browser is thin on AI and thick on cleanup.</strong> It never runs the big segmentation model itself. It uploads a small photo, gets back a confidence map, and then spends the overwhelming majority of its code turning that confidence map into a clean, believable stained- or cleaned-fence image — entirely on the user's device.</p>
+<h3 id="121-upload-and-preprocessing">12.1 Upload and preprocessing</h3>
+<p>When a photo is chosen, the app keeps the full-resolution original (for the final high-quality composite) but, for the server call, downscales it so its longest side is at most <strong>1024 pixels</strong> and re-encodes it as <strong>JPEG at 85% quality</strong> — typically 150–400 KB, so the upload is fast even on mobile data. Just before sending, it applies a <em>mild</em> enhancement (a touch more contrast and saturation, plus a percentile auto-levels pass) to help borderline photos detect — modest by design, so it helps detection without changing what the customer sees. Files over 10 MB are rejected up front.</p>
+<h3 id="122-the-detection-call-and-the-warm-up">12.2 The detection call and the warm-up</h3>
+<p>The app POSTs the JPEG to the Cloud Run <code>/detect</code> endpoint and receives a 512×512 grayscale PNG. It decodes that PNG and reads each pixel's value as the model's <strong>confidence</strong> that the pixel is fence, as a number from 0 to 1. (A historical note that matters for anyone reading the code: the configuration constant is still named <code>MODAL_ENDPOINT</code> and some comments still say "Modal," but the live URL is a Google <strong>Cloud Run</strong> address. The name is a leftover from the Modal-first days; the host is Cloud Run.) On page load the app pings the server's health endpoint to start it warming, exactly to mask the cold start described above.</p>
+<h3 id="123-confidence-as-the-blending-alpha-the-core-idea">12.3 Confidence as the blending alpha — the core idea</h3>
+<p>This is the conceptual heart of the whole app. The returned mask is <strong>not</strong> treated as a hard yes/no stencil. Its grayscale value <em>is</em> the model's confidence, and that confidence becomes the <em>opacity</em> of the stain at each pixel. The raw confidence is run through a "soft threshold": anything below 0.50 is forced to zero (kills faint false detections), anything above 0.85 keeps its full value, and the band between is a smooth ramp. The result is a hand-painted-looking alpha channel — razor-sharp and opaque where the model is sure, gently feathered where it's uncertain, and clean everywhere else. This is why the stain looks like it belongs on the wood instead of being a flat cut-out.</p>
+<h3 id="124-the-detection-cascade-up-to-five-passes">12.4 The detection cascade (up to five passes)</h3>
+<p>If the first detection comes back weak or empty, the app doesn't give up — it runs a multi-stage cascade designed to spend as little server time as possible:</p>
+<ol>
+<li><strong>Free re-reads of the same result.</strong> The returned mask is re-interpreted at progressively looser thresholds (strict → moderate → relaxed) — no new server call.</li>
+<li><strong>One aggressive re-upload.</strong> The photo is re-sent once with the stronger enhancement and gets the same strict → moderate → relaxed re-reads. These whole-image passes are deliberately <strong>capped at two server calls</strong> total to control cost and latency.</li>
+<li><strong>Last resort: tiled inference.</strong> Only if all of the above still fail, the image is cut into 3×2, 4×3, and 5×4 grids and each tile is detected separately to catch very small or distant fences — with whole-image gating and shape checks so a deck or wall can't sneak through. This path is intentionally the last resort because each tile is its own server call (up to ~38 across the three grids), making it far more expensive than the capped whole-image passes.</li>
+</ol>
+<h3 id="125-the-post-processing-gauntlet-15-filters">12.5 The post-processing gauntlet (~15 filters)</h3>
+<p>After thresholding, the confidence map runs through a long, <em>ordered</em> sequence of cleanup filters, each targeting a specific real-world failure mode. In order, roughly:</p>
+<ol>
+<li><strong>Upscale</strong> the 512-px mask back to working resolution (bilinear).</li>
+<li><strong>Spatially-guided recovery</strong> — find the very-confident "core" fence (≥0.85), grow that core outward by ~20 px to define a "fence zone," and inside that zone only, re-admit weaker pixels down to 0.40. This recovers shadowed or oddly-lit planks <em>without</em> inviting false positives elsewhere.</li>
+<li><strong>Connected-component cleanup</strong> — drop isolated specks smaller than a tiny fraction of the image (tuned low, because the DINOv3 model produces finer, more fragmented predictions than the old one).</li>
+<li><strong>Vegetation / green filter</strong> — remove pixels where green clearly dominates red and blue (leaves and bushes in front of the fence).</li>
+<li><strong>Sky filter</strong> — remove bright, low-saturation pixels in the top of the frame.</li>
+<li><strong>Bark, trunk, and brick filters</strong> — adaptive filters that compare each pixel to the fence's own average colour and remove tree bark, tree trunks, and red masonry.</li>
+<li><strong>Per-component colour-outlier filter</strong> — drop whole blobs whose colour is far from the main fence.</li>
+<li><strong>A second recovery pass</strong> — re-admit weathered pixels adjacent to confirmed fence.</li>
+<li><strong>Building / barn-wall filters</strong> — drop whole components whose confidence or saturation is far below the strongest fence component (a big building behind the fence).</li>
+<li><strong>Junk-blob filter</strong> — drop small, roundish, non-elongated blobs; real fence structure is elongated, so this catches the round false-positive specks that extreme or backlit lighting produces.</li>
+<li><strong>Hole-fill</strong> — fill small interior gaps (knots, nail-heads) while preserving the real gaps between pickets.</li>
+<li><strong>Bottom-extend</strong> — recover the low-confidence kickboard at the base of the planks.</li>
+</ol>
+<p>Two of these filters (an orientation filter and a principal-axis filter) are present but deliberately <strong>disabled</strong>, because in practice they were carving out real fence structure — a good example of the empirical, "measure then keep or cut" discipline applied throughout. A nice engineering detail: every pixel-distance and pixel-area threshold is automatically scaled to the working resolution, so a "20-pixel" operation behaves identically regardless of the source photo's megapixels.</p>
+<h3 id="126-apply-stain">12.6 Apply Stain</h3>
+<p>"Apply Stain" derives a near-solid alpha from the soft mask (pixels above a low confidence threshold get full opacity; only the thin outer fringe keeps a ramp) — this is the trick that makes the stain read as <em>solid</em> rather than letting 15% of the old weathered wood bleed through. It then measures the fence's own average lightness and saturation and blends the chosen stain with the default <strong>"smart" blend mode</strong>, which keeps the stain's <em>hue</em> but lets each pixel's lightness and saturation follow the wood grain — so the result tracks the real texture instead of looking like flat paint. Other modes (multiply, overlay, screen, colour) are available, and the opacity slider scales the whole effect.</p>
+<p>There are <strong>19 stain colours in three families</strong> the customer can pick from:</p>
+<ul>
+<li><strong>General (5):</strong> Leatherwood, Oxford Brown, Redwood, Natural Cedar, Cedar Tone.</li>
+<li><strong>Semi-transparent (5):</strong> Chestnut, Mahogany, Pecan, Sequoia, Walnut.</li>
+<li><strong>Semi-solid (9):</strong> Auburn, Barnwood, Black, Cape Cod Gray, Chocolate, Eucalyptus, Palomino, Sable, Slate Gray.</li>
+</ul>
+<h3 id="127-clean-fence">12.7 Clean Fence</h3>
+<p>"Clean Fence" simulates a pressure-wash-and-restore. It derives a per-image "clean wood" reference colour by averaging the brightest 35% of the fence's pixels (the sun-exposed, least-weathered planks), then does a <strong>frequency-preserving</strong> clean: an edge-aware guided filter smooths away dirt and algae blotches while respecting plank boundaries; a finer filter separates the wood-grain texture so it can be kept and gently re-sharpened; subtle per-plank variation is added so it doesn't look painted; and a uniform brightness lift restores the wood to the target tone while preserving its natural shadow-and-highlight variation. The result composites back onto the full-resolution original through the same feathered mask, so non-fence pixels stay perfectly sharp — and it's cached so a subsequent "Apply Stain" works on top of the restored wood.</p>
+<h3 id="128-webassembly-making-the-maths-fast">12.8 WebAssembly — making the maths fast</h3>
+<p>All that per-pixel maths (colour-space conversions, blurs, morphology, the guided filter) would be slow in plain JavaScript. So the heavy loops are written in C and compiled to <strong>WebAssembly</strong> (<code>fsv_postprocess.c</code> → two <code>.wasm</code> files). The app ships two builds: a <strong>SIMD128</strong> build that processes four pixels at once (~2–3× faster) and a plain scalar build as a fallback; on startup it feature-detects whether the browser supports SIMD and loads the right one. The WebAssembly module implements the sliding-window dilate/erode, the masked box blur, the sRGB↔Lab colour conversions, the full guided-filter pipeline, the feathered alpha-blend, and the soft-mask threshold. Every WebAssembly call is wrapped so that if anything fails, it transparently falls back to an equivalent JavaScript implementation — the app degrades gracefully and never breaks.</p>
+<h3 id="129-webgpu-optional-gpu-acceleration">12.9 WebGPU — optional GPU acceleration</h3>
+<p>There is also one <strong>WebGPU</strong> compute shader — a separable max-filter "dilate" — used as a secondary accelerator. The app only reaches for the GPU on the large-radius dilation operations where GPU parallelism actually pays off (radius ≥ 8 and image ≥ 250,000 pixels), and only when WebAssembly isn't available. The full acceleration ladder is WebAssembly-SIMD → WebAssembly-scalar → WebGPU → plain JavaScript, and the output is bit-identical across all four, so accuracy never depends on which path a given browser takes.</p>
+<h3 id="1210-download">12.10 Download</h3>
+<p>The final result is exported as a high-quality JPEG, with a filename that reflects what was produced (original / cleaned / stained / cleaned-and-stained).</p>
+<h2 id="13-the-on-device-fence-gate-blocking-junk-before-the-server">13. The on-device "fence gate" (blocking junk before the server)</h2>
+<p>Before a single byte is sent to the paid GPU server, the app runs <em>its own</em> small AI model, right in the browser, to answer one question: does this photo plausibly contain a wooden fence? This is the <strong>fence gate</strong>, and it exists for a simple reason — every server call costs money and time, so there's no point spending a GPU inference on a selfie, a plate of food, a screenshot, or a coffee cup sitting on a wooden table. If a fence doesn't clearly win, the upload is blocked on the device with a friendly "No fence detected in this photo" message, and the server is never called.</p>
+<h3 id="why-object-detection-not-image-classification">Why object <em>detection</em>, not image <em>classification</em></h3>
+<p>This is the genuinely clever design decision. A simple image classifier (the CLIP/SigLIP style) scores the <em>whole image</em> against a concept like "wood." That fails badly on the fence problem: a wooden table, a wooden deck, and a coffee cup on a wooden surface all light up the "wood" concept just as strongly as an actual fence, because the whole-image signal is dominated by wood texture. So the gate instead uses a zero-shot <strong>object detector</strong>, which has to draw a <em>bounding box</em> around the thing it found. A coffee cup on a table has no fence to box; a small fence half-hidden behind pool umbrellas still produces a fence box even at 5% of the frame. That "must localise it as an object" requirement is exactly what separates "fence in a busy scene" from "wood close-up."</p>
+<h3 id="the-model-and-how-it-runs">The model and how it runs</h3>
+<p>The gate uses <strong>OWL-ViT</strong> (<code>Xenova/owlvit-base-patch32</code>, ~80 MB), a zero-shot object detector, loaded through the transformers.js library from a CDN. It runs entirely in a <strong>Web Worker</strong> (a background thread), so the page never freezes during the one-to-three-second inference. It tries <strong>WebGPU first</strong> (fastest), with up to three retries on network hiccups, and falls back to <strong>WebAssembly</strong> if WebGPU isn't available. The model downloads once and is cached in the browser, so repeat visitors get an effectively instant gate. (Historical note: the gate was previously a heavier OWLv2 model and, before that, a SigLIP classifier; the leftover SigLIP "baked features" files in the repo are dead weight from that earlier design and can be ignored or deleted. Some code comments still say "OWLv2"/"SigLIP" but the model actually loaded is OWL-ViT v1.)</p>
+<h3 id="the-decision-rule">The decision rule</h3>
+<p>The gate sends two lists of phrases in a single inference: eight <strong>fence</strong> phrasings ("wooden fence," "cedar fence," "wooden privacy fence," …) and nine <strong>distractor</strong> phrasings ("wooden stairs," "wooden deck," "wooden railing," "wooden table," "wooden chair," …). It then picks the best-scoring qualifying fence box and the best-scoring qualifying distractor box, and passes the image only if the fence beats the distractor by a small margin. The thresholds (a score floor of 0.010, a minimum box area of 2% of the image, a stricter 10% area floor for distractors, and a competitive margin of 0.005) were tuned on real test images. The reason for the <em>relative</em> comparison rather than a fixed cutoff is instructive: wooden stairs were scoring <em>higher</em> on the "wooden fence" query than some real fences did — but stairs score even higher on the "wooden stairs" query, so comparing the two buckets makes the correct call where no absolute threshold could. ("Tree trunk" was removed from the distractor list because it matched almost any outdoor scene and was wrongly blocking real fences.)</p>
+<h3 id="fail-open-and-identical-on-both-buttons">Fail-open, and identical on both buttons</h3>
+<p>The gate is <strong>fail-open</strong> by design: any error — no model, network failure, decode problem — returns "yes, it's a fence" and lets the request through, because the cost of wrongly blocking a real customer (a lost sale) far outweighs the cost of wrongly passing one junk image (a fraction of a cent). The server-side detector remains the final authority. The gate runs <strong>identically</strong> on both "Apply Stain" and "Clean Fence," and it is preloaded on page idle so it's ready before the user acts.</p>
+<h2 id="14-step-11-deployment-huggingface-and-wordpress">14. Step 11 — Deployment: HuggingFace and WordPress</h2>
+<p>The same browser app is shipped two ways, both talking to the same Cloud Run backend.</p>
+<p><strong>Standalone static page (HuggingFace Spaces / GitHub Pages / Cloudflare).</strong> <code>index4_dinov3.html</code> is a self-contained page that can be hosted anywhere static — no server needed on the hosting side, because the only backend is the Cloud Run model endpoint. It is served from a HuggingFace Static Space (these resolve on a <code>.static.hf.space</code> subdomain) and/or GitHub Pages; a Cloudflare (Wrangler) deployment path is also available. This is the quickest way to get a shareable, public URL.</p>
+<p><strong>WordPress plugin (the production site).</strong> For ninjafencestaining.com the app is packaged as a proper WordPress plugin (<code>fence-stain-simulator.php</code>, v2.0.0). It registers a <code>[fence_simulator]</code> shortcode that drops the whole simulator into any page or post. The engineering here is genuinely careful: the simulator is mounted inside a <strong>Shadow DOM</strong> — an isolated sub-document — so the WordPress theme's CSS can never reach in and break the simulator's styling, and the simulator's styling can never leak out and break the site. The plugin even handles the messy reality of page builders (it checks Elementor's stored data for the shortcode, because the normal WordPress detection misses Elementor pages). The plugin's JavaScript is the same logic as the standalone page; it just loads into the isolated shadow document.</p>
+<p>The folder also carries the expected packaging history — several versioned plugin <code>.zip</code> files, with the current shippable one being the most recent. These are normal release artifacts.</p>
+<h3 id="the-rd-ladder-and-why-several-files-look-like-models-but-arent">The R&amp;D ladder (and why several files look like "models" but aren't)</h3>
+<p>One thing worth clarifying so nobody is misled by the folder contents: there are several older model files in the web directory — a UNet++ browser model, a SegFormer-B3 browser model, and a DINOv2-Small browser model — plus their conversion scripts and an out-of-date README that describes a "100% in-browser, no uploads" product. These are the <strong>earlier rungs of the R&amp;D ladder</strong>, not the current product. The project genuinely tried four generations:</p>
+<ol>
+<li><strong>UNet++</strong> (in-browser) — the original.</li>
+<li><strong>SegFormer-B3</strong> (in-browser) — best IoU ≈ 0.455.</li>
+<li><strong>DINOv2-Small</strong> (in-browser, then moved server-side) — best IoU ≈ 0.425.</li>
+<li><strong>DINOv3 ViT-L/16</strong> (server-side) — the current production model, IoU 0.50 and climbing at only 20% of its training plan.</li>
+</ol>
+<p>The first three were small enough to run in the browser but hit an accuracy ceiling. The current DINOv3 model is far more capable but too large for a browser (2.45 GB), which is precisely why the architecture moved to a server with the thin-client design described above. For the report's purposes, only generation 4 is the live product; the rest are the documented evolution that led to it. (One naming gotcha for anyone browsing the folder: the file <code>best_unetpp_v2.pth</code> is mislabelled — it actually holds the SegFormer-B3 weights, not UNet++; the genuine UNet++ model is <code>fence_model_unet_browser.onnx</code>.)</p>
+<h3 id="how-the-winning-architecture-was-chosen">How the winning architecture was chosen</h3>
+<p>The jump to the DINOv3 server model wasn't a hunch. The repository contains a two-stage <strong>genetic-algorithm search</strong> over model designs (<code>configs/ga_stage1_model_search.yaml</code> and <code>configs/ga_stage2_hyperparam_search.yaml</code>). Stage one searches across roughly <strong>18 candidate model families</strong> — DINOv2-L and -G, SAM 2 encoders, EVA-02, InternImage, Swin-V2, ConvNeXt-V2, SegFormer-B5, UNet++-B7, BEiT-v2, plus ensembles and cascades — scoring each on a composite of IoU and boundary quality, with weak candidates killed early on proxy epochs to save compute. Stage two then tunes the hyperparameters of the winning family. The production stack the simulator ships today — a DINOv3 ViT-L/16 backbone with a ViT-Adapter, a Mask2Former decoder, and a refinement head — is the lineage that search pointed to (DINOv3-L being the newer successor to the DINOv2-L family the search favoured). It's worth surfacing because it shows the architecture was the deliberate outcome of a structured comparison, not an arbitrary pick.</p>
+<h2 id="15-the-dataset-folder-demystified">15. The <code>dataset/</code> folder, demystified</h2>
+<p>You specifically asked for this, because the <code>dataset/</code> folder contains several files with very similar names and it isn't obvious which is which. Here is the definitive map. The key insight: the folder is a <strong>control plane</strong>, not an image store — it holds the catalogues, splits, masks, and audits that define <em>what the data means</em>, while the 23 GB of actual JPEGs live elsewhere.</p>
+<h3 id="the-manifest-lineage-read-left-to-right-by-pipeline-stage">The manifest lineage (read left to right by pipeline stage)</h3>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Rows</th>
+<th>What it is</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>manifest.jsonl</code></td>
+<td>33,423</td>
+<td>The <strong>auto-labelled baseline</strong> catalogue (21,414 fence / 12,009 not). Immutable upstream record.</td>
+<td>Baseline</td>
+</tr>
+<tr>
+<td><code>manifest_final.jsonl</code></td>
+<td>33,423</td>
+<td><strong>Post-human-review</strong> catalogue (13,328 fence / 20,095 not). <strong>The phase-1 source of truth.</strong></td>
+<td><strong>Current</strong></td>
+</tr>
+<tr>
+<td><code>manifest_hq.jsonl</code></td>
+<td>20,700</td>
+<td>High-res (≥1024 px) subset of the <em>pre-review</em> manifest.</td>
+<td>Superseded</td>
+</tr>
+<tr>
+<td><code>manifest_hq_final.jsonl</code></td>
+<td>20,700</td>
+<td>High-res subset of the <em>final</em> manifest. <strong>The phase-2 source of truth.</strong></td>
+<td><strong>Current</strong></td>
+</tr>
+<tr>
+<td><code>manifest_safe.jsonl</code></td>
+<td>15,886</td>
+<td>The legally-clean (SAFE + attribution) subset for commercial deployment.</td>
+<td>Optional</td>
+</tr>
+<tr>
+<td><code>manifest.jsonl.bak</code></td>
+<td>33,423</td>
+<td>Automatic safety backup.</td>
+<td>Backup</td>
+</tr>
+</tbody>
+</table>
+<p>The plain-English flow: scrape → <code>manifest.jsonl</code> (auto-labelled) → human review corrects ~8,000 labels → <code>manifest_final.jsonl</code> → the high-resolution slice becomes <code>manifest_hq_final.jsonl</code>. The licence audit separately produces <code>manifest_safe.jsonl</code> as a side branch.</p>
+<h3 id="what-training-actually-reads">What training actually reads</h3>
+<p>Crucially, the training configs <strong>do not name any manifest directly</strong> — they read the <strong>splits</strong>. The splits were generated <em>from</em> <code>manifest_final.jsonl</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Location</th>
+<th>Contents</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>dataset/splits/{train,val,test}.jsonl</code></td>
+<td>The phase-1 splits (23,394 / 5,013 / 5,016). <code>test.jsonl</code> is read-only.</td>
+</tr>
+<tr>
+<td><code>dataset/splits/{train,val,test}_hq.jsonl</code></td>
+<td>The phase-2 high-res splits (14,529 / 3,087 / 3,084).</td>
+</tr>
+<tr>
+<td><code>dataset/splits/*_masks.jsonl</code></td>
+<td>The per-split links from each image to its pixel-mask file.</td>
+</tr>
+<tr>
+<td><code>dataset/splits/split_info.json</code></td>
+<td>The audit record (seed, command, counts, source hash).</td>
+</tr>
+<tr>
+<td><code>dataset/splits_smoke/</code></td>
+<td>A tiny 30/10/10 toy split for testing the code in seconds. Not training data.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="the-masks-and-the-rest">The masks and the rest</h3>
+<table>
+<thead>
+<tr>
+<th>Folder / file</th>
+<th>What it is</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>annotations_v1/masks/</code></td>
+<td>The 33,423 pixel-mask answer keys (the labels).</td>
+<td>Current</td>
+</tr>
+<tr>
+<td><code>annotations_v1/results.jsonl</code></td>
+<td>Raw automatic-pipeline output (immutable).</td>
+<td>Current</td>
+</tr>
+<tr>
+<td><code>annotations_v1/manual_review.jsonl</code></td>
+<td>The human override log (source of the ~8,000 corrections).</td>
+<td>Current</td>
+</tr>
+<tr>
+<td><code>golden_set/</code></td>
+<td>The 100-image hand-masked QA benchmark.</td>
+<td>Current</td>
+</tr>
+<tr>
+<td><code>hard_negatives/wood/</code></td>
+<td>200 wooden-non-fence cut-outs for the hard-negative augmentation.</td>
+<td>Current</td>
+</tr>
+<tr>
+<td><code>occluders/</code></td>
+<td>621 occluder cut-outs (421 from COCO + 200 procedural) for the copy-paste augmentation.</td>
+<td>Current</td>
+</tr>
+<tr>
+<td><code>integrity.json</code> / <code>removed.jsonl</code></td>
+<td>The data-refining audit (33,674 scanned, 251 removed).</td>
+<td>Current</td>
+</tr>
+<tr>
+<td><code>resolution_report.json</code> / <code>RESOLUTION_REPORT.md</code></td>
+<td>The resolution-tier audit (HQ subset = 20,700).</td>
+<td>Current</td>
+</tr>
+<tr>
+<td><code>licenses_per_source.json</code> / <code>LICENSE_AUDIT.md</code></td>
+<td>The licence audit (SAFE/RISKY breakdown).</td>
+<td>Current</td>
+</tr>
+<tr>
+<td><code>DATASHEET.md</code></td>
+<td>Dataset datasheet — <strong>stale</strong> (quotes pre-review counts).</td>
+<td>Stale</td>
+</tr>
+<tr>
+<td><code>ANNOTATION_GUIDELINES.md</code>, <code>ANNOTATION_SYSTEM.md</code>, <code>ANNOTATION_CLASS_SCHEMA.md</code></td>
+<td>Annotation design/guideline docs — <strong>partly superseded</strong> (describe an earlier binary/Gemini or 20–25-class scheme; the production masks actually realise the 3-class background / fence_wood / not_target scheme).</td>
+<td>Superseded</td>
+</tr>
+<tr>
+<td><code>training_set/</code> + <code>finetune_runs/</code></td>
+<td>A 100-image set for an experimental detector fine-tune that was never completed.</td>
+<td>Experimental</td>
+</tr>
+<tr>
+<td><code>sam3_test/</code>, <code>trials/</code>, <code>_coco_cache/</code></td>
+<td>Throwaway experiments and a one-time download cache.</td>
+<td>Artifacts</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>Bottom line:</strong> the current training path is <code>manifest_final.jsonl</code> → <code>dataset/splits/</code> (+ HQ, + masks) → the DINOv3 model. Everything else is the baseline, a superseded intermediate, the licence-clean option, a backup, an experiment, or an augmentation pool. The one document to <em>not</em> quote as current is <code>DATASHEET.md</code>, which still shows the pre-review class counts.</p>
+</blockquote>
+<h2 id="16-current-model-state-future-training-and-the-road-to-maximum-quality">16. Current model state, future training, and the road to maximum quality</h2>
+<h3 id="exactly-where-we-are">Exactly where we are</h3>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Production model</td>
+<td>DINOv3 ViT-L/16, <strong>phase-1 epoch 24</strong></td>
+</tr>
+<tr>
+<td>Validation IoU</td>
+<td><strong>0.5014</strong> (still climbing)</td>
+</tr>
+<tr>
+<td>Phase-1 progress</td>
+<td>24 of 120 epochs (<strong>20%</strong>)</td>
+</tr>
+<tr>
+<td>Phase-2 progress</td>
+<td><strong>Not started</strong> (0 of 70 epochs)</td>
+</tr>
+<tr>
+<td>Final test evaluation</td>
+<td>Not yet run (training paused before the finish hook)</td>
+</tr>
+<tr>
+<td>Resume readiness</td>
+<td>Full checkpoint saved; resuming is one command</td>
+</tr>
+</tbody>
+</table>
+<p>The deployed model is an <strong>early, healthy checkpoint of a much larger plan.</strong> The current state is exactly what you'd expect at this stage: the <strong>staining</strong> preview is already <em>almost</em> where you want it, while the <strong>cleaning</strong> result is <strong>not yet satisfactory</strong>. Both of those judgements are coming from a model that has seen only a fifth of its planned phase-one training and none of its high-resolution phase-two fine-tuning — so the remaining headroom is not incremental, it is the majority of the plan, and (as explained below) the cleaning result has a second, separate lever beyond model training.</p>
+<h3 id="why-there-is-so-much-headroom">Why there is so much headroom</h3>
+<p>Three independent levers are all still almost entirely unused:</p>
+<ol>
+<li><strong>~96 more phase-one epochs.</strong> The validation curve was rising at a healthy clip and showed no plateau at epoch 24. Simply continuing phase one to its planned 120 epochs is the single highest-confidence improvement available, and it is a <em>resume</em>, not a restart.</li>
+<li><strong>The entire phase two (70 epochs at 1024 px).</strong> Phase two exists specifically to sharpen the fine boundary detail — the crisp edges around individual pickets — that a 512-pixel model fundamentally cannot represent. This is where "good mask" becomes "indistinguishable-from-hand-traced mask," which is exactly what makes a stain preview look photoreal.</li>
+<li><strong>The post-training polish that hasn't run yet.</strong> Temperature calibration, per-subcategory threshold tuning, test-time augmentation, and the final held-out test evaluation all run <em>at the end</em> of a completed phase. None has happened yet because the run is mid-stream. These typically add a meaningful, free accuracy bump on top of the trained weights.</li>
+</ol>
+<h3 id="the-enterprise-grade-path-to-absolute-best-quality">The enterprise-grade path to absolute best quality</h3>
+<p>You asked specifically for the "perfect enterprise-grade solution for absolute best quality." Here is the honest, prioritised plan — ordered by return-on-effort, not by glamour:</p>
+<p><strong>Tier 1 — Finish what's already built (highest confidence, lowest risk).</strong></p>
+<ul>
+<li><strong>Resume and complete phase one</strong> (epochs 25–120). Pure resume; no new engineering. Estimated cost: at ~3.9 GPU-hours/epoch and $1.14/hr, ~96 epochs ≈ <strong>$425–$550</strong> of GPU time (with the same caveats about restarts/overhead that made the first 24 epochs cost what they did).</li>
+<li><strong>Run phase two</strong> (1024 px, 70 epochs). Higher-resolution epochs are slower (likely 2–4× the per-epoch time of phase one), so budget this as the larger line item — on the order of <strong>$700–$1,400</strong> depending on the exact per-epoch time at 1024 px. This is the step that buys the sharp, photoreal boundaries.</li>
+<li><strong>Run the finishing passes</strong> (calibration, per-subcategory thresholds, TTA, the held-out test eval). Near-free, and it gives you the first real headline test number to quote.</li>
+</ul>
+<p><strong>Tier 2 — Squeeze the trained model harder (modest effort, real gains).</strong></p>
+<ul>
+<li><strong>Stochastic Weight Averaging / checkpoint ensembling.</strong> The tooling already exists (<code>swa_average.py</code>); averaging the last several checkpoints typically adds a point or two of IoU for essentially zero extra training.</li>
+<li><strong>Two-model ensemble at inference</strong> for the hardest customer photos (the code already supports probability-averaging two checkpoints) — sharper boundaries at ~2× inference cost, usable selectively.</li>
+</ul>
+<p><strong>Tier 3 — Improve the data (highest ceiling, most effort).</strong></p>
+<ul>
+<li><strong>More hard data where the model is weakest.</strong> The per-subcategory metrics already pinpoint the weak spots — generic/ambiguous fences, damaged construction, harsh lighting, complex backgrounds. Targeted scraping + labelling of a few thousand more images in exactly those buckets raises the ceiling more than any architecture change.</li>
+<li><strong>A second human-review pass</strong> on the lowest-confidence training masks (the project already maintains a "suspect samples" worklist of near-empty masks). Cleaner labels lift every model trained on them.</li>
+<li><strong>Decide the licensing posture.</strong> If the product needs a fully clean commercial provenance, retrain on the 15,886-image SAFE subset. It's smaller, so expect a modest accuracy trade-off — but it removes all licensing ambiguity. This is a business decision the data is already prepared for.</li>
+</ul>
+<p><strong>Tier 4 — Bigger swings (optional, diminishing returns).</strong></p>
+<ul>
+<li><strong>Train the H+ backbone.</strong> The larger DINOv3 H+ (~840M) backbone is already plumbed in as an option. It would likely add accuracy at materially higher training and serving cost (it wouldn't fit on the cheap L4/T4 GPUs). Worth it only if Tiers 1–3 are exhausted and you want the absolute frontier.</li>
+<li><strong>Distil to a smaller, faster model</strong> once the big model is finished, to cut serving cost — the opposite optimisation, for when quality is "done" and you want it cheaper.</li>
+</ul>
+<p><strong>The recommendation in one line:</strong> do Tier 1 first (finish phase one, run phase two, run the finishing passes), and in parallel give the cleaning pipeline the dedicated attention described below. That is the highest-confidence path from today's "staining is almost there, cleaning isn't yet" to "both are genuinely best-in-class," it reuses everything already built, and the training portion costs roughly <strong>$1,200–$2,000</strong> of additional GPU time rather than a new project.</p>
+<h3 id="fixing-the-cleaning-result-specifically">Fixing the cleaning result specifically</h3>
+<p>Because the cleaning result isn't where you want it yet, it deserves its own plan — and the important insight is that <strong>cleaning quality has two independent levers</strong>, only one of which is "train the model more":</p>
+<ol>
+<li><strong>Better masks (the model lever).</strong> Both Apply Stain and Clean Fence paint only inside the fence mask. A sharper, more accurate mask means the cleaning effect stops exactly at the plank edges instead of bleeding onto grass, posts, or background — so finishing training (Tiers 1–3 above) directly improves cleaning too. This is the shared foundation.</li>
+<li><strong>The cleaning algorithm itself (the image-processing lever).</strong> "Clean Fence" is a <em>separate</em> client-side algorithm from the model — a frequency-preserving wood restoration (an edge-aware guided filter that removes dirt/algae, a finer filter that preserves and re-sharpens the grain, per-plank colour variation, and a brightness lift toward a derived "clean wood" reference). If the current output looks too flat, too uniform, too washed-out, or not "clean enough," that is tuned in the algorithm — independently of the model — by adjusting the reference-colour estimation, the brightness-lift cap, the chroma ceiling, the grain-preservation strength, and the guided-filter smoothing. This is faster to iterate than training (it's a parameter-tuning loop on real photos, not a multi-day GPU run) and is where most of the near-term cleaning improvement will come from.</li>
+</ol>
+<p>The concrete recommendation for cleaning: <strong>(a)</strong> treat it as its own short tuning project against a set of your real customer photos — adjust the restoration parameters until weathered, mossy, and grey fences come back looking convincingly fresh without going flat or fake; <strong>(b)</strong> let the ongoing model training improve the mask underneath it; and <strong>(c)</strong> if needed, consider a more advanced cleaning approach (for example, a dedicated learned "de-weathering" step) only after the parameter tuning is exhausted. Most of the gap is almost certainly closable with (a) plus the mask improvements from (b), without a new model.</p>
+<h2 id="17-hosting-what-247-warm-costs-and-the-paths-to-choose">17. Hosting: what 24/7-warm costs, and the paths to choose</h2>
+<p>Today the model runs on Google Cloud Run in <strong>scale-to-zero</strong> mode: near-zero cost at idle, but a 30–60-second cold start on the first request after a quiet period. You asked what it costs to keep it warm around the clock, and what the alternatives are. Here is the honest analysis. (All dollar figures are <em>estimates</em> from current public GPU pricing and should be re-confirmed against live rates before you commit — the repo defines the machine spec but not the prices.)</p>
+<h3 id="the-current-spec-being-priced">The current spec being priced</h3>
+<p>1× NVIDIA L4 GPU, 4 vCPU, 16 GiB RAM, CPU always allocated, in us-central1.</p>
+<h3 id="option-a-keep-it-warm-247-on-cloud-run-min-instances-1">Option A — Keep it warm 24/7 on Cloud Run (<code>min-instances 1</code>)</h3>
+<p>This pins one L4 instance alive all the time, eliminating cold starts entirely. Cloud Run bills the GPU, vCPU, and memory per second for the full 730 hours in a month. An L4 runs roughly <strong>$0.71 per GPU-hour</strong>, so the GPU alone is about <strong>$510/month</strong>, and adding the always-allocated 4 vCPU + 16 GiB on top brings the realistic all-in figure to roughly:</p>
+<blockquote>
+<p><strong>~$510–$700 per month</strong> to keep the model warm 24/7 (the lower end assumes committed-use / sustained-use discounts on the GPU; the GPU by itself is already ~$510).</p>
+</blockquote>
+<p><strong>What you get:</strong> every visitor, every time, gets a sub-second-to-few-second response with no "starting up" wait. <strong>What you pay for:</strong> an idle GPU overnight and on slow days.</p>
+<h3 id="option-b-stay-scale-to-zero-the-current-setup">Option B — Stay scale-to-zero (the current setup)</h3>
+<blockquote>
+<p><strong>Realistically under $5–$30/month</strong> at low-to-moderate traffic (hundreds to low-thousands of detections), plus near-zero idle cost.</p>
+</blockquote>
+<p><strong>What you get:</strong> you pay almost nothing except when the tool is actually used. <strong>What you pay for:</strong> the first visitor after each quiet period waits 30–60 seconds. The browser's wake-on-page-load ping already hides much of this for anyone who lands on the page before clicking.</p>
+<h3 id="option-c-a-cheaper-serverless-gpu-modal-on-t4">Option C — A cheaper serverless GPU (Modal on T4)</h3>
+<p>The project already has a working <strong>Modal</strong> deployment on a cheaper <strong>T4</strong> GPU, also scale-to-zero. Modal is a reasonable middle path: a warm CPU container is ~$10/month, but a warm <em>GPU</em> container is materially more (low hundreds). Left scale-to-zero it behaves like Option B on a cheaper card. This is a good "keep in your back pocket" alternative and a sensible place to run a second region or a failover.</p>
+<h3 id="option-d-a-dedicated-cloud-gpu-vm">Option D — A dedicated cloud GPU VM</h3>
+<p>Renting a dedicated L4 or A10 virtual machine (Google Compute Engine, RunPod, Lambda, etc.) lands in a <strong>broadly comparable ~$300–$600/month</strong> range — a self-managed VM can run a bit cheaper than a serverless-warm instance — and trades the serverless convenience for you (or us) managing the box, the updates, and the uptime. Generally only worth it if you also have other GPU workloads to amortise on the same machine.</p>
+<h3 id="option-e-buybuild-your-own-small-gpu-server">Option E — Buy/build your own small GPU server</h3>
+<p>For a single-tenant marketing tool on your own site, owning the hardware is genuinely competitive:</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>Used RTX 3090 (24 GB) box</th>
+<th>New RTX 4090 build</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>One-time hardware</td>
+<td>~$1,000–$1,800</td>
+<td>~$2,500–$3,500</td>
+</tr>
+<tr>
+<td>Electricity (continuous)</td>
+<td>~$15–$40/month</td>
+<td>~$15–$40/month</td>
+</tr>
+<tr>
+<td>Fits the 2.45 GB model?</td>
+<td>Yes, comfortably</td>
+<td>Yes, comfortably</td>
+</tr>
+</tbody>
+</table>
+<p>The crossover maths is striking: against a ~$550/month warm-cloud bill, a self-built box <strong>pays for itself in roughly 3–6 months</strong> and then costs only electricity. The trade-offs are the usual ones of owning infrastructure: you're responsible for uptime, networking, security, and a public-facing endpoint, and there's no automatic scaling if you ever get a sudden traffic spike (a press mention, a viral post).</p>
+<h3 id="the-recommendation">The recommendation</h3>
+<table>
+<thead>
+<tr>
+<th>Situation</th>
+<th>Recommended host</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Today's traffic, cost-sensitive</td>
+<td><strong>Stay scale-to-zero (Option B)</strong> — accept the occasional cold start</td>
+</tr>
+<tr>
+<td>Cold start is hurting conversions</td>
+<td><strong>Warm Cloud Run (Option A)</strong>, ~$510–$700/mo, or…</td>
+</tr>
+<tr>
+<td>Steady, predictable traffic long-term</td>
+<td><strong>Own a 4090/3090 box (Option E)</strong> — cheapest over a year+</td>
+</tr>
+<tr>
+<td>Need a cheap failover / second region</td>
+<td><strong>Modal on T4 (Option C)</strong></td>
+</tr>
+</tbody>
+</table>
+<p>The pragmatic call: <strong>keep scale-to-zero as the default</strong>, and only move to a warm instance (or your own box) when cold-start latency is demonstrably costing you customers. The cleanest "best of both" is often to run scale-to-zero plus a tiny scheduled "keep-alive" ping every few minutes during business hours, which keeps the instance warm when customers are actually around without paying for an idle GPU at 3 a.m. — a middle option worth considering if the binary warm/cold choice feels unsatisfying.</p>
+<h2 id="18-a-single-photos-journey-end-to-end">18. A single photo's journey, end to end</h2>
+<p>To tie the whole system together, here is exactly what happens — in order — from the moment a customer drops a photo onto the page to the moment they download a stained preview. Every step in this list is something described in detail earlier; this is the assembled picture.</p>
+<ol>
+<li>
+<p><strong>The page is already warming the engines.</strong> When the customer first loads the page, two things start in the background before they do anything: the browser pings the Cloud Run server's health endpoint so the GPU container begins waking up, and it quietly downloads the small on-device "fence gate" model so it's ready.</p>
+</li>
+<li>
+<p><strong>The customer picks a photo.</strong> A 4000×3000 phone photo, say. The app keeps the full-resolution original in memory for the final composite, and immediately rejects anything over 10 MB.</p>
+</li>
+<li>
+<p><strong>The fence gate checks it on the device.</strong> Before anything is uploaded, the OWL-ViT gate (running in a background thread) looks at a 768-pixel copy and asks "is there a wooden fence here?" If the customer accidentally uploaded a selfie or a photo of their dog, they get an instant, polite "no fence detected" message and <em>nothing is sent to the server</em> — saving a paid GPU call. If a fence is plausibly present (or if the gate errors, since it fails open), the flow continues.</p>
+</li>
+<li>
+<p><strong>The photo is prepared for upload.</strong> The app downscales the image to 1024 pixels on its longest side, applies a mild contrast/saturation/auto-levels enhancement to help detection, and encodes it as an 85%-quality JPEG — typically 150–400 KB.</p>
+</li>
+<li>
+<p><strong>The server finds the fence.</strong> That JPEG is POSTed to the Cloud Run <code>/detect</code> endpoint. On the GPU, the image is resized to exactly 512×512, normalised, and run through the full DINOv3 model (backbone → ViT-Adapter → pixel decoder → Mask2Former → refinement head with depth). The server sends back a 512×512 grayscale PNG (~30–100 KB) where each pixel's brightness is the model's confidence that it's fence. If the container was cold, this first call takes 30–60 seconds while it boots; otherwise it's a second or two.</p>
+</li>
+<li>
+<p><strong>The browser turns confidence into a clean mask.</strong> The PNG is decoded, the confidence values are soft-thresholded into a feathered alpha, upscaled to working resolution, and run through the ~15-filter cleanup gauntlet — guided recovery of shadowed planks, then removal of vegetation, sky, bark, trunks, brick, off-colour blobs, and background buildings, then hole-fill and bottom-extend. If the first result was weak, the cascade kicks in (looser re-reads, one aggressive re-upload, tiled multi-scale detection). All the heavy maths runs in WebAssembly (or WebGPU/JS as fallback).</p>
+</li>
+<li>
+<p><strong>The stain is applied.</strong> The customer's chosen colour is blended into the fence in "smart" mode — keeping the stain's hue but letting lightness and saturation follow the real wood grain — at the customer's opacity. Because this is all local, switching colours or opacity re-renders instantly with no further server calls.</p>
+</li>
+<li>
+<p><strong>Or the fence is cleaned.</strong> Alternatively, "Clean Fence" runs the frequency-preserving wood-restoration algorithm to show the existing wood pressure-washed and refreshed (the step currently being improved).</p>
+</li>
+<li>
+<p><strong>The customer downloads the result</strong> as a high-quality JPEG, named for what they made (stained, cleaned, or both).</p>
+</li>
+</ol>
+<p>The division of labour is the whole design philosophy in one sentence: <strong>the expensive, occasional, "find the fence" step runs once on a GPU server; everything fast, interactive, and private runs on the customer's own device.</strong></p>
+<h2 id="19-risks-caveats-and-recommended-fixes">19. Risks, caveats, and recommended fixes</h2>
+<p>In the spirit of an honest engineering report, here is a consolidated register of the things worth knowing — most are minor, none are blockers, and each has a clear fix. These were surfaced by reading the project's own files; none changes the headline story, but a diligent client should see them in one place.</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Item</th>
+<th>Impact</th>
+<th>Recommended fix</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><strong>No held-out test metric yet</strong> — training paused before the final test/calibration hook ran.</td>
+<td>All quoted accuracy is validation, not test.</td>
+<td>Finish (or briefly resume to a checkpoint and run) the test-eval pass to get a quotable headline number.</td>
+</tr>
+<tr>
+<td>2</td>
+<td><strong>Cleaning result not yet satisfactory.</strong></td>
+<td>Customer-visible.</td>
+<td>Dedicated parameter-tuning of the cleaning algorithm + mask improvements from training (see §16).</td>
+</tr>
+<tr>
+<td>3</td>
+<td><strong>Deployed (epoch-24) ONNX never passed its end-to-end self-check</strong> (it ran out of memory on the laptop doing the check; the earlier epoch-18 export passed cleanly and the architecture is identical).</td>
+<td>Low — almost certainly fine.</td>
+<td>Re-run the parity check once on a machine with more memory.</td>
+</tr>
+<tr>
+<td>4</td>
+<td><strong>Licensing:</strong> ~52.5% of the training corpus is from sources with ambiguous reuse rights.</td>
+<td>Commercial/legal.</td>
+<td>The licence-clean 15,886-image subset already exists; decide whether to retrain the production model on it (§3, §16).</td>
+</tr>
+<tr>
+<td>5</td>
+<td><strong>A latent "wrong backbone" footgun:</strong> one code file <em>defaults</em> to the larger H+ backbone, even though every real config uses ViT-L.</td>
+<td>Could cause an accidental wrong-model training run.</td>
+<td>Change the code default to ViT-L so the safe choice is the default.</td>
+</tr>
+<tr>
+<td>6</td>
+<td><strong>Stale internal documents:</strong> the dataset datasheet, the web README, and the training guide still describe earlier versions (pre-review counts, the old in-browser model, "H+").</td>
+<td>Could mislead a future reader.</td>
+<td>Refresh or clearly mark these as historical before they're shared.</td>
+</tr>
+<tr>
+<td>7</td>
+<td><strong>Cosmetic naming drift in code:</strong> the browser's server constant is still called <code>MODAL_ENDPOINT</code> (it's Cloud Run now), and some gate comments say "OWLv2/SigLIP" (it's OWL-ViT now).</td>
+<td>None functional.</td>
+<td>A quick rename/comment cleanup for future maintainers.</td>
+</tr>
+<tr>
+<td>8</td>
+<td><strong>Dead-weight files:</strong> leftover SigLIP "baked features" from the gate's previous design are still copied into the deployment bundle.</td>
+<td>Slightly larger download.</td>
+<td>Delete them from the packaged plugin.</td>
+</tr>
+<tr>
+<td>9</td>
+<td><strong>Minor data-count drift</strong> on the positive set (catalogue 21,674 vs. database 21,518 vs. disk 21,414).</td>
+<td>None — disk is authoritative.</td>
+<td>Optional: re-sync the catalogue to disk.</td>
+</tr>
+</tbody>
+</table>
+<p>None of these is urgent. Items 1, 2, and 4 are the ones that actually matter for the product and the business, and all three are addressed in the roadmap.</p>
+<h2 id="20-appendix-a-technology-stack-at-a-glance">20. Appendix A — Technology stack at a glance</h2>
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>Technology</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Data collection</td>
+<td>Python, asyncio, httpx, Playwright; SQLite state; Google Vision QA</td>
+</tr>
+<tr>
+<td>Data refining</td>
+<td>Python, Pillow, parallel integrity check; SHA-256 + perceptual-hash dedup</td>
+</tr>
+<tr>
+<td>Labelling</td>
+<td>Grounding DINO (detect) + SAM 2.1 (segment) + CLIP (scene filter) + SAM 3 (manual)</td>
+</tr>
+<tr>
+<td>Model</td>
+<td>PyTorch; DINOv3 ViT-L/16 + ViT-Adapter + Mask2Former + UNet3+ refinement + MiDaS depth</td>
+</tr>
+<tr>
+<td>Training</td>
+<td>vast.ai (1× A100-SXM4-80GB, 128 GB RAM, Xeon Platinum); AdamW, bf16, EMA</td>
+</tr>
+<tr>
+<td>Export</td>
+<td>ONNX (opset 17→18), external-data weights, baked calibration, parity check</td>
+</tr>
+<tr>
+<td>Serving</td>
+<td>Google Cloud Run (L4 GPU) — live; Modal (T4 GPU) — sibling/fallback; FastAPI + ONNX Runtime</td>
+</tr>
+<tr>
+<td>Frontend</td>
+<td>Single-page HTML + WordPress plugin (Shadow DOM); transformers.js; WebAssembly (SIMD) + WebGPU</td>
+</tr>
+<tr>
+<td>On-device gate</td>
+<td>OWL-ViT zero-shot object detection in a Web Worker</td>
+</tr>
+<tr>
+<td>Hosting (frontend)</td>
+<td>HuggingFace Spaces (static) / GitHub Pages / Cloudflare; WordPress at ninjafencestaining.com</td>
+</tr>
+</tbody>
+</table>
+<h2 id="21-appendix-b-key-numbers-in-one-place">21. Appendix B — Key numbers, in one place</h2>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Images scraped (positive / negative)</td>
+<td>21,414 / 12,009</td>
+</tr>
+<tr>
+<td>Master catalogue size</td>
+<td>33,423</td>
+</tr>
+<tr>
+<td>Cross-set duplicates removed</td>
+<td>251</td>
+</tr>
+<tr>
+<td>Class balance after human review</td>
+<td>13,328 fence / 20,095 not-fence (~8,000 corrected)</td>
+</tr>
+<tr>
+<td>Train / val / test split</td>
+<td>23,394 / 5,013 / 5,016</td>
+</tr>
+<tr>
+<td>High-res (phase-2) split</td>
+<td>14,529 / 3,087 / 3,084</td>
+</tr>
+<tr>
+<td>Pixel-mask answer keys</td>
+<td>33,423</td>
+</tr>
+<tr>
+<td>Golden-set benchmark</td>
+<td>100 hand-masked images</td>
+</tr>
+<tr>
+<td>Licence breakdown</td>
+<td>SAFE 37% / SAFE-attrib 10.5% / RISKY 52.5%</td>
+</tr>
+<tr>
+<td>Model</td>
+<td>DINOv3 ViT-L/16, ~485M trainable params</td>
+</tr>
+<tr>
+<td>Training spend</td>
+<td>$220 @ $1.14/GPU-hr ≈ 193 GPU-hours (~8 days)</td>
+</tr>
+<tr>
+<td>Phase-1 progress</td>
+<td>24 / 120 epochs (20%)</td>
+</tr>
+<tr>
+<td>Best validation IoU (epoch 24)</td>
+<td>0.5014 (still climbing)</td>
+</tr>
+<tr>
+<td>Phase-2 progress</td>
+<td>0 / 70 epochs (not started)</td>
+</tr>
+<tr>
+<td>Deployed model files</td>
+<td>13.9 MB graph + 2.45 GB weights</td>
+</tr>
+<tr>
+<td>Production host</td>
+<td>Google Cloud Run, 1× NVIDIA L4, scale-to-zero</td>
+</tr>
+<tr>
+<td>Cold start</td>
+<td>~30–60 s; warm response sub-second to ~2 s</td>
+</tr>
+<tr>
+<td>24/7-warm cost estimate</td>
+<td>~$510–$700/month</td>
+</tr>
+<tr>
+<td>Browser stain colours</td>
+<td>19 (across 3 families)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="22-appendix-c-glossary">22. Appendix C — Glossary</h2>
+<ul>
+<li><strong>Segmentation</strong> — deciding, for every pixel, what category it belongs to (here: fence vs. not-fence). The output is a "mask."</li>
+<li><strong>IoU (Intersection-over-Union)</strong> — the standard segmentation accuracy score: of all pixels that are either truly fence or predicted fence, the fraction that are both. 1.0 is perfect.</li>
+<li><strong>Backbone</strong> — the pre-trained "eyes" of the model that turn pixels into rich features (here, DINOv3 ViT-L/16).</li>
+<li><strong>ViT (Vision Transformer)</strong> — a modern neural-network design that processes an image as a grid of patches.</li>
+<li><strong>DINOv3</strong> — Meta's self-supervised pre-trained vision model, trained on 1.7 billion images without human labels.</li>
+<li><strong>ViT-Adapter</strong> — an add-on that gives a Vision Transformer the fine, multi-scale detail needed for pixel-accurate masks.</li>
+<li><strong>Mask2Former</strong> — a modern segmentation decoder design using learnable "queries" to produce masks.</li>
+<li><strong>Refinement head</strong> — the final network stage that sharpens the mask's boundaries.</li>
+<li><strong>MiDaS / DPT</strong> — a pre-trained model that estimates depth (how far away each pixel is) from a single photo; used here as a fixed "teacher."</li>
+<li><strong>EMA (Exponential Moving Average)</strong> — a smoothed running-average copy of the model's weights that generalises better; it's what gets deployed.</li>
+<li><strong>ONNX</strong> — an open, portable model format that any inference engine can run.</li>
+<li><strong>Epoch</strong> — one full pass of the model over the entire training set.</li>
+<li><strong>Augmentation</strong> — randomly perturbing training images so the model learns the concept, not the specific pixels.</li>
+<li><strong>Cold start</strong> — the delay when a scaled-to-zero server has to boot up for the first request after being idle.</li>
+<li><strong>Zero-shot</strong> — a model that can handle categories described in plain text without being specifically trained on them (used by the on-device fence gate).</li>
+<li><strong>WebAssembly / WebGPU</strong> — browser technologies for running fast, near-native code (WASM) and GPU computation (WebGPU) on the user's own device.</li>
+</ul>
+<hr />
+<p><em>Prepared by TechnoTaau. Every figure in this report was read directly from the project's own configuration files, training logs, model metadata, and deployment scripts as of June 2026. Where the project's internal documents disagree with each other, this report uses the most authoritative on-disk source and notes the discrepancy. Cost figures for third-party GPU hosting are estimates from public pricing and should be re-confirmed against live rates before any commitment.</em></p>
+<footer class="foot">Fence Stain Simulator &mdash; instant AI fence-colour previews, in any browser. &copy; TechnoTaau.</footer>
+</article></body></html>

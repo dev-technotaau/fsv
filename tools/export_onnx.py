@@ -15,8 +15,10 @@ Quick start:
 Optional flags:
   --opset 17           ONNX opset (17 is the default; 14+ required for ViT)
   --dynamic-batch      export dynamic batch dim (default: fixed batch=1)
-  --use-refined        export the refined-mask output instead of coarse
-                        (refined head adds ~6MB ONNX size + ~10ms inference)
+  --no-use-refined     opt out of the refined head output and ship the coarse
+                        Mask2Former mask instead. Default is refined (production
+                        quality); coarse is ~6MB smaller and ~10ms faster but
+                        meaningfully worse boundaries.
   --quantize-dynamic   apply dynamic int8 quantization (smaller, CPU-faster)
   --validate           run a parity check between PyTorch and ONNX outputs
                         on a random input (recommended)
@@ -439,8 +441,9 @@ def main() -> int:
                      help="Optional training YAML if checkpoint lacks meta")
     ap.add_argument("--opset", type=int, default=17)
     ap.add_argument("--dynamic-batch", action="store_true")
-    ap.add_argument("--use-refined", action="store_true",
-                     help="Export refined head output (slower, slightly better)")
+    ap.add_argument("--use-refined", action=argparse.BooleanOptionalAction, default=True,
+                     help="Export refined head output (default: True; production quality). "
+                          "Pass --no-use-refined to export the coarse Mask2Former output instead.")
     ap.add_argument("--no-validate", action="store_true")
     ap.add_argument("--quantize-fp16", action="store_true",
                      help="Also export an _fp16.onnx variant (~50% size, "
