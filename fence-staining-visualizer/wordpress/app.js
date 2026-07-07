@@ -1157,7 +1157,13 @@ async function _checkIsWoodenFence(image, opts = {}) {
     const SCORE_THRESHOLD = 0.01;
     const AREA_THRESHOLD = 0.02;
     const DISTRACTOR_AREA_MIN = 0.10;
-    const COMPETITIVE_MARGIN = 0.005;
+    // Fence must out-score the strongest distractor. OWL-ViT scores here are
+    // tiny (~0.01), so the margin is RELATIVE (scale-invariant) plus a small
+    // absolute floor. An absolute-only 0.005 was ~40% of a 0.01 score and
+    // wrongly BLOCKed real fences that merely LOOK deck-like (frontal plank
+    // walls: fence 0.014 vs deck 0.012).
+    const COMPETITIVE_MARGIN_REL = 0.06; // fence must beat distractor by >=6%
+    const COMPETITIVE_MARGIN_ABS = 0.0005; // + floor so exact noise-ties don't pass
     const fenceSet = new Set(_FENCE_QUERIES);
     const distractorSet = new Set(_FENCE_DISTRACTOR_QUERIES);
 
@@ -1196,7 +1202,9 @@ async function _checkIsWoodenFence(image, opts = {}) {
 
     const distractorScore = bestDistractor?.score ?? 0;
     const isFence =
-      !!bestFence && bestFence.score > distractorScore + COMPETITIVE_MARGIN;
+      !!bestFence &&
+      bestFence.score >
+        distractorScore * (1 + COMPETITIVE_MARGIN_REL) + COMPETITIVE_MARGIN_ABS;
 
     const verdict = {
       isFence,
