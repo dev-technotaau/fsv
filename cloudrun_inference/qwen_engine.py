@@ -18,11 +18,14 @@ _lightning_active = False   # set True only if the Lightning LoRA actually loade
 
 RENOVATE_PROMPT = (
     "Restain this wooden privacy fence so it looks freshly and evenly re-stained with fresh, "
-    "clean, brand-new {tone} wood. Regenerate the wood surface as newly sanded lumber with fine "
-    "natural vertical grain and one uniform even tone across all boards. REMOVE all grey "
-    "weathering, water stains, green algae, mildew and peeling paint. Keep the EXACT same fence — "
+    "clean, brand-new {tone} wood. Regenerate the wood surface as newly sanded lumber with fine, "
+    "richly detailed natural vertical wood grain and visible timber texture, one uniform even tone "
+    "across all boards, with natural depth and dimension. REMOVE all grey weathering, water stains, "
+    "green algae, mildew and peeling paint. Preserve realistic soft natural daylight, gentle shadows "
+    "in the plank gaps and along the rails and posts, and lifelike depth. Keep the EXACT same fence — "
     "same planks, boards, gaps, rails, posts, dog-ear tops and perspective — and keep every branch, "
-    "leaf, the ground and the background identical. Photorealistic, sharp, high detail."
+    "leaf, the ground and the background identical. Photorealistic, sharp crisp focus, high detail, "
+    "professional photograph."
 )
 NEGATIVE = ("weathered, faded, grey, peeling, flaking, cracked, old, worn, dirty, mildew, algae, "
             "water stains, blotchy, patchy, uneven, different fence, missing planks, extra planks, "
@@ -81,7 +84,10 @@ def load():
     log.info("[qwen] loading %s (quant=%s)", model, quant)
     pipe = QPipe.from_pretrained(model, **kw)
 
-    if QWEN_LORA_REPO:
+    # Lightning is the FAST 8-step path but softer than full base sampling. OFF by default so the
+    # engine uses sharp, high-quality 20-step base (what produced the loved output). Opt in with
+    # QWEN_LIGHTNING=1 only when speed matters more than sharpness.
+    if QWEN_LORA_REPO and os.environ.get("QWEN_LIGHTNING", "0") == "1":
         try:
             import math
             from diffusers import FlowMatchEulerDiscreteScheduler

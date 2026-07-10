@@ -57,7 +57,14 @@ IMAGENET_STD  = [0.229, 0.224, 0.225]
 
 # ─── render (/render) config ──────────────────────────────────────────
 WORKING_RES = int(os.environ.get("FSV_WORKING_RES", "1024"))   # Qwen render resolution
-FAMILY_CONTRAST = {"general": 1.0, "semi-transparent": 1.12, "semi-solid": 0.95}
+# contrast scales the luminance SPREAD (grain shadows, plank-gap depth, board-to-board variation)
+# for more realistic depth/shadow/contrast — dE-SAFE (the median colour stays the exact swatch).
+# general nudged 1.0 -> 1.08 (gentle; not aggressive). Override per-family via env if needed.
+FAMILY_CONTRAST = {"general": float(os.environ.get("FSV_CONTRAST", "1.08")),
+                   "semi-transparent": 1.15, "semi-solid": 1.0}
+# chroma_retain lets a touch of the render's real colour variation through for "depth of colour".
+# >0 raises dE slightly (watch X-DeltaE stays <=3); 0.06 is subtle. 0 = pure exact swatch.
+CHROMA_RETAIN = float(os.environ.get("FSV_CHROMA_RETAIN", "0.06"))
 _qwen_lock = threading.Lock()                    # concurrency=1 GPU + serialises Qwen lazy-load
 
 # Browsers will POST from these origins. Same set as the Modal version.
@@ -178,6 +185,15 @@ async def lifespan(app: FastAPI):
         f"providers={_active_providers}  "
         f"input={_input_name}  output={_output_name}"
     )
+    # Warm Qwen (base model) at startup so the first /render skips the ~40s load. Cheap headroom
+    # here: seg holds only its ~2.66GB weights (no activations yet), so Qwen 16GB fits easily.
+    if os.environ.get("QWEN_WARM_ON_START", "1") == "1":
+        try:
+            tw = time.time()
+            qwen_engine.load()
+            logger.info(f"[startup] Qwen warmed in {time.time() - tw:.1f}s")
+        except Exception as e:
+            logger.warning(f"[startup] Qwen warm failed ({e}); will lazy-load on first /render")
     yield
     logger.info("[shutdown] container stopping (SIGTERM)")
 
@@ -323,7 +339,7 @@ async def render(image: UploadFile = File(...), colorHex: str = Form(...),
     t_ren = time.time()
 
     final = cf.finish(orig, np.array(ren.convert("RGB")), mask_arr, colorHex,
-                      contrast=FAMILY_CONTRAST.get(family, 1.0))
+                      contrast=FAMILY_CONTRAST.get(family, 1.08), chroma_retain=CHROMA_RETAIN)
     de = cf.delta_e_median(final, mask_arr, colorHex)
     buf = io.BytesIO()
     PILImage.fromarray(final).save(buf, "JPEG", quality=92)

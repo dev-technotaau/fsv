@@ -51,13 +51,17 @@ def composite(original_rgb: np.ndarray, fence_rgb: np.ndarray, mask: np.ndarray,
 
 
 def finish(original_rgb: np.ndarray, renovated_rgb: np.ndarray, mask: np.ndarray,
-           swatch_hex: str, contrast: float = 1.0) -> np.ndarray:
+           swatch_hex: str, contrast: float = 1.0, chroma_retain: float = 0.0) -> np.ndarray:
     """Full finisher: resize render to original, color-lock the fence, composite over original.
     mask is a float [0,1] map at the ORIGINAL resolution."""
     H, W = original_rgb.shape[:2]
     if renovated_rgb.shape[:2] != (H, W):
-        renovated_rgb = cv2.resize(renovated_rgb, (W, H), interpolation=cv2.INTER_AREA)
-    locked = color_lock(renovated_rgb, mask, swatch_hex, contrast=contrast)
+        # The render is smaller than the photo -> UPSCALE with Lanczos to keep the wood grain sharp.
+        # (INTER_AREA is an averaging downscale filter; using it to upscale blurs the grain.)
+        upscaling = (H * W) > (renovated_rgb.shape[0] * renovated_rgb.shape[1])
+        interp = cv2.INTER_LANCZOS4 if upscaling else cv2.INTER_AREA
+        renovated_rgb = cv2.resize(renovated_rgb, (W, H), interpolation=interp)
+    locked = color_lock(renovated_rgb, mask, swatch_hex, contrast=contrast, chroma_retain=chroma_retain)
     return composite(original_rgb, locked, mask)
 
 
