@@ -19,7 +19,16 @@
 #
 # Usage
 # -----
-#       bash deploy.sh
+#       bash deploy.sh                       # deploy/update the live service (as a new revision)
+#
+# SAFE TEST-FIRST (recommended for the /render rollout) — deploy the combined
+# image as a SEPARATE new service so the working /detect (fsv-dinov3) is never
+# touched. Test BOTH endpoints on it, then point the browser at it and retire the old one:
+#       FSV_SERVICE=fsv-dinov3-v2 bash deploy.sh
+#
+# Nothing is ever deleted: Cloud Run keeps every revision, and a deploy only shifts
+# traffic once the new revision is healthy. Roll back by routing traffic to a previous
+# revision (see RENDER.md). The old /detect keeps serving throughout the build.
 #
 # Iteration: re-run after code changes. Cloud Build caches the pip-install
 # layer when requirements.txt is unchanged, so subsequent builds finish in
@@ -28,7 +37,7 @@
 set -euo pipefail
 
 PROJECT="${GCP_PROJECT:?GCP_PROJECT env var must be set}"
-SERVICE="${FSV_SERVICE:-fsv-dinov3}"
+SERVICE="${FSV_SERVICE:-fsv-dinov3-v2}"   # set FSV_SERVICE=fsv-dinov3-v2 to test WITHOUT touching live /detect
 REGION="${FSV_REGION:-us-central1}"   # us-central1 is the canonical Cloud Run GPU region
 IMAGE="gcr.io/${PROJECT}/${SERVICE}"
 
@@ -42,11 +51,13 @@ for f in fence_dinov3_phase1.onnx fence_dinov3_phase1.onnx.data; do
     fi
 done
 
-echo "==> Building image (uploads ~2.5 GB build context — first build is slow)"
+echo "==> Building image (bakes ~40 GB of Qwen weights — first build is SLOW, ~30-60 min)"
 gcloud builds submit \
     --tag "${IMAGE}" \
     --project "${PROJECT}" \
-    --timeout 30m \
+    --machine-type e2-highcpu-8 \
+    --disk-size 200 \
+    --timeout 3600s \
     .
 
 echo ""
@@ -55,13 +66,15 @@ gcloud run deploy "${SERVICE}" \
     --image "${IMAGE}" \
     --gpu 1 --gpu-type nvidia-l4 \
     --no-gpu-zonal-redundancy \
-    --memory 16Gi --cpu 4 \
-    --concurrency 4 \
+    --memory 32Gi --cpu 8 \
+    --concurrency 1 \
+    --set-env-vars="QWEN_QUANT=prequant,FSV_WORKING_RES=1024" \
+    --clear-volumes --clear-volume-mounts \
     --min-instances 0 --max-instances 1 \
     --region "${REGION}" \
     --allow-unauthenticated \
     --port 8080 \
-    --timeout 300s \
+    --timeout 3600s \
     --execution-environment gen2 \
     --no-cpu-throttling \
     --project "${PROJECT}"

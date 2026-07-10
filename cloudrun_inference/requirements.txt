@@ -1,18 +1,33 @@
-# Pinned to the same versions the Modal container uses so behavior matches
-# byte-for-byte. The nvidia-cu12-* pip packages bundle the user-space CUDA
-# .so files that onnxruntime-gpu dlopens at startup — the host (Cloud Run
-# L4 instance) provides only the kernel driver.
+# Combined segmentation (/detect) + Qwen renovation (/render) service.
+#
+# SINGLE CUDA stack: torch (cu124) pulls the nvidia-cu12 CUDA libs, and onnxruntime-gpu
+# uses those same libs. We do NOT pin nvidia-cudnn-cu12 anymore — the old pin (9.10) fights
+# torch's required cuDNN (9.1). Let torch decide cuDNN; ORT loads whatever is present.
+# If ORT can't init CUDA on deploy (startup log shows only CPUExecutionProvider), pin an
+# onnxruntime-gpu build that matches torch's cuDNN 9.x, or run seg via CPU as a fallback.
+
+--extra-index-url https://download.pytorch.org/whl/cu124
+torch==2.5.1
+torchvision==0.20.1     # Qwen2.5-VL processor imports it; without it the pipeline load crashes
 
 onnxruntime-gpu==1.24.4
-nvidia-cublas-cu12
-nvidia-cuda-runtime-cu12
-nvidia-cuda-nvrtc-cu12
-nvidia-cudnn-cu12==9.10.2.21
-nvidia-cufft-cu12
-nvidia-curand-cu12
-nvidia-nvjitlink-cu12
 
-pillow==10.4.0
+# ── Qwen renovation stack ──
+# diffusers 0.39's Qwen2.5-VL path is validated against transformers 4.x; transformers 5.x
+# (a breaking major, Jan 2026) crashes the text-encoder forward -> 500 on first inference. Pin both.
+diffusers>=0.39,<0.40
+transformers>=4.53,<5
+accelerate>=1.0
+peft>=0.13
+bitsandbytes>=0.44
+safetensors
+sentencepiece
+huggingface_hub
+hf_transfer
+
+# ── image / server ──
+opencv-python-headless
+pillow<12          # Pillow 12 removed PIL._typing._Ink -> breaks the diffusers Qwen import
 numpy==1.26.4
 fastapi==0.115.6
 python-multipart==0.0.20

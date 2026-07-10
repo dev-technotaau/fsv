@@ -33,20 +33,32 @@ import io
 import logging
 import os
 import sys
+import threading
 import time
 from contextlib import asynccontextmanager
 
+import cv2
 import numpy as np
 import onnxruntime as ort
-from fastapi import FastAPI, File, HTTPException, Response, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image as PILImage
+
+# Render pipeline (added alongside /detect — Qwen renovation + exact-swatch finish).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import color_finish as cf
+import qwen_engine
 
 # ─── Configuration ────────────────────────────────────────────────────
 MODEL_FILE = os.environ.get("FSV_MODEL", "/model/fence_dinov3_phase1.onnx")
 INPUT_SIZE = 512                                 # DINOv3 patch_size=16, 32*16=512
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD  = [0.229, 0.224, 0.225]
+
+# ─── render (/render) config ──────────────────────────────────────────
+WORKING_RES = int(os.environ.get("FSV_WORKING_RES", "1024"))   # Qwen render resolution
+FAMILY_CONTRAST = {"general": 1.0, "semi-transparent": 1.12, "semi-solid": 0.95}
+_qwen_lock = threading.Lock()                    # concurrency=1 GPU + serialises Qwen lazy-load
 
 # Browsers will POST from these origins. Same set as the Modal version.
 ALLOWED_ORIGINS = [
@@ -146,11 +158,18 @@ async def lifespan(app: FastAPI):
     t0 = time.time()
     opts = ort.SessionOptions()
     opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    # Seg stays on GPU (DINOv3L, fp32, unchanged). Keep onnxruntime LEAN so Qwen fits beside it on
+    # the 24GB L4: kSameAsRequested (no arena doubling) + no cudnn max-workspace hold ORT to its
+    # true measured working set ~5.3GB (2.66GB weights + 2.7GB activations) instead of the ~6.2GB
+    # default. That ~0.9GB saving is what lets seg (5.3GB) + Qwen (15.7GB load peak) fit under
+    # 21.96GB — a thin but real ~0.9GB margin. NO gpu_mem_limit (a cap below 5.3GB would starve
+    # seg). If a render OOMs on VRAM, drop FSV_WORKING_RES to 768 to shrink Qwen's activations.
+    _cuda_opts = {"arena_extend_strategy": "kSameAsRequested",
+                  "cudnn_conv_use_max_workspace": "0",
+                  "cudnn_conv_algo_search": "HEURISTIC"}
     _session = ort.InferenceSession(
-        MODEL_FILE,
-        sess_options=opts,
-        providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
-    )
+        MODEL_FILE, sess_options=opts,
+        providers=[("CUDAExecutionProvider", _cuda_opts), "CPUExecutionProvider"])
     _input_name = _session.get_inputs()[0].name
     _output_name = _session.get_outputs()[0].name
     _active_providers = _session.get_providers()
@@ -177,7 +196,8 @@ app.add_middleware(
     allow_credentials=False,
     allow_methods=["POST", "GET", "OPTIONS"],
     allow_headers=["*"],
-    expose_headers=["X-Inference-Ms", "X-Upload-Bytes", "X-Provider"],
+    expose_headers=["X-Inference-Ms", "X-Upload-Bytes", "X-Provider",
+                    "X-DeltaE", "X-Seg-Ms", "X-Render-Ms", "X-Total-Ms"],
     max_age=86400,
 )
 
@@ -248,3 +268,68 @@ async def detect(image: UploadFile = File(...)):
             "Cache-Control": "no-cache, no-store",
         },
     )
+
+
+# ─── render pipeline: renovate (Qwen) + exact-swatch finish ────────────
+def _segment_native(img_rgb: np.ndarray) -> np.ndarray:
+    """Reuse the loaded DINOv3 session -> soft mask [0,1] at native (H,W)."""
+    H, W = img_rgb.shape[:2]
+    im = PILImage.fromarray(img_rgb).resize((INPUT_SIZE, INPUT_SIZE), PILImage.BILINEAR)
+    arr = (np.asarray(im, np.float32) / 255.0).transpose(2, 0, 1)[None]
+    arr = (arr - _mean_arr) / _std_arr
+    probs = _session.run([_output_name], {_input_name: arr.astype(np.float32)})[0][0, 0]
+    if probs.min() < 0 or probs.max() > 1:
+        probs = 1.0 / (1.0 + np.exp(-probs))
+    return np.clip(cv2.resize(probs.astype(np.float32), (W, H), interpolation=cv2.INTER_LINEAR), 0, 1)
+
+
+@app.post("/render")
+async def render(image: UploadFile = File(...), colorHex: str = Form(...),
+                 family: str = Form("general"), tone: str = Form("warm reddish cedar brown"),
+                 seed: int = Form(0), mask: UploadFile = File(None)):
+    """Renovate the fence (Qwen) -> re-impose the EXACT swatch colour + composite over the
+    original. Reuses the loaded DINOv3 session for the mask (or an optional supplied one).
+    Qwen is lazy-loaded on the first call so /detect is unaffected until then."""
+    if _session is None:
+        raise HTTPException(status_code=503, detail="Model not loaded")
+    t0 = time.time()
+    data = await image.read()
+    if not data:
+        raise HTTPException(400, "empty upload")
+    if len(data) > 20 * 1024 * 1024:
+        raise HTTPException(413, "upload too large (>20MB)")
+    try:
+        orig = np.array(PILImage.open(io.BytesIO(data)).convert("RGB"))
+    except Exception as e:
+        raise HTTPException(400, f"invalid image: {e}")
+    H, W = orig.shape[:2]
+
+    if mask is not None:                          # reuse the /detect mask if the browser sends it
+        md = await mask.read()
+        m = np.array(PILImage.open(io.BytesIO(md)).convert("L"), np.float32) / 255.0
+        mask_arr = m if m.shape[:2] == (H, W) else cv2.resize(m, (W, H), interpolation=cv2.INTER_LINEAR)
+        mask_arr = np.clip(mask_arr, 0, 1)
+    else:                                         # else segment here with the same GPU model
+        mask_arr = _segment_native(orig)
+    if (mask_arr > 0.5).mean() < 0.01:
+        raise HTTPException(422, "no fence detected")
+    t_seg = time.time()
+
+    scale = WORKING_RES / max(H, W)
+    wW, wH = max(64, round(W * scale)), max(64, round(H * scale))
+    work = PILImage.fromarray(orig).resize((wW, wH), PILImage.LANCZOS)
+    with _qwen_lock:                              # concurrency=1 GPU + serialises the lazy first-load
+        ren = qwen_engine.renovate(work, tone=tone, seed=seed)
+    t_ren = time.time()
+
+    final = cf.finish(orig, np.array(ren.convert("RGB")), mask_arr, colorHex,
+                      contrast=FAMILY_CONTRAST.get(family, 1.0))
+    de = cf.delta_e_median(final, mask_arr, colorHex)
+    buf = io.BytesIO()
+    PILImage.fromarray(final).save(buf, "JPEG", quality=92)
+    logger.info(f"[render] {colorHex} {family} seg={int((t_seg-t0)*1000)}ms "
+                f"render={int((t_ren-t_seg)*1000)}ms total={int((time.time()-t0)*1000)}ms dE={de:.2f}")
+    return Response(content=buf.getvalue(), media_type="image/jpeg", headers={
+        "X-DeltaE": f"{de:.2f}", "X-Seg-Ms": str(int((t_seg - t0) * 1000)),
+        "X-Render-Ms": str(int((t_ren - t_seg) * 1000)), "X-Total-Ms": str(int((time.time() - t0) * 1000)),
+        "Cache-Control": "no-store"})
