@@ -65,24 +65,37 @@ def load():
     except Exception:
         from diffusers import QwenImageEditPipeline as QPipe
     model = os.environ.get("QWEN_MODEL", QWEN_MODEL_DEFAULT)
-    quant = os.environ.get("QWEN_QUANT", "prequant")
+    quant = os.environ.get("QWEN_QUANT", "nunchaku")
 
-    kw = dict(torch_dtype=torch.bfloat16, low_cpu_mem_usage=True)
-    if quant == "4bit":
-        # Runtime-quantize a NON-prequantized base model (fallback path, not used with the baked
-        # ovedrive checkpoint). Quantize BOTH big components; skip img_mod to avoid stipple noise.
-        from diffusers import PipelineQuantizationConfig, BitsAndBytesConfig as DiffusersBnb
-        from transformers import BitsAndBytesConfig as TransformersBnb
-        kw["quantization_config"] = PipelineQuantizationConfig(quant_mapping={
-            "transformer": DiffusersBnb(load_in_4bit=True, bnb_4bit_quant_type="nf4",
-                                        bnb_4bit_compute_dtype=torch.bfloat16,
-                                        llm_int8_skip_modules=["transformer_blocks.0.img_mod"]),
-            "text_encoder": TransformersBnb(load_in_4bit=True, bnb_4bit_quant_type="nf4",
-                                            bnb_4bit_compute_dtype=torch.bfloat16)})
-    # quant == "prequant": checkpoint is already NF4 on disk -> no quant config, load as-is.
-    # quant == "none": bf16 (needs >24GB).
-    log.info("[qwen] loading %s (quant=%s)", model, quant)
-    pipe = QPipe.from_pretrained(model, **kw)
+    if quant == "nunchaku":
+        # FAST path: Nunchaku SVDQuant INT4 transformer (fused INT4 tensor-core GEMMs — ~3x vs bnb
+        # NF4, at FULL 20-step sharpness). Load the INT4 DiT, then build the pipe reusing the baked
+        # ovedrive snapshot ONLY for its 4-bit text_encoder + VAE + tokenizer + configs.
+        from nunchaku import NunchakuQwenImageTransformer2DModel
+        from nunchaku.utils import get_precision
+        prec = get_precision()   # 'int4' on L4/Ada (NOT fp4, which is Blackwell-only)
+        tf = os.environ.get("NUNCHAKU_TRANSFORMER",
+                            f"/model/nunchaku-qwen/svdq-{prec}_r128-qwen-image-edit-2509.safetensors")
+        log.info("[qwen] loading Nunchaku %s transformer %s", prec, tf)
+        transformer = NunchakuQwenImageTransformer2DModel.from_pretrained(tf)
+        pipe = QPipe.from_pretrained(model, transformer=transformer, torch_dtype=torch.bfloat16)
+    else:
+        kw = dict(torch_dtype=torch.bfloat16, low_cpu_mem_usage=True)
+        if quant == "4bit":
+            # Runtime-quantize a NON-prequantized base model (fallback). Quantize BOTH big components;
+            # skip img_mod to avoid stipple noise.
+            from diffusers import PipelineQuantizationConfig, BitsAndBytesConfig as DiffusersBnb
+            from transformers import BitsAndBytesConfig as TransformersBnb
+            kw["quantization_config"] = PipelineQuantizationConfig(quant_mapping={
+                "transformer": DiffusersBnb(load_in_4bit=True, bnb_4bit_quant_type="nf4",
+                                            bnb_4bit_compute_dtype=torch.bfloat16,
+                                            llm_int8_skip_modules=["transformer_blocks.0.img_mod"]),
+                "text_encoder": TransformersBnb(load_in_4bit=True, bnb_4bit_quant_type="nf4",
+                                                bnb_4bit_compute_dtype=torch.bfloat16)})
+        # quant == "prequant": checkpoint is already NF4 on disk -> no quant config, load as-is.
+        # quant == "none": bf16 (needs >24GB).
+        log.info("[qwen] loading %s (quant=%s)", model, quant)
+        pipe = QPipe.from_pretrained(model, **kw)
 
     # Lightning is the FAST 8-step path but softer than full base sampling. OFF by default so the
     # engine uses sharp, high-quality 20-step base (what produced the loved output). Opt in with
