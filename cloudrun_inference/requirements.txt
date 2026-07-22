@@ -18,17 +18,23 @@ onnxruntime-gpu==1.24.4
 # v1.2.1 cp311-linux wheel is built for cu12.8 + torch2.8 (must match the torch above exactly).
 https://github.com/nunchaku-ai/nunchaku/releases/download/v1.2.1/nunchaku-1.2.1%2Bcu12.8torch2.8-cp311-cp311-linux_x86_64.whl
 
-# ── Qwen renovation stack ──
-# diffusers 0.39's Qwen2.5-VL path is validated against transformers 4.x; transformers 5.x
-# (a breaking major, Jan 2026) crashes the text-encoder forward -> 500 on first inference. Pin both.
-diffusers>=0.39,<0.40
-transformers>=4.53,<5
-accelerate>=1.0
-peft>=0.13
+# ── Qwen renovation stack (pinned to Nunchaku v1.2.1's CI-tested env) ──
+# CRITICAL: diffusers 0.39 rewrote QwenEmbedRope.forward (dropped txt_seq_lens, moved `device` to the
+# 2nd positional slot). Nunchaku 1.2.1 imports that class FROM diffusers and calls
+# pos_embed(img_shapes, txt_seq_lens, device=...), so on 0.39 the positional txt_seq_lens binds to
+# `device` and the device= keyword collides -> "QwenEmbedRope.forward() got multiple values for
+# argument 'device'" on the first denoise step (verified: rev 00009 /render 500). Nunchaku 1.2.1's
+# pyproject CI-pins diffusers==0.36 — it has the compatible 3-arg signature AND QwenImageEditPlusPipeline
+# (the 2509 class app imports). transformers stays <5 (5.x breaks the Qwen2.5-VL text-encoder forward);
+# 4.55.2 is Nunchaku's tested build. accelerate/peft floors raised to Nunchaku's CI minimums.
+diffusers==0.36.0
+transformers==4.55.2
+accelerate>=1.9,<2
+peft>=0.17,<0.18
 bitsandbytes>=0.44      # still used: the text encoder (Qwen2.5-VL) stays bnb-4bit next to the INT4 DiT
 safetensors
 sentencepiece
-huggingface_hub
+huggingface_hub>=0.34,<1     # Nunchaku 1.2.1 CI: huggingface-hub==0.34; hf_transfer + snapshot_download compatible
 hf_transfer
 
 # ── image / server ──

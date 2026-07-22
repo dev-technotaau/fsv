@@ -40,7 +40,7 @@ from contextlib import asynccontextmanager
 import cv2
 import numpy as np
 import onnxruntime as ort
-from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image as PILImage
 
@@ -56,7 +56,12 @@ IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD  = [0.229, 0.224, 0.225]
 
 # ─── render (/render) config ──────────────────────────────────────────
-WORKING_RES = int(os.environ.get("FSV_WORKING_RES", "1024"))   # Qwen render resolution
+# WORKING_RES defines the render AREA TARGET (WORKING_RES², ~1MP at 1024 = diffusers' stock output
+# area). The crop-to-fence path renders the fence bbox at this same pixel scale — fewer tokens, same
+# sharpness. NOTE: values >1024 do NOT sharpen full-frame renders (the pipeline caps area at its
+# trained ~1MP); values <1024 (e.g. 896) trade a little sharpness for real speed.
+WORKING_RES = int(os.environ.get("FSV_WORKING_RES", "1024"))
+CROP_MAX_FRAC = float(os.environ.get("FSV_CROP_MAX_FRAC", "0.8"))  # >this bbox fraction => full frame
 # contrast scales the luminance SPREAD (grain shadows, plank-gap depth, board-to-board variation)
 # for more realistic depth/shadow/contrast — dE-SAFE (the median colour stays the exact swatch).
 # general nudged 1.0 -> 1.08 (gentle; not aggressive). Override per-family via env if needed.
@@ -66,6 +71,7 @@ FAMILY_CONTRAST = {"general": float(os.environ.get("FSV_CONTRAST", "1.08")),
 # >0 raises dE slightly (watch X-DeltaE stays <=3); 0.06 is subtle. 0 = pure exact swatch.
 CHROMA_RETAIN = float(os.environ.get("FSV_CHROMA_RETAIN", "0.06"))
 _qwen_lock = threading.Lock()                    # concurrency=1 GPU + serialises Qwen lazy-load
+_qwen_ready = threading.Event()                  # set once the background warm finishes
 
 # Browsers will POST from these origins. Same set as the Modal version.
 ALLOWED_ORIGINS = [
@@ -156,11 +162,102 @@ _mean_arr = np.array(IMAGENET_MEAN, dtype=np.float32).reshape(1, 3, 1, 1)
 _std_arr  = np.array(IMAGENET_STD,  dtype=np.float32).reshape(1, 3, 1, 1)
 
 
+def _weight_paths() -> list[str]:
+    paths = []
+    tf = os.environ.get("NUNCHAKU_TRANSFORMER",
+                        "/model/nunchaku-qwen/svdq-int4_r128-qwen-image-edit-2509.safetensors")
+    if os.path.exists(tf):
+        paths.append(tf)
+    paths += sorted(glob.glob("/model/qwen-edit/text_encoder/*.safetensors"))
+    return paths
+
+
+def _mem_mb() -> int:
+    """Container memory usage in MB from the cgroup — what Cloud Run's 32Gi limit actually meters.
+    Tries cgroup v2 then v1 (Cloud Run gen2 has been seen as v1 -> the v2-only path returned -1)."""
+    for path in ("/sys/fs/cgroup/memory.current",                # cgroup v2
+                 "/sys/fs/cgroup/memory/memory.usage_in_bytes"):  # cgroup v1
+        try:
+            with open(path) as f:
+                return int(f.read().strip()) >> 20
+        except Exception:
+            continue
+    return -1
+
+
+def _drop_weight_cache():
+    """Evict the baked weight files from the page cache once the model is loaded — the bytes now
+    live in the model's own memory and the ~18GB of file cache (parts of it pinned by nunchaku's
+    mmap load) is pure pressure. Without this, the 12.7GB transformer bouncing GPU->CPU at the END
+    of a render allocates faster than cgroup reclaim frees cache -> signal-9 OOM at 32Gi (observed
+    rev 00012: killed ~18s AFTER denoise 20/20). Advisory + harmless if already evicted."""
+    for path in _weight_paths():
+        try:
+            fd = os.open(path, os.O_RDONLY)
+            try:
+                os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+            finally:
+                os.close(fd)
+        except Exception:
+            pass
+
+
+def _prefetch_weights():
+    """Warm the page cache for the big baked Qwen files by reading them in parallel slices,
+    overlapped with ONNX init. Cloud Run streams the container image lazily — the first read of the
+    12.7GB INT4 file is network-bound (~150-300MB/s single-stream); 16 concurrent ranged reads both
+    overlap that wait with ONNX/GPU init and (if the streaming backend parallelizes ranges like GCS
+    does) can multiply throughput. Read-and-discard: the payoff is the warm page cache. The cache
+    is dropped again by _drop_weight_cache() as soon as the model has loaded."""
+    from concurrent.futures import ThreadPoolExecutor
+    paths = _weight_paths()
+    t0 = time.time()
+    for path in paths:                                   # big file first; sequential across files
+        try:
+            size = os.path.getsize(path)
+            n = 16
+            sl = size // n + 1
+            def _read_slice(i, _p=path, _sl=sl, _size=size):
+                fd = os.open(_p, os.O_RDONLY)
+                try:
+                    off, end = i * _sl, min((i + 1) * _sl, _size)
+                    while off < end:
+                        chunk = os.pread(fd, min(8 << 20, end - off), off)
+                        if not chunk:
+                            break
+                        off += len(chunk)
+                finally:
+                    os.close(fd)
+            with ThreadPoolExecutor(n) as ex:
+                list(ex.map(_read_slice, range(n)))
+        except Exception as e:
+            logger.warning(f"[startup] prefetch {path} failed: {e}")
+            return
+    logger.info(f"[startup] weight prefetch done ({len(paths)} files) in {time.time() - t0:.1f}s")
+
+
+def _warm_qwen():
+    """Background Qwen warm — runs while the server is ALREADY serving /detect. A /render that
+    arrives mid-warm simply blocks on _qwen_lock until the load finishes."""
+    try:
+        tw = time.time()
+        with _qwen_lock:
+            qwen_engine.load()
+        _qwen_ready.set()
+        _drop_weight_cache()   # weights are in the model now; free ~18GB of cache headroom
+        logger.info(f"[startup] Qwen warmed in {time.time() - tw:.1f}s (background)  mem={_mem_mb()}MB")
+    except Exception as e:
+        logger.warning(f"[startup] Qwen warm failed ({e}); will lazy-load on first /render")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Load the ONNX session at container boot. yield hands control to
     request handling; the after-yield block runs on graceful shutdown."""
     global _session, _input_name, _output_name, _active_providers
+    # Kick off the weight prefetch FIRST so the network-bound file reads overlap the ONNX init.
+    if os.environ.get("QWEN_WARM_ON_START", "1") == "1":
+        threading.Thread(target=_prefetch_weights, daemon=True, name="qwen-prefetch").start()
     logger.info(f"[startup] loading {MODEL_FILE}")
     t0 = time.time()
     opts = ort.SessionOptions()
@@ -185,15 +282,11 @@ async def lifespan(app: FastAPI):
         f"providers={_active_providers}  "
         f"input={_input_name}  output={_output_name}"
     )
-    # Warm Qwen (base model) at startup so the first /render skips the ~40s load. Cheap headroom
-    # here: seg holds only its ~2.66GB weights (no activations yet), so Qwen 16GB fits easily.
+    # Warm Qwen in the BACKGROUND: the port opens (and /detect serves) as soon as ONNX is ready
+    # (~25s) instead of after the full ~2min Qwen load. The frontend pings GET / on page load /
+    # photo select, so the warm overlaps the time the user spends masking + picking a colour.
     if os.environ.get("QWEN_WARM_ON_START", "1") == "1":
-        try:
-            tw = time.time()
-            qwen_engine.load()
-            logger.info(f"[startup] Qwen warmed in {time.time() - tw:.1f}s")
-        except Exception as e:
-            logger.warning(f"[startup] Qwen warm failed ({e}); will lazy-load on first /render")
+        threading.Thread(target=_warm_qwen, daemon=True, name="qwen-warm").start()
     yield
     logger.info("[shutdown] container stopping (SIGTERM)")
 
@@ -213,7 +306,8 @@ app.add_middleware(
     allow_methods=["POST", "GET", "OPTIONS"],
     allow_headers=["*"],
     expose_headers=["X-Inference-Ms", "X-Upload-Bytes", "X-Provider",
-                    "X-DeltaE", "X-Seg-Ms", "X-Render-Ms", "X-Total-Ms"],
+                    "X-DeltaE", "X-Seg-Ms", "X-Render-Ms", "X-Total-Ms",
+                    "X-Crop-Frac", "X-Render-Dims"],
     max_age=86400,
 )
 
@@ -228,6 +322,7 @@ async def health():
         "model_input_size": INPUT_SIZE,
         "channel_order": "RGB",
         "providers": _active_providers,
+        "qwen_ready": _qwen_ready.is_set(),   # background warm finished => /render is instant-start
     }
 
 
@@ -300,7 +395,8 @@ def _segment_native(img_rgb: np.ndarray) -> np.ndarray:
 
 
 @app.post("/render")
-async def render(image: UploadFile = File(...), colorHex: str = Form(...),
+async def render(request: Request,
+                 image: UploadFile = File(...), colorHex: str = Form(...),
                  family: str = Form("general"), tone: str = Form("warm reddish cedar brown"),
                  seed: int = Form(0), mask: UploadFile = File(None)):
     """Renovate the fence (Qwen) -> re-impose the EXACT swatch colour + composite over the
@@ -331,21 +427,60 @@ async def render(image: UploadFile = File(...), colorHex: str = Form(...),
         raise HTTPException(422, "no fence detected")
     t_seg = time.time()
 
-    scale = WORKING_RES / max(H, W)
-    wW, wH = max(64, round(W * scale)), max(64, round(H * scale))
-    work = PILImage.fromarray(orig).resize((wW, wH), PILImage.LANCZOS)
+    # Crop-to-fence: only masked fence pixels survive the composite, so renovate JUST the fence
+    # bbox (+margin) at the SAME pixel scale a full-frame render would use — near-linear token/time
+    # savings (fence at 40% of frame ≈ 2.6x faster), identical fence sharpness by construction.
+    # Falls back to the whole frame when the fence dominates (frac > CROP_MAX_FRAC).
+    ys, xs = np.where(mask_arr > 0.5)             # non-empty: coverage checked above
+    mg = max(32, round(0.04 * max(H, W)))         # margin >> the 2px composite feather
+    cy0, cx0 = max(0, int(ys.min()) - mg), max(0, int(xs.min()) - mg)
+    cy1, cx1 = min(H, int(ys.max()) + 1 + mg), min(W, int(xs.max()) + 1 + mg)
+    frac = ((cy1 - cy0) * (cx1 - cx0)) / (H * W)
+    if frac > CROP_MAX_FRAC:
+        cy0, cx0, cy1, cx1, frac = 0, 0, H, W, 1.0
+    cw, ch = cx1 - cx0, cy1 - cy0
+    area = WORKING_RES * WORKING_RES              # output area target (1024² ≈ diffusers' stock 1MP)
+    s0 = (area / (W * H)) ** 0.5                  # full-frame pixel scale => crop keeps parity
+    out_w = max(64, int(round(cw * s0 / 32)) * 32)
+    out_h = max(64, int(round(ch * s0 / 32)) * 32)
+    if out_w * out_h > area * 1.05:               # rounding guard: never exceed the area target
+        k = (area / (out_w * out_h)) ** 0.5
+        out_w = max(64, int(round(out_w * k / 32)) * 32)
+        out_h = max(64, int(round(out_h * k / 32)) * 32)
+    work = PILImage.fromarray(orig[cy0:cy1, cx0:cx1])
+    # Zombie-render guard: if the client already gave up (timeout/cancel), don't spend 1-2min of
+    # GPU + a 12.7GB end-of-render offload on a response nobody reads — retries stack behind the
+    # lock and the summed memory of dead + live requests is what OOMs a 32Gi instance.
+    if await request.is_disconnected():
+        raise HTTPException(499, "client disconnected before render")
+    logger.info(f"[render] pre-renovate mem={_mem_mb()}MB crop={frac:.2f} out={out_w}x{out_h}")
     with _qwen_lock:                              # concurrency=1 GPU + serialises the lazy first-load
-        ren = qwen_engine.renovate(work, tone=tone, seed=seed)
+        if await request.is_disconnected():       # re-check: we may have queued behind a long render
+            raise HTTPException(499, "client disconnected while queued")
+        ren = qwen_engine.renovate(work, tone=tone, seed=seed, height=out_h, width=out_w)
+    if not _qwen_ready.is_set():
+        _qwen_ready.set()                         # lazy first-load also counts as warmed
+        _drop_weight_cache()
+    logger.info(f"[render] post-renovate mem={_mem_mb()}MB")
     t_ren = time.time()
 
-    final = cf.finish(orig, np.array(ren.convert("RGB")), mask_arr, colorHex,
+    # Paste the renovated crop back into a full-size canvas; finish() color-locks + composites
+    # using ONLY mask pixels (all inside the bbox), so outside-bbox content is never consulted.
+    ren_np = np.array(ren.convert("RGB"))
+    interp = cv2.INTER_LANCZOS4 if (cw * ch) > (out_w * out_h) else cv2.INTER_AREA
+    ren_np = cv2.resize(ren_np, (cw, ch), interpolation=interp)
+    canvas = orig.copy()
+    canvas[cy0:cy1, cx0:cx1] = ren_np
+    final = cf.finish(orig, canvas, mask_arr, colorHex,
                       contrast=FAMILY_CONTRAST.get(family, 1.08), chroma_retain=CHROMA_RETAIN)
     de = cf.delta_e_median(final, mask_arr, colorHex)
     buf = io.BytesIO()
     PILImage.fromarray(final).save(buf, "JPEG", quality=92)
     logger.info(f"[render] {colorHex} {family} seg={int((t_seg-t0)*1000)}ms "
-                f"render={int((t_ren-t_seg)*1000)}ms total={int((time.time()-t0)*1000)}ms dE={de:.2f}")
+                f"render={int((t_ren-t_seg)*1000)}ms total={int((time.time()-t0)*1000)}ms dE={de:.2f} "
+                f"crop={frac:.2f} out={out_w}x{out_h} mem={_mem_mb()}MB")
     return Response(content=buf.getvalue(), media_type="image/jpeg", headers={
         "X-DeltaE": f"{de:.2f}", "X-Seg-Ms": str(int((t_seg - t0) * 1000)),
         "X-Render-Ms": str(int((t_ren - t_seg) * 1000)), "X-Total-Ms": str(int((time.time() - t0) * 1000)),
+        "X-Crop-Frac": f"{frac:.2f}", "X-Render-Dims": f"{out_w}x{out_h}",
         "Cache-Control": "no-store"})

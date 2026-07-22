@@ -11,9 +11,11 @@ Env: QWEN_MODEL (baked path), QWEN_QUANT (prequant|4bit|none), QWEN_LIGHTNING_LO
 from __future__ import annotations
 import os
 import logging
+import threading
 
 log = logging.getLogger("qwen-engine")
 _pipe = None
+_load_lock = threading.Lock()   # load() is hit by the startup warm thread AND request threads
 _lightning_active = False   # set True only if the Lightning LoRA actually loaded
 
 RENOVATE_PROMPT = (
@@ -50,10 +52,18 @@ def _default_cfg() -> float:
 
 
 def load():
-    """Build the pipeline once. Safe to call repeatedly."""
-    global _pipe, _lightning_active
+    """Build the pipeline once. Safe to call repeatedly and from multiple threads."""
+    global _pipe
     if _pipe is not None:
         return _pipe
+    with _load_lock:           # double-checked: warm thread + first request race here
+        if _pipe is not None:
+            return _pipe
+        return _load_locked()
+
+
+def _load_locked():
+    global _pipe, _lightning_active
     import torch
     import transformers
     if int(transformers.__version__.split(".")[0]) >= 5:
@@ -77,7 +87,20 @@ def load():
         tf = os.environ.get("NUNCHAKU_TRANSFORMER",
                             f"/model/nunchaku-qwen/svdq-{prec}_r128-qwen-image-edit-2509.safetensors")
         log.info("[qwen] loading Nunchaku %s transformer %s", prec, tf)
-        transformer = NunchakuQwenImageTransformer2DModel.from_pretrained(tf)
+        # CRITICAL host-RAM fix: load the 12.7GB INT4 DiT DIRECTLY to the GPU (device='cuda').
+        # from_pretrained then does to_empty(device='cuda') + load_state_dict, so the weights
+        # materialize in VRAM and the transient host state-dict is freed — NO persistent 12.7GB
+        # host copy. The default (device='cpu') load left that copy resident, so the 20GB baseline +
+        # the pipeline's end-of-render 12.7GB transformer move blew past Cloud Run's 32Gi host cap
+        # (signal-9 ~20s after denoise, rev 00012-00014 all). Loading to GPU drops the baseline to
+        # ~8GB so even a worst-case burst stays ~20GB. Fall back to CPU load only if the kwarg is
+        # unsupported (older nunchaku) — that path OOMs, but keeps the service importable.
+        try:
+            transformer = NunchakuQwenImageTransformer2DModel.from_pretrained(tf, device="cuda")
+            log.info("[qwen] DiT materialized directly in VRAM (no host copy)")
+        except Exception as e:
+            log.warning("[qwen] device='cuda' load failed (%s); falling back to host load (OOM risk)", e)
+            transformer = NunchakuQwenImageTransformer2DModel.from_pretrained(tf)
         pipe = QPipe.from_pretrained(model, transformer=transformer, torch_dtype=torch.bfloat16)
     else:
         kw = dict(torch_dtype=torch.bfloat16, low_cpu_mem_usage=True)
@@ -123,18 +146,62 @@ def load():
 
     # Placement: 4-bit (prequant/4bit) uses enable_model_cpu_offload() — pipe.to('cuda') raises on a
     # bnb model. Only bf16 (quant=none) may use .to('cuda').
+    #
+    # QWEN_RESIDENCY (nunchaku only) controls how the 12.7GB INT4 DiT is placed:
+    #   resident (DEFAULT, REQUIRED on Cloud Run's 32Gi host) — pipe._exclude_from_cpu_offload keeps
+    #            the DiT on the GPU for the WHOLE render; only TE + VAE offload. This is the only mode
+    #            that survives 32Gi: with plain offload, nunchaku mmaps the 12.7GB weights (those file
+    #            pages stay host-resident, unreclaimable) AND at VAE-decode the DiT moves GPU->CPU,
+    #            allocating ANOTHER 12.7GB anon => ~34GB transient => cgroup SIGKILL ~20s after
+    #            denoise finishes (verified rev 00012/00013, twice each). Resident removes that burst:
+    #            the DiT never leaves the GPU. VRAM peak is TE-encode (DiT 12.7 + TE ~5 + seg ~2.7 =
+    #            ~20-23GB) — fits the 24GB L4 (every crash so far was HOST OOM, never CUDA OOM).
+    #   offload  — nunchaku's stock >18GB-GPU config; correct on a normal 64GB host but OOMs Cloud
+    #            Run's 32Gi (see above). Only use on a >40Gi instance.
+    #   pinned   — DO NOT USE at 32Gi: pins a SECOND 12.7GB copy in locked pages -> load-time OOM
+    #            (rev 00011). Needs >40Gi.
+    residency = os.environ.get("QWEN_RESIDENCY", "resident")
     if quant == "none" and os.environ.get("QWEN_FULL") == "1":
         pipe.to("cuda")
+    elif quant == "nunchaku" and residency == "resident":
+        pipe._exclude_from_cpu_offload.append("transformer")
+        pipe.enable_model_cpu_offload()
+        log.info("[qwen] residency=resident (DiT stays on GPU; only TE/VAE offload — no host burst)")
     else:
         pipe.enable_model_cpu_offload()
+        if quant == "nunchaku" and residency == "pinned":
+            try:
+                t0 = __import__("time").time()
+                n = 0
+                for p in pipe.transformer.parameters():
+                    if p.data.device.type == "cpu" and not p.data.is_pinned():
+                        p.data = p.data.pin_memory(); n += 1
+                for b in pipe.transformer.buffers():
+                    if b.data.device.type == "cpu" and not b.data.is_pinned():
+                        b.data = b.data.pin_memory(); n += 1
+                log.info("[qwen] residency=pinned (%d tensors pinned in %.1fs — fast DMA shuttle)",
+                         n, __import__("time").time() - t0)
+            except Exception as e:   # pinning is an optimization only — never fatal
+                log.warning("[qwen] pin_memory failed (%s); falling back to pageable offload", e)
     _pipe = pipe
     log.info("[qwen] ready (lightning=%s)", _lightning_active)
     return _pipe
 
 
+_DEFAULT_VAE_AREA = 1024 * 1024   # diffusers' hardcoded output/condition area when no dims passed
+
+
 def renovate(image_pil, tone: str = "warm reddish cedar brown",
-             steps: int | None = None, true_cfg: float | None = None, seed: int = 0):
-    """Return a PIL image of the fence renovated to fresh wood."""
+             steps: int | None = None, true_cfg: float | None = None, seed: int = 0,
+             height: int | None = None, width: int | None = None):
+    """Return a PIL image of the fence renovated to fresh wood.
+
+    height/width (multiples of 32): render at EXACT dims — used by the crop-to-fence path so a
+    bbox crop costs proportionally fewer tokens. When set, the Plus pipeline's module-level
+    VAE_IMAGE_SIZE is patched to the same area so the condition-image latents get the SAME grid
+    as the output (mismatched grids halve the crop speedup and worsen pixel-shift). Caller must
+    hold the render lock (app._qwen_lock) — the patch is a module global.
+    """
     import torch
     pipe = load()
     is_plus = pipe.__class__.__name__ == "QwenImageEditPlusPipeline"
@@ -146,4 +213,30 @@ def renovate(image_pil, tone: str = "warm reddish cedar brown",
                   true_cfg_scale=cfg, generator=g)        # true_cfg_scale is the CFG knob for Qwen-Edit
     if cfg > 1.0:                                          # negative_prompt only consumed when CFG on
         kwargs["negative_prompt"] = NEGATIVE
-    return pipe(**kwargs).images[0]
+
+    # Condition-grid patch: keep condition dims == output dims (see docstring).
+    qep = None
+    if is_plus:
+        try:
+            from diffusers.pipelines.qwenimage import pipeline_qwenimage_edit_plus as qep
+        except Exception:
+            qep = None
+    if height and width:
+        kwargs["height"], kwargs["width"] = height, width
+        if qep is not None and hasattr(qep, "VAE_IMAGE_SIZE"):
+            qep.VAE_IMAGE_SIZE = int(height) * int(width)
+    elif qep is not None and hasattr(qep, "VAE_IMAGE_SIZE"):
+        qep.VAE_IMAGE_SIZE = _DEFAULT_VAE_AREA            # restore stock behavior for full-frame
+
+    # Nunchaku's transformer calls torch.cuda.empty_cache() at the END OF EVERY FORWARD (v1.2.1
+    # transformer_qwenimage.py:558) — 2x/step. Under expandable_segments each call is a synchronizing
+    # allocator teardown + page re-map on the next forward: 10-40s of pure overhead per render.
+    # No-op it for the duration of the pipe call; restore + flush once after.
+    _ec = torch.cuda.empty_cache
+    torch.cuda.empty_cache = lambda: None
+    try:
+        out = pipe(**kwargs).images[0]
+    finally:
+        torch.cuda.empty_cache = _ec
+        _ec()
+    return out

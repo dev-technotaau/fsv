@@ -18,10 +18,11 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt
 # Fail the build early if the Nunchaku wheel didn't install against this exact torch, or if ORT
-# didn't install cleanly. (GPU providers can't be checked here — no GPU at build; verified at runtime.)
-RUN python -c "import torch, nunchaku, onnxruntime; from nunchaku.utils import get_precision; \
-    print('torch', torch.__version__, '| nunchaku', nunchaku.__version__, \
-    '| ort', onnxruntime.__version__, onnxruntime.get_available_providers())"
+# didn't install cleanly. Import the REAL class the engine uses (nunchaku has no __version__).
+# (GPU providers can't be verified here — no GPU at build; checked at runtime via the startup log.)
+RUN python -c "import torch, onnxruntime; \
+    from nunchaku import NunchakuQwenImageTransformer2DModel; from nunchaku.utils import get_precision; \
+    print('OK torch', torch.__version__, '| ort', onnxruntime.__version__, onnxruntime.get_available_providers())"
 
 # CRITICAL (unchanged from /detect): LD_LIBRARY_PATH must be set before python starts so the
 # dynamic linker finds the nvidia-cu12 .so files onnxruntime-gpu dlopens. torch installs its

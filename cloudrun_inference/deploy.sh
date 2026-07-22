@@ -68,8 +68,9 @@ gcloud run deploy "${SERVICE}" \
     --no-gpu-zonal-redundancy \
     --memory 32Gi --cpu 8 \
     --concurrency 1 \
-    --set-env-vars="QWEN_QUANT=nunchaku,FSV_WORKING_RES=1280" \
+    --set-env-vars="QWEN_QUANT=nunchaku,FSV_WORKING_RES=1024,QWEN_STEPS=20,QWEN_RESIDENCY=resident" \
     --clear-volumes --clear-volume-mounts \
+    --cpu-boost \
     --min-instances 0 --max-instances 1 \
     --region "${REGION}" \
     --allow-unauthenticated \

@@ -17,8 +17,18 @@ function initFenceSimulator(rootElement) {
   });
 
   const CONFIG = {
+    // Detect + render live on the SAME service (fsv-dinov3-v2). GPU quota = 1, so a warm detect
+    // service would hold the only L4 and starve render — they must share one instance.
     MODAL_ENDPOINT:
-      "https://fsv-dinov3-467125191853.us-central1.run.app/detect",
+      "https://fsv-dinov3-v2-467125191853.us-central1.run.app/detect",
+    // GPU photorealistic restain (Qwen). "Apply Stain" POSTs the ORIGINAL photo + the FINAL
+    // post-processed mask (same mask the instant recolor uses) + the chosen colour here; the
+    // server uses that mask as-is (no re-segmentation) for the colour-lock + fence-only composite.
+    RENDER_ENDPOINT:
+      "https://fsv-dinov3-v2-467125191853.us-central1.run.app/render",
+    // Resolution the photo + mask are sent to /render at (also the output resolution). The fence is
+    // rendered at the server's working res then Lanczos-composited back at this size.
+    RENDER_MAX_DIM: 1536,
   UPLOAD_MAX_DIM: 1024,
   UPLOAD_JPEG_QUALITY: 0.85,
 
@@ -128,6 +138,12 @@ let originalImage = null;
 let maskData = null;
 
 let cleanedImageData = null;
+
+// Cached Qwen-renovated result (fresh wood, weathering gone) + a mask aligned to it, so colour
+// changes recolour the RENOVATED wood instantly (exact LAB colour-lock) instead of blending the
+// weathered original. Set on Apply Stain (/render); cleared on new image / re-detect.
+let renovatedImageData = null;
+let renovatedMask = null;
 
 let resultState = "original";
 
@@ -1257,10 +1273,177 @@ async function previewStain() {
     await detectFence();
     if (!maskData) return;
   }
-  await recolorFence({
-    loadingMessage: "Applying stain...",
+  await renovateFence({
+    loadingMessage: "Applying stain (photorealistic)...",
     successMessage: "Stain applied!",
   });
+}
+
+/* Photorealistic "Apply Stain": POST the ORIGINAL photo + the FINAL post-processed mask (the exact
+ * mask the instant recolor uses, after all pre/multi-pass/post-processing) + the chosen colour to
+ * the GPU renderer (/render). The server does NOT re-segment: it renovates the wood with Qwen, then
+ * colour-locks to the swatch and composites the fence back over the photo using THIS mask. The
+ * instant client-side colour-blend (recolorFence) is untouched -- it stays the live colour preview. */
+async function renovateFence({
+  loadingMessage = "Applying stain...",
+  successMessage = "Stain applied!",
+} = {}) {
+  if (!originalImage || !maskData) return;
+  if (!CONFIG.RENDER_ENDPOINT) {
+    updateStatus("Render endpoint not configured.", "error");
+    return;
+  }
+  showLoading(loadingMessage);
+  updateStatus(loadingMessage, "loading");
+  try {
+    const W = originalImage.width, H = originalImage.height;
+    const maxDim = CONFIG.RENDER_MAX_DIM || 1536;
+    const scale = Math.min(1, maxDim / Math.max(W, H));
+    const dw = Math.max(1, Math.round(W * scale));
+    const dh = Math.max(1, Math.round(H * scale));
+
+    // Original photo -> JPEG blob at the send resolution.
+    const ic = document.createElement("canvas");
+    ic.width = dw; ic.height = dh;
+    ic.getContext("2d").drawImage(originalImage, 0, 0, dw, dh);
+    const imgBlob = await new Promise((res) => ic.toBlob(res, "image/jpeg", 0.92));
+
+    // FINAL mask (Float32 [0,1] at native res) -> grayscale PNG, scaled to the send resolution.
+    const nc = document.createElement("canvas");
+    nc.width = W; nc.height = H;
+    const nctx = nc.getContext("2d");
+    const mImg = nctx.createImageData(W, H);
+    const md = mImg.data;
+    for (let i = 0, n = maskData.length; i < n; i++) {
+      let v = maskData[i];
+      v = v < 0 ? 0 : v > 1 ? 1 : v;
+      const g = (v * 255) | 0, j = i * 4;
+      md[j] = g; md[j + 1] = g; md[j + 2] = g; md[j + 3] = 255;
+    }
+    nctx.putImageData(mImg, 0, 0);
+    const mc = document.createElement("canvas");
+    mc.width = dw; mc.height = dh;
+    mc.getContext("2d").drawImage(nc, 0, 0, dw, dh);
+    const maskBlob = await new Promise((res) => mc.toBlob(res, "image/png"));
+
+    const fd = new FormData();
+    fd.append("image", imgBlob, "fence.jpg");
+    fd.append("mask", maskBlob, "mask.png");
+    fd.append("colorHex", selectedColor);
+    fd.append("family", "general");
+
+    const resp = await fetch(CONFIG.RENDER_ENDPOINT, { method: "POST", body: fd });
+    if (!resp.ok) {
+      const t = await resp.text().catch(() => "");
+      throw new Error(`server ${resp.status} ${t.slice(0, 160)}`);
+    }
+    const outBlob = await resp.blob();
+    const bmp = await createImageBitmap(outBlob);
+    const rctx = resultCanvas.getContext("2d");
+    resultCanvas.width = bmp.width;
+    resultCanvas.height = bmp.height;
+    rctx.drawImage(bmp, 0, 0);
+    if (bmp.close) bmp.close();
+
+    // Cache the renovated result + a mask scaled to it, so later colour changes recolour THIS fresh
+    // wood instantly (exact LAB colour-lock) instead of blending the weathered original.
+    renovatedImageData = rctx.getImageData(0, 0, resultCanvas.width, resultCanvas.height);
+    const rmc = document.createElement("canvas");
+    rmc.width = resultCanvas.width;
+    rmc.height = resultCanvas.height;
+    const rmctx = rmc.getContext("2d");
+    rmctx.drawImage(nc, 0, 0, rmc.width, rmc.height);   // nc = native-res mask canvas built above
+    const rmd = rmctx.getImageData(0, 0, rmc.width, rmc.height).data;
+    renovatedMask = new Float32Array(resultCanvas.width * resultCanvas.height);
+    for (let i = 0; i < renovatedMask.length; i++) renovatedMask[i] = rmd[i * 4] / 255;
+
+    setDownloadEnabled(true);
+    updateStatus(successMessage, "success");
+    resultState = cleanedImageData ? "cleaned_stained" : "stained";
+    applyResultHeader();
+    showCompareButton();
+    showCoachTip();
+  } catch (e) {
+    console.error("[fsv] renovate (/render) failed:", e);
+    updateStatus(
+      "Couldn't apply stain: " + (e && e.message ? e.message : e),
+      "error",
+    );
+  } finally {
+    hideLoading();
+  }
+}
+
+/* --- Instant, exact-colour recolour of the cached RENOVATED wood (the Apply Stain result) --- */
+/* sRGB <-> CIELAB (D65): keep each fence pixel's fresh-wood LUMINANCE while setting its chroma to the
+ * exact swatch, so the masked median colour equals the swatch (dE ~ 0). */
+function _srgbToLin(c) {
+  c /= 255;
+  return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+}
+function _linToSrgb(c) {
+  const v = c <= 0.0031308 ? c * 12.92 : 1.055 * Math.pow(c, 1 / 2.4) - 0.055;
+  return v <= 0 ? 0 : v >= 1 ? 255 : v * 255;
+}
+function _rgb2lab(r, g, b) {
+  const R = _srgbToLin(r), G = _srgbToLin(g), B = _srgbToLin(b);
+  const x = (R * 0.4124564 + G * 0.3575761 + B * 0.1804375) / 0.95047;
+  const y = R * 0.2126729 + G * 0.7151522 + B * 0.072175;
+  const z = (R * 0.0193339 + G * 0.119192 + B * 0.9503041) / 1.08883;
+  const f = (t) => (t > 0.008856 ? Math.cbrt(t) : 7.787 * t + 0.137931034);
+  const fx = f(x), fy = f(y), fz = f(z);
+  return [116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)];
+}
+function _lab2rgb(L, a, b) {
+  const fy = (L + 16) / 116, fx = fy + a / 500, fz = fy - b / 200;
+  const fi = (t) => {
+    const t3 = t * t * t;
+    return t3 > 0.008856 ? t3 : (t - 0.137931034) / 7.787;
+  };
+  const x = fi(fx) * 0.95047, y = fi(fy), z = fi(fz) * 1.08883;
+  const R = x * 3.2404542 + y * -1.5371385 + z * -0.4985314;
+  const G = x * -0.969266 + y * 1.8760108 + z * 0.041556;
+  const B = x * 0.0556434 + y * -0.2040259 + z * 1.0572252;
+  return [_linToSrgb(R), _linToSrgb(G), _linToSrgb(B)];
+}
+/* Recolour the cached renovated wood to `selectedColor`: keep each masked pixel's luminance (fresh
+ * grain), set chroma to the swatch, re-centre luminance on the swatch's L. Median colour == swatch
+ * => exact colour (dE ~ 0), realistic. Draws to resultCanvas. Returns true on success. */
+function _recolorRenovated() {
+  const base = renovatedImageData, mask = renovatedMask;
+  if (!base || !mask) return false;
+  const W = base.width, H = base.height, N = W * H;
+  const out = new ImageData(new Uint8ClampedArray(base.data), W, H);
+  const data = out.data;
+  const rgb = hexToRgb(selectedColor);
+  const sw = _rgb2lab(rgb.r, rgb.g, rgb.b);
+  const sa = sw[1], sb = sw[2], tgtL = sw[0];
+  const Ls = [];
+  for (let i = 0; i < N; i++) {
+    if (mask[i] > 0.5) {
+      const j = i * 4;
+      Ls.push(_rgb2lab(data[j], data[j + 1], data[j + 2])[0]);
+    }
+  }
+  if (!Ls.length) return false;
+  Ls.sort((p, q) => p - q);
+  const medL = Ls[Ls.length >> 1];
+  for (let i = 0; i < N; i++) {
+    if (mask[i] > 0.5) {
+      const j = i * 4;
+      const lab = _rgb2lab(data[j], data[j + 1], data[j + 2]);
+      let Ln = tgtL + (lab[0] - medL);
+      Ln = Ln < 0 ? 0 : Ln > 100 ? 100 : Ln;
+      const nr = _lab2rgb(Ln, sa, sb);
+      data[j] = nr[0];
+      data[j + 1] = nr[1];
+      data[j + 2] = nr[2];
+    }
+  }
+  resultCanvas.width = W;
+  resultCanvas.height = H;
+  resultCanvas.getContext("2d").putImageData(out, 0, 0);
+  return true;
 }
 
 fileInput.addEventListener("change", handleImageUpload);
@@ -1317,6 +1500,18 @@ uploadSection.addEventListener("drop", (e) => {
   }
 });
 
+/* Fire-and-forget wake ping. GET / starts a cold Cloud Run instance; the server now opens its
+ * port in ~25s (detect-ready) and warms Qwen in a BACKGROUND thread, so pinging on photo select
+ * means the ~2min render warm-up overlaps the time the user spends masking + picking a colour
+ * instead of starting when they click Apply Stain. Idempotent and free — re-pinging a warm
+ * instance is a no-op health hit. */
+function warmBackend() {
+  try {
+    const url = CONFIG.MODAL_ENDPOINT.replace(/\/detect\/?$/, "/");
+    fetch(url, { method: "GET", cache: "no-store", keepalive: true }).catch(() => {});
+  } catch (e) {}
+}
+
 function handleImageUpload(event) {
   const file = event.target.files[0];
   if (file) {
@@ -1325,6 +1520,7 @@ function handleImageUpload(event) {
 }
 
 function handleImageFile(file) {
+  warmBackend();   // re-arm the backend in case it idled out while the user browsed
   if (file.size > 10 * 1024 * 1024) {
     updateStatus("File too large! Max 10MB", "error");
     return;
@@ -1336,6 +1532,8 @@ function handleImageFile(file) {
     img.onload = () => {
       maskData = null;
       cleanedImageData = null;
+      renovatedImageData = null;
+      renovatedMask = null;
       resultState = "original";
       const mctx = maskCanvas.getContext("2d");
       const rctx = resultCanvas.getContext("2d");
@@ -2449,6 +2647,8 @@ async function detectFence() {
     if (!_hasAnyFence(maskData)) {
       drawMask(maskData);
       maskData = null;
+      renovatedImageData = null;
+      renovatedMask = null;
       recolorBtn.disabled = true;
       updateStatus(
         "No fence detected in this photo. Please try a clearer photo of the fence.",
@@ -6205,6 +6405,27 @@ async function recolorFence({
 } = {}) {
   if (!originalImage || !maskData) return;
 
+  // Realistic instant recolour: once Apply Stain has produced a Qwen-renovated result, re-colour-lock
+  // THAT fresh wood to the new swatch (exact colour, keeps the renovated grain) — never re-touch the
+  // weathered original. No server call. Falls through to the legacy blend only if nothing renovated.
+  if (renovatedImageData && renovatedMask) {
+    showLoading(loadingMessage);
+    updateStatus(loadingMessage, "loading");
+    await new Promise((r) => setTimeout(r, 30)); // let the loader paint before the sync LAB pass
+    try {
+      _recolorRenovated();
+      setDownloadEnabled(true);
+      updateStatus(successMessage, "success");
+      resultState = "stained";
+      applyResultHeader();
+      showCompareButton();
+      showCoachTip();
+    } finally {
+      hideLoading();
+    }
+    return;
+  }
+
   showLoading(loadingMessage);
   updateStatus(loadingMessage, "loading");
 
@@ -6446,6 +6667,8 @@ async function reset() {
     originalImage = null;
     maskData = null;
     cleanedImageData = null;
+    renovatedImageData = null;
+    renovatedMask = null;
     resultState = "original";
 
     const ctx1 = originalCanvas.getContext("2d");

@@ -33,8 +33,9 @@ gcloud run deploy $SERVICE `
     --image $IMAGE `
     --gpu 1 --gpu-type nvidia-l4 --no-gpu-zonal-redundancy `
     --memory 32Gi --cpu 8 --concurrency 1 `
-    --set-env-vars="QWEN_QUANT=nunchaku,FSV_WORKING_RES=1280" `
+    --set-env-vars="QWEN_QUANT=nunchaku,FSV_WORKING_RES=1024,QWEN_STEPS=20,QWEN_RESIDENCY=resident" `
     --clear-volumes --clear-volume-mounts `
+    --cpu-boost `
     --min-instances 0 --max-instances 1 `
     --region $REGION --allow-unauthenticated --port 8080 `
     --timeout 3600s --execution-environment gen2 --no-cpu-throttling `
