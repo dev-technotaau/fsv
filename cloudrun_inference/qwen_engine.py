@@ -51,6 +51,40 @@ def _default_cfg() -> float:
     return float(v) if v else (1.0 if _lightning_active else 4.0)
 
 
+def _place_all_on_gpu(pipe) -> list[str]:
+    """Move every torch component of `pipe` to CUDA and install NO offload hooks.
+
+    Used by QWEN_RESIDENCY=gpu. Deliberately per-component rather than `pipe.to('cuda')`, which on
+    a pipeline holding a bitsandbytes 4-bit text encoder goes through DiffusionPipeline.to() and
+    refuses to move quantized modules wholesale. Moving the 4-bit module directly is the supported
+    path (bnb Params4bit.to(cuda), permitted for 4-bit on bitsandbytes >= 0.43.2).
+
+    Components already on CUDA are skipped by an explicit device probe, NOT by name. That matters
+    for the transformer: it is normally already in VRAM (from_pretrained(device='cuda')), but
+    _load_locked() has a fallback that loads it on the CPU when that kwarg is unsupported. Skipping
+    it by name would leave that CPU copy stranded with no offload hooks to fetch it, and every
+    render would die on a device mismatch.
+
+    Raises on the first failure so the caller can fall back to the proven offload configuration.
+    Returns the names of the components it moved.
+    """
+    import torch
+    moved: list[str] = []
+    for name, comp in pipe.components.items():
+        if comp is None or not isinstance(comp, torch.nn.Module):
+            continue                       # tokenizers, schedulers, processors
+        # Probe params AND buffers: quantized modules keep most of their weight in buffers, so a
+        # parameters()-only probe can report "no device" for a module that is already resident.
+        dev = next((t.device for t in comp.parameters()), None)
+        if dev is None:
+            dev = next((t.device for t in comp.buffers()), None)
+        if dev is not None and dev.type == "cuda":
+            continue
+        comp.to("cuda")
+        moved.append(name)
+    return moved
+
+
 def load():
     """Build the pipeline once. Safe to call repeatedly and from multiple threads."""
     global _pipe
@@ -148,6 +182,19 @@ def _load_locked():
     # bnb model. Only bf16 (quant=none) may use .to('cuda').
     #
     # QWEN_RESIDENCY (nunchaku only) controls how the 12.7GB INT4 DiT is placed:
+    #   gpu      — BIG-GPU ONLY (>=38GiB VRAM, e.g. L40S/A100-40GB). NOTHING is offloaded: the DiT,
+    #            the 4-bit text encoder and the VAE all stay in VRAM for the container's whole life,
+    #            so no weights cross PCIe during a render. Every other mode below still shuttles the
+    #            ~5GB NF4 text encoder CPU->GPU->CPU on EVERY call; a per-render-time-vs-output-pixels
+    #            fit across three measured renders put that fixed, non-scaling cost at ~1.2s
+    #            (intercept 1.2s, slope 27.6us/px). That was an unavoidable tax at Cloud Run's 32Gi
+    #            host cap, but on a 48GB L40S there is nothing to gain by evicting it: DiT 12.7 +
+    #            TE ~5 + VAE 0.3 + the DINOv3 ONNX session (2.7GB of weights, but its CUDA arena
+    #            grows to ~5GB in practice) puts steady state near 23GB, and the peak does NOT rise
+    #            versus `resident` because the TE was already co-resident with the DiT during prompt
+    #            encoding there. Roughly 25GB of headroom either way.
+    #            Guarded: if the card is under 38GiB this silently downgrades to `resident`, and any
+    #            failure to move a component falls back to `resident` too — never left half-placed.
     #   resident (DEFAULT, REQUIRED on Cloud Run's 32Gi host) — pipe._exclude_from_cpu_offload keeps
     #            the DiT on the GPU for the WHOLE render; only TE + VAE offload. This is the only mode
     #            that survives 32Gi: with plain offload, nunchaku mmaps the 12.7GB weights (those file
@@ -161,8 +208,34 @@ def _load_locked():
     #   pinned   — DO NOT USE at 32Gi: pins a SECOND 12.7GB copy in locked pages -> load-time OOM
     #            (rev 00011). Needs >40Gi.
     residency = os.environ.get("QWEN_RESIDENCY", "resident")
+    if residency == "gpu":
+        # Downgrade rather than OOM if someone sets gpu on a small card (an L4 is 24GiB; the
+        # smallest sane target, A100-40GB, reports ~39.4GiB — hence the 38 threshold).
+        try:
+            vram_gib = torch.cuda.get_device_properties(0).total_memory / (1 << 30)
+        except Exception as e:
+            vram_gib = 0.0
+            log.warning("[qwen] could not read VRAM size (%s); treating residency=gpu as unsafe", e)
+        if vram_gib < 38:
+            log.warning("[qwen] residency=gpu needs >=38GiB VRAM but this GPU has %.1fGiB — "
+                        "downgrading to residency=resident", vram_gib)
+            residency = "resident"
+
     if quant == "none" and os.environ.get("QWEN_FULL") == "1":
         pipe.to("cuda")
+    elif quant == "nunchaku" and residency == "gpu":
+        # No offload hooks at all. The DiT is already in VRAM (device='cuda' above); move the
+        # remaining components there too so a render is pure compute, no PCIe weight traffic.
+        try:
+            moved = _place_all_on_gpu(pipe)
+            log.info("[qwen] residency=gpu (no offload hooks; %s resident in VRAM; "
+                     "no per-render PCIe weight traffic)", ", ".join(moved) or "transformer only")
+        except Exception as e:
+            # Half-placed is worse than offloaded: enable_model_cpu_offload() re-places EVERY
+            # component itself, so this recovers the known-good configuration completely.
+            log.warning("[qwen] residency=gpu placement failed (%s); falling back to resident", e)
+            pipe._exclude_from_cpu_offload.append("transformer")
+            pipe.enable_model_cpu_offload()
     elif quant == "nunchaku" and residency == "resident":
         pipe._exclude_from_cpu_offload.append("transformer")
         pipe.enable_model_cpu_offload()
@@ -189,6 +262,143 @@ def _load_locked():
 
 
 _DEFAULT_VAE_AREA = 1024 * 1024   # diffusers' hardcoded output/condition area when no dims passed
+
+# CFG batching (QWEN_CFG_BATCH=1). Tri-state, module-level so the one-off correctness check below
+# runs once per CONTAINER, not once per render: None = not yet verified, True = verified equivalent,
+# False = verified different (or it threw) => permanently off for this process.
+_cfg_batch_ok = None
+
+
+class _CfgBatcher:
+    """Fuse each denoise step's two CFG transformer forwards into one batch-2 forward.
+
+    WHY. true_cfg_scale=4.0 makes diffusers run the transformer TWICE per step — once with the
+    positive prompt, once with the negative (pipeline_qwenimage_edit_plus.py lines 800-827 in
+    0.36.0) — sequentially. 16 steps = 32 forwards. Both calls use the SAME hidden_states and
+    differ only in the text conditioning, so they can go through as one batch of 2: same FLOPs,
+    but half the kernel launches and better arithmetic intensity per launch. This is the one thing
+    the L40S's spare VRAM actually buys in wall-clock terms; expect ~10-20%, not 2x, because a
+    batch-1 forward at ~3k latent tokens already keeps the SMs busy.
+
+    HOW, without forking the 43KB pipeline. We wrap transformer.forward instead of the denoise
+    loop. The positive and negative embeds are FIXED across steps, so:
+      step 0  - cond call: we have not seen the negative embeds yet -> run it alone, remember the
+                positive tensor's identity. uncond call: a second, different embeds tensor arrives
+                -> that IS the negative; remember it and run alone.
+      step 1+ - cond call: both are known -> run the batched forward, hand back the positive half
+                and stash the negative half. uncond call: return the stash.
+    So 15 of 16 steps are batched and the pipeline is untouched.
+
+    CORRECTNESS. encode_prompt pads only within its own batch, and it is called once per prompt,
+    so the positive and negative embeds have DIFFERENT sequence lengths. Batching therefore pads
+    both to a common length; the zero padding is inert only if the transformer honours
+    encoder_hidden_states_mask and txt_seq_lens. Diffusers' own transformer does. Nunchaku's INT4
+    one is a separate implementation and is NOT verified here, so the first batched step also runs
+    the two forwards the old way and compares. If they diverge beyond bf16 reduction-order noise,
+    batching disables itself for the process and logs loudly. Cost: two extra forwards, once per
+    container. Any exception anywhere disables it the same way.
+    """
+
+    REL_TOL = 0.05      # batching only reorders reductions; a broken mask shows up ~1.0 relative
+
+    def __init__(self, transformer):
+        self._inner = transformer.forward      # bound BEFORE patching => calls the real thing
+        self._pos = None                       # identity of the positive embeds tensor
+        self._neg = None                       # (embeds, mask, txt_seq_lens) of the negative
+        self._stash = None                     # negative half of the current step's batched output
+        self.batched_steps = 0
+
+    def __call__(self, *args, **kw):
+        global _cfg_batch_ok
+        if args or _cfg_batch_ok is False:      # positional call => unknown shape, don't touch it
+            return self._inner(*args, **kw)
+        ehs = kw.get("encoder_hidden_states")
+        if ehs is None:
+            return self._inner(**kw)
+
+        if self._neg is not None and ehs is self._neg[0]:        # the uncond call
+            if self._stash is not None:
+                out, self._stash = self._stash, None
+                return (out,)
+            return self._inner(**kw)
+        if self._pos is None:                                     # step 0 cond: learn the positive
+            self._pos = ehs
+            return self._inner(**kw)
+        if self._neg is None:                                     # step 0 uncond: learn the negative
+            self._neg = (ehs, kw.get("encoder_hidden_states_mask"), kw.get("txt_seq_lens"))
+            return self._inner(**kw)
+        if ehs is not self._pos:                                  # unexpected third conditioning
+            return self._inner(**kw)
+
+        try:
+            pos_out, neg_out = self._forward_batched(kw)
+            if _cfg_batch_ok is None:
+                _cfg_batch_ok = self._verify(kw, pos_out, neg_out)
+                if not _cfg_batch_ok:
+                    return self._inner(**kw)
+            self._stash = neg_out
+            self.batched_steps += 1
+            return (pos_out,)
+        except Exception as e:
+            _cfg_batch_ok = False
+            log.warning("[qwen] CFG batching failed (%s); reverting to sequential CFG", e)
+            self._stash = None
+            return self._inner(**kw)
+
+    def _forward_batched(self, kw):
+        import torch
+        neg_ehs, neg_mask, neg_lens = self._neg
+        pos_ehs = kw["encoder_hidden_states"]
+        seq = max(pos_ehs.shape[1], neg_ehs.shape[1])
+
+        def pad(t):                                   # (1, L, ...) -> (1, seq, ...), zero-filled
+            if t is None or t.shape[1] == seq:
+                return t
+            return torch.cat([t, t.new_zeros(t.shape[0], seq - t.shape[1], *t.shape[2:])], dim=1)
+
+        def dup(t):                                   # (1, ...) -> (2, ...)
+            return t if t is None or t.shape[0] != 1 else torch.cat([t, t], dim=0)
+
+        b = dict(kw)
+        b["hidden_states"] = dup(kw["hidden_states"])
+        b["encoder_hidden_states"] = torch.cat([pad(pos_ehs), pad(neg_ehs)], dim=0)
+        pos_mask = kw.get("encoder_hidden_states_mask")
+        if pos_mask is not None and neg_mask is not None:
+            b["encoder_hidden_states_mask"] = torch.cat([pad(pos_mask), pad(neg_mask)], dim=0)
+        for k in ("timestep", "guidance"):
+            if kw.get(k) is not None:
+                b[k] = dup(kw[k])
+        shapes = kw.get("img_shapes")
+        if isinstance(shapes, list) and len(shapes) == 1:
+            b["img_shapes"] = shapes * 2
+        pos_lens = kw.get("txt_seq_lens")
+        if pos_lens is not None and neg_lens is not None:
+            b["txt_seq_lens"] = list(pos_lens) + list(neg_lens)
+
+        out = self._inner(**b)[0]
+        return out[0:1], out[1:2]
+
+    def _verify(self, kw, pos_out, neg_out):
+        """One-off: recompute both halves the sequential way and compare. Returns True to keep
+        batching. Relative, because the absolute scale of the noise prediction varies by step."""
+        neg_ehs, neg_mask, neg_lens = self._neg
+        ref_pos = self._inner(**kw)[0]
+        neg_kw = dict(kw)
+        neg_kw.update(encoder_hidden_states=neg_ehs, encoder_hidden_states_mask=neg_mask,
+                      txt_seq_lens=neg_lens)
+        ref_neg = self._inner(**neg_kw)[0]
+        scale = max(float(ref_pos.abs().max()), float(ref_neg.abs().max()), 1e-6)
+        rel = max(float((pos_out - ref_pos).abs().max()),
+                  float((neg_out - ref_neg).abs().max())) / scale
+        if rel > self.REL_TOL:
+            log.warning("[qwen] CFG batching changes the prediction (rel diff %.3f > %.3f) — the "
+                        "transformer is not honouring encoder_hidden_states_mask for padded "
+                        "batches. Disabling; renders stay sequential and identical to before.", rel,
+                        self.REL_TOL)
+            return False
+        log.info("[qwen] CFG batching verified equivalent (rel diff %.4f); batching 2 forwards/step",
+                 rel)
+        return True
 
 
 def renovate(image_pil, tone: str = "warm reddish cedar brown",
@@ -234,9 +444,32 @@ def renovate(image_pil, tone: str = "warm reddish cedar brown",
     # No-op it for the duration of the pipe call; restore + flush once after.
     _ec = torch.cuda.empty_cache
     torch.cuda.empty_cache = lambda: None
+
+    # CFG batching: patch transformer.forward for the duration of this call only. A fresh _CfgBatcher
+    # per render is deliberate — it holds tensor identities that belong to THIS pipe() call, so it
+    # must not outlive it. The verified/disabled verdict is module-level and does persist, so the
+    # one-off equivalence check runs once per container. Off unless QWEN_CFG_BATCH=1: it needs the
+    # extra activation memory of a batch-2 forward, which is free on a 48GB L40S and is not on a
+    # 24GB L4. Caller holds app._qwen_lock, so patching a shared attribute here is safe.
+    batcher = None
+    if cfg > 1.0 and os.environ.get("QWEN_CFG_BATCH", "0") == "1" and _cfg_batch_ok is not False:
+        try:
+            batcher = _CfgBatcher(pipe.transformer)
+            pipe.transformer.forward = batcher
+        except Exception as e:
+            log.warning("[qwen] could not install CFG batching (%s); using sequential CFG", e)
+            batcher = None
     try:
         out = pipe(**kwargs).images[0]
     finally:
+        if batcher is not None:
+            try:
+                del pipe.transformer.forward      # unshadow the real bound method
+            except Exception:
+                pipe.transformer.forward = batcher._inner
+            if batcher.batched_steps:
+                log.info("[qwen] CFG-batched %d of %d steps", batcher.batched_steps,
+                         kwargs["num_inference_steps"])
         torch.cuda.empty_cache = _ec
         _ec()
     return out

@@ -41,6 +41,19 @@ def color_lock(fence_rgb: np.ndarray, mask: np.ndarray, swatch_hex: str,
     return cv2.cvtColor(np.clip(lab, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB)
 
 
+# Padding finish() adds to a caller-supplied bbox, so bbox equivalence never silently depends on
+# the caller having added its own margin. TWICE composite()'s Gaussian radius, and both halves are
+# load-bearing:
+#   * cv2 derives ksize from sigma as 4*sigma each way for CV_32F, so the feather reaches 8px past
+#     the mask edge -> the first 8px keep those pixels inside the slice at all;
+#   * blurring a SLICE reflects at its border (BORDER_REFLECT_101) instead of reading the real
+#     neighbourhood, so the outermost 8px of the slice would come out ~1 LSB different -> the
+#     second 8px push that reflected ring out to where the binary mask is provably all zero.
+# Verified: at 8 the tight-bbox cases differ by maxdiff=1; at 16 they are bit-identical.
+# Bump this if composite()'s default feather_px ever changes.
+_FEATHER_PAD = 16           # = 2 * ceil(4 * composite()'s default feather_px of 2.0)
+
+
 def composite(original_rgb: np.ndarray, fence_rgb: np.ndarray, mask: np.ndarray,
               feather_px: float = 2.0) -> np.ndarray:
     """fence pixels from fence_rgb, everything else pixel-identical to original_rgb."""
@@ -51,9 +64,23 @@ def composite(original_rgb: np.ndarray, fence_rgb: np.ndarray, mask: np.ndarray,
 
 
 def finish(original_rgb: np.ndarray, renovated_rgb: np.ndarray, mask: np.ndarray,
-           swatch_hex: str, contrast: float = 1.0, chroma_retain: float = 0.0) -> np.ndarray:
+           swatch_hex: str, contrast: float = 1.0, chroma_retain: float = 0.0,
+           bbox: tuple[int, int, int, int] | None = None) -> np.ndarray:
     """Full finisher: resize render to original, color-lock the fence, composite over original.
-    mask is a float [0,1] map at the ORIGINAL resolution."""
+    mask is a float [0,1] map at the ORIGINAL resolution.
+
+    bbox = (y0, x0, y1, x1), optional. A rectangle that is GUARANTEED to contain every mask pixel.
+    When given, the colour-lock and composite run on that rectangle only instead of the whole
+    photo, and the result is pasted into a copy of the original. Outside the rectangle the mask is
+    0, so today's full-frame code already emits the original pixels there verbatim — the output is
+    unchanged, we just stop paying for two full-image LAB conversions and a full-image Gaussian
+    blur over pixels that cannot move. The saving is (1 - bbox_area/photo_area) of this stage;
+    callers that render a fence crop already have the rectangle. Pass None for full-frame.
+
+    The rectangle is grown by _FEATHER_PAD before slicing so a caller may pass a bbox that is
+    exactly TIGHT around the mask: composite() feathers the mask edge with a Gaussian, which reads
+    a few pixels beyond it, and the padding covers that reach. Without the padding, equivalence
+    would silently depend on the caller happening to add its own margin."""
     H, W = original_rgb.shape[:2]
     if renovated_rgb.shape[:2] != (H, W):
         # The render is smaller than the photo -> UPSCALE with Lanczos to keep the wood grain sharp.
@@ -61,6 +88,26 @@ def finish(original_rgb: np.ndarray, renovated_rgb: np.ndarray, mask: np.ndarray
         upscaling = (H * W) > (renovated_rgb.shape[0] * renovated_rgb.shape[1])
         interp = cv2.INTER_LANCZOS4 if upscaling else cv2.INTER_AREA
         renovated_rgb = cv2.resize(renovated_rgb, (W, H), interpolation=interp)
+
+    if bbox is not None:
+        y0, x0, y1, x1 = (int(v) for v in bbox)
+        y0, x0 = max(0, y0 - _FEATHER_PAD), max(0, x0 - _FEATHER_PAD)
+        y1, x1 = min(H, y1 + _FEATHER_PAD), min(W, x1 + _FEATHER_PAD)
+        if y1 - y0 > 0 and x1 - x0 > 0 and (y1 - y0, x1 - x0) != (H, W):
+            # ascontiguousarray only where it matters: cv2 wants a contiguous buffer, and a
+            # [y0:y1, x0:x1] slice is row-strided. original_rgb's slice goes to pure numpy float
+            # maths inside composite(), so it needs no copy. Each copy is bbox-sized, i.e. strictly
+            # cheaper than the full-image work it replaces.
+            sub_mask = np.ascontiguousarray(mask[y0:y1, x0:x1])
+            sub_ren = np.ascontiguousarray(renovated_rgb[y0:y1, x0:x1])
+            sub_locked = color_lock(sub_ren, sub_mask, swatch_hex,
+                                    contrast=contrast, chroma_retain=chroma_retain)
+            # astype(uint8) not .copy(): composite() always returns uint8, so this keeps the bbox
+            # path's dtype identical to the full-frame path's even if a caller hands us float input.
+            out = original_rgb.astype(np.uint8, copy=True)
+            out[y0:y1, x0:x1] = composite(original_rgb[y0:y1, x0:x1], sub_locked, sub_mask)
+            return out
+
     locked = color_lock(renovated_rgb, mask, swatch_hex, contrast=contrast, chroma_retain=chroma_retain)
     return composite(original_rgb, locked, mask)
 

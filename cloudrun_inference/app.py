@@ -62,6 +62,11 @@ IMAGENET_STD  = [0.229, 0.224, 0.225]
 # trained ~1MP); values <1024 (e.g. 896) trade a little sharpness for real speed.
 WORKING_RES = int(os.environ.get("FSV_WORKING_RES", "1024"))
 CROP_MAX_FRAC = float(os.environ.get("FSV_CROP_MAX_FRAC", "0.8"))  # >this bbox fraction => full frame
+# Response JPEG quality. Measured: the returned file is the SECOND biggest cost after
+# diffusion (a 3MB upload came back as a 2.84MB JPEG at q92, ~8s of network). q85 roughly
+# halves that with no visible difference — the wood detail comes from the render, not the
+# encoder. Env-tunable so it can be changed without rebuilding the image.
+JPEG_QUALITY = int(os.environ.get("FSV_JPEG_QUALITY", "85"))
 # contrast scales the luminance SPREAD (grain shadows, plank-gap depth, board-to-board variation)
 # for more realistic depth/shadow/contrast — dE-SAFE (the median colour stays the exact swatch).
 # general nudged 1.0 -> 1.08 (gentle; not aggressive). Override per-family via env if needed.
@@ -185,6 +190,36 @@ def _mem_mb() -> int:
     return -1
 
 
+def _vram() -> str:
+    """GPU memory in MB. Three different numbers, because they answer different questions:
+      used      - driver-level, WHOLE process: Qwen + the ONNX CUDA arena + the CUDA context.
+                  This is what nvidia-smi shows and the only one that tells you what GPU to buy.
+      peak_torch- torch's high-water ALLOCATED mark since the last reset, so per-render.
+      reserved  - what torch's caching allocator holds. Expect this to sit near the high-water mark
+                  and not fall: qwen_engine no-ops empty_cache() during a render on purpose, so
+                  freed blocks are kept for reuse rather than returned. High reserved is not a leak.
+    """
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            return "vram=n/a"
+        free, total = torch.cuda.mem_get_info()
+        return (f"vram_used={(total - free) >> 20}MB peak_torch={torch.cuda.max_memory_allocated() >> 20}MB "
+                f"reserved={torch.cuda.memory_reserved() >> 20}MB vram_total={total >> 20}MB")
+    except Exception:
+        return "vram=n/a"
+
+
+def _reset_vram_peak():
+    """Make peak_torch mean 'this render' rather than 'since the container started'."""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats()
+    except Exception:
+        pass
+
+
 def _drop_weight_cache():
     """Evict the baked weight files from the page cache once the model is loaded — the bytes now
     live in the model's own memory and the ~18GB of file cache (parts of it pinned by nunchaku's
@@ -236,17 +271,72 @@ def _prefetch_weights():
     logger.info(f"[startup] weight prefetch done ({len(paths)} files) in {time.time() - t0:.1f}s")
 
 
+# Throwaway denoise run at startup so the first REAL render doesn't pay one-time GPU costs.
+# Measured on the L40S: the same photo took 15.2s as a container's first render and 11.7s as its
+# fourth — identical output dims, ~3.5s of pure one-time cost. Loading the weights (what the warm
+# thread used to do on its own) does NOT trigger it: nunchaku's INT4 CUDA modules are loaded
+# lazily on first use, the attention backend is chosen on first call, and cuBLAS/cuDNN pick
+# algorithms and allocate workspaces on first call. All of that landed on whoever clicked first.
+# 512x512 not 1024x896: most of the cost is shape-independent (module load, backend selection), so
+# a small run captures it at a fraction of the time. Steps=2 because true_cfg_scale>1 makes each
+# step two transformer forwards — two steps is enough to exercise the loop, the scheduler and the
+# VAE decode.
+WARM_RENDER_PX = int(os.environ.get("FSV_WARM_RENDER_PX", "512"))   # 0 disables
+
+
+def _warm_render():
+    """Run one tiny render to force lazy GPU init. Best-effort: never fatal, never blocks readiness
+    on success of the render itself — a failure here only means the first user pays what they used
+    to pay. Takes _qwen_lock because renovate() patches module-level globals (VAE_IMAGE_SIZE and
+    torch.cuda.empty_cache) and documents that the caller must hold it."""
+    if WARM_RENDER_PX <= 0:
+        return
+    try:
+        t = time.time()
+        blank = PILImage.new("RGB", (WARM_RENDER_PX, WARM_RENDER_PX), (128, 110, 90))
+        with _qwen_lock:
+            qwen_engine.renovate(blank, steps=2, height=WARM_RENDER_PX, width=WARM_RENDER_PX)
+        logger.info(f"[startup] warm render ({WARM_RENDER_PX}px, 2 steps) in {time.time() - t:.1f}s "
+                    f"— first real render no longer pays lazy CUDA init  {_vram()}")
+    except Exception as e:
+        logger.warning(f"[startup] warm render failed ({e}); the first /render will be ~3.5s slower")
+
+
+def _warm_segmentation():
+    """One dummy /detect-shaped inference so the first REAL one doesn't pay lazy init.
+
+    Measured: first /detect on a fresh container 1131ms vs 335ms once warm. ORT defers cuDNN
+    algorithm selection and workspace allocation to the first run of a given input shape — and
+    under FSV_ORT_FAST=1 that first run is an EXHAUSTIVE benchmark of every conv algorithm, which
+    is markedly slower still. The shape is always INPUT_SIZE x INPUT_SIZE, so warming it once here
+    covers every subsequent request. Runs BEFORE the Qwen load because /detect is already being
+    served by the time this thread starts, and it needs no lock (Qwen owns _qwen_lock, not ORT)."""
+    try:
+        t = time.time()
+        _segment_native(np.zeros((INPUT_SIZE, INPUT_SIZE, 3), np.uint8))
+        logger.info(f"[startup] segmentation warmed in {time.time() - t:.1f}s")
+    except Exception as e:
+        logger.warning(f"[startup] segmentation warm failed ({e}); first /detect will be slower")
+
+
 def _warm_qwen():
     """Background Qwen warm — runs while the server is ALREADY serving /detect. A /render that
     arrives mid-warm simply blocks on _qwen_lock until the load finishes."""
     try:
         tw = time.time()
+        _warm_segmentation()
         with _qwen_lock:
             qwen_engine.load()
-        _qwen_ready.set()
         _drop_weight_cache()   # weights are in the model now; free ~18GB of cache headroom
-        logger.info(f"[startup] Qwen warmed in {time.time() - tw:.1f}s (background)  mem={_mem_mb()}MB")
+        logger.info(f"[startup] Qwen loaded in {time.time() - tw:.1f}s (background)  mem={_mem_mb()}MB")
+        # Only NOW is the service genuinely fast, so qwen_ready flips after this rather than after
+        # the load — the frontend polls that flag to decide the user won't hit a slow first render.
+        _warm_render()
+        _qwen_ready.set()
+        logger.info(f"[startup] Qwen warm complete in {time.time() - tw:.1f}s  mem={_mem_mb()}MB")
     except Exception as e:
+        # Deliberately leave qwen_ready false, as before: /render still lazy-loads and sets the flag
+        # itself, and reporting "ready" for a model that failed to load would be a lie.
         logger.warning(f"[startup] Qwen warm failed ({e}); will lazy-load on first /render")
 
 
@@ -262,15 +352,32 @@ async def lifespan(app: FastAPI):
     t0 = time.time()
     opts = ort.SessionOptions()
     opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-    # Seg stays on GPU (DINOv3L, fp32, unchanged). Keep onnxruntime LEAN so Qwen fits beside it on
-    # the 24GB L4: kSameAsRequested (no arena doubling) + no cudnn max-workspace hold ORT to its
-    # true measured working set ~5.3GB (2.66GB weights + 2.7GB activations) instead of the ~6.2GB
-    # default. That ~0.9GB saving is what lets seg (5.3GB) + Qwen (15.7GB load peak) fit under
-    # 21.96GB — a thin but real ~0.9GB margin. NO gpu_mem_limit (a cap below 5.3GB would starve
-    # seg). If a render OOMs on VRAM, drop FSV_WORKING_RES to 768 to shrink Qwen's activations.
-    _cuda_opts = {"arena_extend_strategy": "kSameAsRequested",
-                  "cudnn_conv_use_max_workspace": "0",
-                  "cudnn_conv_algo_search": "HEURISTIC"}
+    # Seg stays on GPU (DINOv3L, fp32, unchanged). Two profiles, because this file is deployed
+    # VERBATIM to both a 24GB L4 (Cloud Run) and a 48GB L40S (Modal) and they want opposite things.
+    #
+    # LEAN (default, REQUIRED on the L4): kSameAsRequested (no arena doubling) + no cudnn
+    #   max-workspace hold ORT to its true measured working set ~5.3GB (2.66GB weights + 2.7GB
+    #   activations) instead of the ~6.2GB default. That ~0.9GB saving is what lets seg (5.3GB) +
+    #   Qwen (15.7GB load peak) fit under 21.96GB — a thin but real ~0.9GB margin. NO gpu_mem_limit
+    #   (a cap below 5.3GB would starve seg). If a render OOMs on VRAM, drop FSV_WORKING_RES.
+    #
+    # FAST (FSV_ORT_FAST=1, big-GPU only): lets ORT have what it actually wants. kNextPowerOfTwo is
+    #   ORT's own default arena growth; max-workspace + EXHAUSTIVE let cuDNN benchmark every conv
+    #   algorithm and keep the fastest instead of guessing from a heuristic. Costs VRAM (~1GB) and a
+    #   ONE-OFF benchmarking pass on the first inference of each input shape — the shape here is
+    #   always 512x512, so it happens once per container and _warm_render() absorbs it. Measured
+    #   steady-state /detect is ~335ms end to end, of which the ONNX run is a fraction, so expect
+    #   tens of milliseconds from this, not a step change. Do NOT set this on the L4.
+    if os.environ.get("FSV_ORT_FAST", "0") == "1":
+        _cuda_opts = {"arena_extend_strategy": "kNextPowerOfTwo",
+                      "cudnn_conv_use_max_workspace": "1",
+                      "cudnn_conv_algo_search": "EXHAUSTIVE"}
+        logger.info("[startup] ORT profile=FAST (max workspace + EXHAUSTIVE conv search)")
+    else:
+        _cuda_opts = {"arena_extend_strategy": "kSameAsRequested",
+                      "cudnn_conv_use_max_workspace": "0",
+                      "cudnn_conv_algo_search": "HEURISTIC"}
+        logger.info("[startup] ORT profile=LEAN (VRAM-capped; set FSV_ORT_FAST=1 on a >=40GB GPU)")
     _session = ort.InferenceSession(
         MODEL_FILE, sess_options=opts,
         providers=[("CUDAExecutionProvider", _cuda_opts), "CPUExecutionProvider"])
@@ -323,6 +430,8 @@ async def health():
         "channel_order": "RGB",
         "providers": _active_providers,
         "qwen_ready": _qwen_ready.is_set(),   # background warm finished => /render is instant-start
+        "host_mb": _mem_mb(),                 # cgroup usage — what the memory= limit meters
+        "gpu": _vram(),                       # right-size the GPU/RAM from real numbers, not guesses
     }
 
 
@@ -453,7 +562,8 @@ async def render(request: Request,
     # lock and the summed memory of dead + live requests is what OOMs a 32Gi instance.
     if await request.is_disconnected():
         raise HTTPException(499, "client disconnected before render")
-    logger.info(f"[render] pre-renovate mem={_mem_mb()}MB crop={frac:.2f} out={out_w}x{out_h}")
+    _reset_vram_peak()
+    logger.info(f"[render] pre-renovate mem={_mem_mb()}MB {_vram()} crop={frac:.2f} out={out_w}x{out_h}")
     with _qwen_lock:                              # concurrency=1 GPU + serialises the lazy first-load
         if await request.is_disconnected():       # re-check: we may have queued behind a long render
             raise HTTPException(499, "client disconnected while queued")
@@ -461,7 +571,7 @@ async def render(request: Request,
     if not _qwen_ready.is_set():
         _qwen_ready.set()                         # lazy first-load also counts as warmed
         _drop_weight_cache()
-    logger.info(f"[render] post-renovate mem={_mem_mb()}MB")
+    logger.info(f"[render] post-renovate mem={_mem_mb()}MB {_vram()}")
     t_ren = time.time()
 
     # Paste the renovated crop back into a full-size canvas; finish() color-locks + composites
@@ -471,11 +581,15 @@ async def render(request: Request,
     ren_np = cv2.resize(ren_np, (cw, ch), interpolation=interp)
     canvas = orig.copy()
     canvas[cy0:cy1, cx0:cx1] = ren_np
+    # bbox: every mask pixel is inside it by construction (it IS the mask bbox, grown by mg >= 32px,
+    # far more than the composite's 2px feather), so finish() emits a bit-identical image while
+    # skipping two full-image LAB conversions + a full-image blur over pixels that cannot change.
     final = cf.finish(orig, canvas, mask_arr, colorHex,
-                      contrast=FAMILY_CONTRAST.get(family, 1.08), chroma_retain=CHROMA_RETAIN)
+                      contrast=FAMILY_CONTRAST.get(family, 1.08), chroma_retain=CHROMA_RETAIN,
+                      bbox=(cy0, cx0, cy1, cx1))
     de = cf.delta_e_median(final, mask_arr, colorHex)
     buf = io.BytesIO()
-    PILImage.fromarray(final).save(buf, "JPEG", quality=92)
+    PILImage.fromarray(final).save(buf, "JPEG", quality=JPEG_QUALITY)
     logger.info(f"[render] {colorHex} {family} seg={int((t_seg-t0)*1000)}ms "
                 f"render={int((t_ren-t_seg)*1000)}ms total={int((time.time()-t0)*1000)}ms dE={de:.2f} "
                 f"crop={frac:.2f} out={out_w}x{out_h} mem={_mem_mb()}MB")

@@ -28,7 +28,12 @@ function initFenceSimulator(rootElement) {
       "https://fsv-dinov3-v2-467125191853.us-central1.run.app/render",
     // Resolution the photo + mask are sent to /render at (also the output resolution). The fence is
     // rendered at the server's working res then Lanczos-composited back at this size.
-    RENDER_MAX_DIM: 1536,
+    // 1536 -> 1280. NOTE this sets BOTH the upload size AND the final delivered
+    // image size: the server composites at whatever resolution we send. Measured
+    // ~8s of network on a large photo; 1280 cuts upload and download ~30% while
+    // still being ample for on-screen viewing and download. Raise back to 1536
+    // if a larger deliverable matters more than the seconds.
+    RENDER_MAX_DIM: 1280,
   UPLOAD_MAX_DIM: 1024,
   UPLOAD_JPEG_QUALITY: 0.85,
 
@@ -626,24 +631,6 @@ async function init() {
     _wasmInit().catch(() => {});
   }
 
-  /* Preload the SigLIP fence-gate model on page idle. ~95 MB one-time
-   * download, cached in IndexedDB forever after. Using
-   * requestIdleCallback (with setTimeout fallback) yields to the
-   * browser's critical-path work first so the initial paint /
-   * interactive aren't slowed. By the time the user uploads a photo,
-   * the model is typically already cached and ready, making the gate
-   * ~200 ms instead of ~10-20 s on cold network. _initFenceGate is
-   * idempotent, so this can run alongside the per-upload kickoff in
-   * handleImageFile with no double-work. */
-  if (typeof _initFenceGate === "function") {
-    const startGatePreload = () => _initFenceGate().catch(() => {});
-    if (typeof requestIdleCallback === "function") {
-      requestIdleCallback(startGatePreload, { timeout: 3000 });
-    } else {
-      setTimeout(startGatePreload, 1500);
-    }
-  }
-
   if (
     !CONFIG.MODAL_ENDPOINT ||
     CONFIG.MODAL_ENDPOINT.includes("YOUR-WORKSPACE")
@@ -686,590 +673,14 @@ async function init() {
   }
 }
 
-// ============================================================================
-// FENCE PRE-FILTER — client-side zero-shot OWLv2 object detector
-// ============================================================================
-// Decides whether an uploaded photo plausibly contains a wooden/cedar fence
-// BEFORE the server-side detection pipeline runs. Blocks obvious non-fence
-// uploads (selfies, food, interiors, vehicles, screenshots, etc.) AND the
-// harder "wood-textured-but-not-a-fence" cases (coffee cup on wooden table,
-// wooden stairs, wooden deck) that earlier classification-based gates could
-// not distinguish.
-//
-// Why detection (OWLv2) instead of classification (SigLIP/CLIP):
-//   Zero-shot CLASSIFICATION scores the whole image against text prompts.
-//   It confuses "small fence in busy scene" with "wood texture close-up"
-//   because the WHOLE-IMAGE wood-themed signal is similar.
-//   Zero-shot DETECTION (OWLv2) requires the model to LOCALIZE a fence,
-//   returning bounding boxes with scores. A coffee cup has no fence to
-//   find; a small fence behind pool umbrellas DOES.
-//
-// Model: Xenova/owlv2-base-patch16-ensemble (~150 MB quantized).
-// Cached in IndexedDB by transformers.js, instant on subsequent visits.
-//
-// See index4_dinov3.html for the full design discussion.
-
-const _FENCE_GATE = {
-  status: "uninit", // "uninit" | "loading" | "ready" | "unavailable"
-  worker: null,
-  workerUrl: null,
-  deviceUsed: null,
-  dtypeUsed: null,
-  loadPromise: null,
-  initStartMs: 0,
-  progressCb: null,
-  lastResult: null,
-  /* Per-request handler dispatch for messages from the worker.
-   * Each postMessage carries an id; the matching entry in
-   * _pending holds the callbacks (onProgress / onReady /
-   * onResult / onError). */
-  _msgId: 0,
-  _pending: new Map(),
-};
-
-/* Worker entry point. Defined here as a named function so we can
- * .toString() it into a Blob URL Worker. The function body runs
- * INSIDE the worker — it has its own `self`, can call `import()`,
- * owns a separate WebGPU adapter, etc. The main thread sees this
- * function as inert data. */
-function _fenceGateWorkerFn() {
-  let detector = null;
-  self.onmessage = async (e) => {
-    const msg = e.data;
-    const id = msg.id;
-    const reply = (type, payload) =>
-      self.postMessage({ id, type, ...(payload || {}) });
-    try {
-      if (msg.type === "init") {
-        const tx = await import(
-          "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.2"
-        );
-        const { pipeline, env } = tx;
-        env.allowLocalModels = false;
-        env.useBrowserCache = true;
-        if (env.backends && env.backends.onnx && env.backends.onnx.wasm) {
-          env.backends.onnx.wasm.numThreads = 1;
-        }
-
-        const onProgress = (p) => reply("progress", { data: p });
-        const isNet = (err) => {
-          const m = (err && (err.message || String(err))) || "";
-          return /fetch|network|connection|ECONNRESET|aborted|timeout/i.test(
-            m,
-          );
-        };
-
-        /* OWL-ViT v1 base patch32 instead of OWLv2 base ensemble.
-         * Tradeoffs:
-         *   - ~80 MB vs ~150 MB quantized (faster first-time
-         *     download)
-         *   - 32×32 patches at 768×768 = 576 patch tokens vs OWLv2's
-         *     16×16 = 2304 → ~4x less attention work per image
-         *   - ~2.5 s vs ~7-9 s WebGPU inference, with
-         *     correspondingly less GPU contention so the UI no
-         *     longer stutters during gate
-         *   - Slightly lower accuracy on complex scenes than OWLv2,
-         *     but the binary fence/non-fence task doesn't need the
-         *     extra precision. */
-        const MODEL_ID = "Xenova/owlvit-base-patch32";
-        let deviceUsed = "webgpu",
-          dtypeUsed = "fp16",
-          webgpuOk = false;
-        for (let attempt = 1; attempt <= 3; attempt++) {
-          try {
-            detector = await pipeline(
-              "zero-shot-object-detection",
-              MODEL_ID,
-              {
-                device: "webgpu",
-                dtype: "fp16",
-                progress_callback: onProgress,
-              },
-            );
-            webgpuOk = true;
-            break;
-          } catch (err) {
-            const em = (err && (err.message || String(err))) || "";
-            if (!isNet(err)) {
-              reply("log", {
-                level: "warn",
-                message: "WebGPU unavailable (not retrying): " + em,
-              });
-              break;
-            }
-            if (attempt < 3) {
-              const waitMs = attempt * 2000;
-              reply("log", {
-                level: "warn",
-                message:
-                  "WebGPU download attempt " +
-                  attempt +
-                  "/3 failed (" +
-                  em +
-                  "), retrying in " +
-                  waitMs +
-                  " ms...",
-              });
-              await new Promise((r) => setTimeout(r, waitMs));
-            } else {
-              reply("log", {
-                level: "warn",
-                message:
-                  "WebGPU download failed after 3 attempts, falling back to WASM: " +
-                  em,
-              });
-            }
-          }
-        }
-        if (!webgpuOk) {
-          deviceUsed = "wasm";
-          dtypeUsed = "q8";
-          detector = await pipeline(
-            "zero-shot-object-detection",
-            MODEL_ID,
-            { device: "wasm", dtype: "q8", progress_callback: onProgress },
-          );
-        }
-        reply("ready", { device: deviceUsed, dtype: dtypeUsed });
-      } else if (msg.type === "infer") {
-        if (!detector) {
-          reply("error", { error: "detector not initialized" });
-          return;
-        }
-        const { bitmap, queries, options } = msg.data;
-        let url = null;
-        try {
-          /* transformers.js v3 RawImage.read() only reliably accepts
-           * URL strings — not ImageBitmap, not Blob, not
-           * OffscreenCanvas. So: draw bitmap to OffscreenCanvas
-           * (worker-safe), convert to JPEG Blob (off-thread), wrap
-           * in an object URL, pass that. All of these APIs work
-           * inside a worker; no DOM access required. */
-          const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
-          canvas.getContext("2d").drawImage(bitmap, 0, 0);
-          const blob = await canvas.convertToBlob({
-            type: "image/jpeg",
-            quality: 0.9,
-          });
-          url = URL.createObjectURL(blob);
-          const results = await detector(url, queries, options);
-          reply("result", { data: results });
-        } finally {
-          try {
-            bitmap && bitmap.close && bitmap.close();
-          } catch {
-            /* already closed */
-          }
-          if (url)
-            try {
-              URL.revokeObjectURL(url);
-            } catch {
-              /* ignore */
-            }
-        }
-      }
-    } catch (err) {
-      reply("error", {
-        error: (err && (err.message || String(err))) || "unknown error",
-      });
-    }
-  };
-}
-
-/* Two query groups. We feed BOTH to OWL-ViT in one inference call
- * (each query is a cheap text-encode), then in the decision rule
- * we compare max(fence_scores) vs max(distractor_scores). The
- * image must score the fence concept HIGHER than the strongest
- * distractor for the gate to pass.
- *
- * This is what the score threshold alone couldn't do — wooden
- * stairs score 0.065 on "wooden fence" but ALSO score highly on
- * "wooden stairs", and we let that comparison make the call. */
-const _FENCE_QUERIES = [
-  "wooden fence",
-  "wood fence",
-  "cedar fence",
-  "wooden privacy fence",
-  "wooden picket fence",
-  "wooden plank fence",
-  "stained wooden fence",
-  "weathered wooden fence",
-];
-
-const _FENCE_DISTRACTOR_QUERIES = [
-  "wooden stairs",
-  "wooden staircase",
-  "wooden railing",
-  "wooden banister",
-  "wooden deck",
-  "wooden balcony",
-  "wooden floor",
-  "wooden table",
-  "wooden chair",
-  /* Note: "tree trunk" was removed — it matches ~99% area on any
-   * outdoor scene with branches/trees in foreground, which is
-   * common in real fence photos (gardens, trees near fences). It
-   * dominated the distractor bucket and blocked real fences.
-   * Stairs / railing / deck / banister already cover the
-   * stairs-and-railing false positive. */
-];
-
-async function _initFenceGate(opts = {}) {
-  if (_FENCE_GATE.status === "ready") return true;
-  if (_FENCE_GATE.status === "unavailable") return false;
-  if (_FENCE_GATE.status === "loading") return _FENCE_GATE.loadPromise;
-
-  _FENCE_GATE.status = "loading";
-  _FENCE_GATE.initStartMs = performance.now();
-  _FENCE_GATE.progressCb = opts.onProgress || null;
-
-  _FENCE_GATE.loadPromise = new Promise((resolve) => {
-    try {
-      /* Spin up a Web Worker that hosts the entire OWLv2 pipeline.
-       * The model download, WebGPU init, and per-image inference
-       * all happen off the main thread — UI stays smooth during
-       * the ~2-10 s inference instead of freezing.
-       *
-       * Worker source is the stringified function above, wrapped
-       * in an IIFE and served from a Blob URL. Same-origin, no
-       * extra file to ship. Module worker (type: "module") so
-       * dynamic import works for the transformers.js CDN load. */
-      const workerSrc = "(" + _fenceGateWorkerFn.toString() + ")();";
-      const workerBlob = new Blob([workerSrc], {
-        type: "application/javascript",
-      });
-      _FENCE_GATE.workerUrl = URL.createObjectURL(workerBlob);
-      const worker = new Worker(_FENCE_GATE.workerUrl, { type: "module" });
-      _FENCE_GATE.worker = worker;
-
-      worker.onerror = (e) => {
-        console.warn("[fence-gate] worker error:", e.message || e);
-        if (_FENCE_GATE.status === "loading") {
-          _FENCE_GATE.status = "unavailable";
-          resolve(false);
-        }
-      };
-
-      /* Single onmessage demuxer — dispatches each reply to the
-       * per-request callbacks registered in _FENCE_GATE._pending. */
-      worker.onmessage = (e) => {
-        const m = e.data;
-        if (m && m.type === "log") {
-          if (m.level === "warn") console.warn("[fence-gate]", m.message);
-          return;
-        }
-        if (!m || m.id === undefined || !_FENCE_GATE._pending.has(m.id))
-          return;
-        const handlers = _FENCE_GATE._pending.get(m.id);
-        if (m.type === "progress") {
-          if (handlers.onProgress) handlers.onProgress(m.data);
-        } else if (m.type === "ready") {
-          _FENCE_GATE._pending.delete(m.id);
-          if (handlers.onReady) handlers.onReady(m);
-        } else if (m.type === "result") {
-          _FENCE_GATE._pending.delete(m.id);
-          if (handlers.onResult) handlers.onResult(m.data);
-        } else if (m.type === "error") {
-          _FENCE_GATE._pending.delete(m.id);
-          if (handlers.onError) handlers.onError(m.error);
-        }
-      };
-
-      const initId = _FENCE_GATE._msgId++;
-      _FENCE_GATE._pending.set(initId, {
-        onProgress: (p) => {
-          if (_FENCE_GATE.progressCb) {
-            try {
-              _FENCE_GATE.progressCb(p);
-            } catch {
-              /* swallow UI errors */
-            }
-          }
-        },
-        onReady: (m) => {
-          _FENCE_GATE.deviceUsed = m.device;
-          _FENCE_GATE.dtypeUsed = m.dtype;
-          _FENCE_GATE.status = "ready";
-          resolve(true);
-        },
-        onError: (err) => {
-          console.warn(
-            "[fence-gate] init failed, gate disabled (fail-open):",
-            err,
-          );
-          _FENCE_GATE.status = "unavailable";
-          resolve(false);
-        },
-      });
-      worker.postMessage({ id: initId, type: "init" });
-    } catch (e) {
-      console.warn(
-        "[fence-gate] worker creation failed, gate disabled (fail-open):",
-        e,
-      );
-      _FENCE_GATE.status = "unavailable";
-      resolve(false);
-    }
-  });
-
-  return _FENCE_GATE.loadPromise;
-}
-
-/* Convert any plausible "image" input (HTMLImageElement, Canvas,
- * ImageBitmap, string URL, or Blob) into a STRING URL that
- * transformers.js v2 RawImage.read() accepts.
- *
- * v2.17.2's RawImage.read() only handles strings or RawImage
- * instances — not Blobs, not DOM elements. So for anything other
- * than a string, we render to a downscaled JPEG Blob (SigLIP
- * internally rescales to 224×224, so anything beyond ~512 is
- * wasted decode work) and then wrap that Blob in an object URL.
- *
- * Returns { url, cleanup } where cleanup() revokes the object URL —
- * callers MUST invoke cleanup() after the classifier call to avoid
- * the Blob staying resident in memory. */
-async function _imageToGateInput(image) {
-  if (!image) return null;
-  const srcW = image.naturalWidth || image.width || 0;
-  const srcH = image.naturalHeight || image.height || 0;
-  if (!srcW || !srcH) {
-    throw new Error("image has zero dimensions");
-  }
-  /* createImageBitmap with resize options runs the decode + downscale
-   * OFF the main thread. The bitmap is transferable, so postMessage
-   * with the transfer list hands ownership to the worker with no
-   * copy. transformers.js v3 accepts ImageBitmap as a pipeline input,
-   * so no Blob / URL conversion is needed. */
-  const MAX_DIM = 768;
-  const scale = Math.min(1, MAX_DIM / Math.max(srcW, srcH));
-  const outW = Math.max(1, Math.round(srcW * scale));
-  const outH = Math.max(1, Math.round(srcH * scale));
-  let bitmap;
-  try {
-    bitmap = await createImageBitmap(image, {
-      resizeWidth: outW,
-      resizeHeight: outH,
-      resizeQuality: "medium",
-    });
-  } catch {
-    /* Some older Safari versions ignore resize options. Fall back. */
-    bitmap = await createImageBitmap(image);
-  }
-  return {
-    bitmap,
-    cleanup: () => {
-      try {
-        bitmap && bitmap.close && bitmap.close();
-      } catch {
-        /* already transferred or closed */
-      }
-    },
-    width: outW,
-    height: outH,
-  };
-}
-
-async function _checkIsWoodenFence(image, opts = {}) {
-  const FAIL_OPEN = (reason) => ({
-    isFence: true,
-    confidence: 0,
-    reason,
-    detections: 0,
-    bestDetection: null,
-    inferenceMs: 0,
-  });
-
-  if (!image) return FAIL_OPEN("no-image");
-
-  const ready = await _initFenceGate({ onProgress: opts.onProgress });
-  if (!ready) return FAIL_OPEN("gate-unavailable");
-
-  let input;
-  try {
-    input = await _imageToGateInput(image);
-  } catch (e) {
-    console.warn("[fence-gate] image conversion failed, letting through:", e);
-    return FAIL_OPEN("image-conversion-error");
-  }
-  if (!input) return FAIL_OPEN("no-image");
-
-  try {
-    const t0 = performance.now();
-    let detections = [];
-    try {
-      /* Transfer the ImageBitmap directly to the worker with no
-       * copy. transformers.js v3 accepts ImageBitmap as a pipeline
-       * input, so no Blob / URL conversion is needed on either side.
-       * The worker calls bitmap.close() after use. */
-      if (!input.bitmap) {
-        throw new Error("worker path requires an ImageBitmap input");
-      }
-      const bitmap = input.bitmap;
-      detections = await new Promise((resolve, reject) => {
-        const id = _FENCE_GATE._msgId++;
-        _FENCE_GATE._pending.set(id, {
-          onResult: (data) => resolve(data),
-          onError: (err) => reject(new Error(err)),
-        });
-        _FENCE_GATE.worker.postMessage(
-          {
-            id,
-            type: "infer",
-            data: {
-              bitmap,
-              /* Feed BOTH query groups to the model in one inference
-               * call — each query is a cheap text encode, and we
-               * need both sets scored against the image to do the
-               * fence-vs-distractor comparison in the decision
-               * rule below. */
-              queries: [..._FENCE_QUERIES, ..._FENCE_DISTRACTOR_QUERIES],
-              /* OWL-ViT v1 sigmoid scores can be much smaller than
-               * OWLv2's; set pipeline threshold near zero so the
-               * model returns ALL candidates and we filter in the
-               * decision rule. */
-              options: { threshold: 0.001, topk: 50, percentage: true },
-            },
-          },
-          [bitmap],
-        );
-      });
-    } finally {
-      input.cleanup();
-    }
-    const inferenceMs = performance.now() - t0;
-
-    /* Two-class decision: we feed BOTH fence and distractor queries
-     * to OWL-ViT, then compare the strongest fence detection
-     * against the strongest distractor detection. The image passes
-     * only if a fence query OUT-SCORES every distractor query by
-     * at least COMPETITIVE_MARGIN.
-     *
-     * Why this works where score-threshold alone failed:
-     *   Wooden stairs scored 0.065 on "wooden fence" — higher than
-     *   the real fence's own 0.040 — so no single threshold could
-     *   split them. But "wooden stairs" as a query will score even
-     *   higher than 0.065 on a stairs image; "wooden fence" wins on
-     *   a real fence image. The relative ranking is what we trust.
-     *
-     * Thresholds:
-     *   SCORE_THRESHOLD     — minimum fence score for any
-     *     consideration. Drops obvious noise.
-     *   AREA_THRESHOLD      — minimum box area as fraction of image.
-     *     Drops 1-pixel detections.
-     *   COMPETITIVE_MARGIN  — fence must beat distractor by this
-     *     amount. Avoids passing on close ties. */
-    /* SCORE_THRESHOLD: noise floor for fence detections.
-     * AREA_THRESHOLD: noise floor for any detection.
-     * DISTRACTOR_AREA_MIN: stricter area requirement for
-     *   distractors. Without it, OWL-ViT spuriously matches
-     *   "wooden stairs" to small wooden elements like hot-tub
-     *   plank surrounds (~7% area) which then wrongly beat a real
-     *   fence at 16% area. Legitimate distractor objects (the
-     *   photo's actual subject is stairs / table / floor / etc.)
-     *   cover much more than 10% of the frame, so this filter
-     *   cleanly drops the spurious cases.
-     * COMPETITIVE_MARGIN: minimum gap by which fence must outscore
-     *   distractor for PASS. */
-    const SCORE_THRESHOLD = 0.01;
-    const AREA_THRESHOLD = 0.02;
-    const DISTRACTOR_AREA_MIN = 0.10;
-    // Fence must out-score the strongest distractor. OWL-ViT scores here are
-    // tiny (~0.01), so the margin is RELATIVE (scale-invariant) plus a small
-    // absolute floor. An absolute-only 0.005 was ~40% of a 0.01 score and
-    // wrongly BLOCKed real fences that merely LOOK deck-like (frontal plank
-    // walls: fence 0.014 vs deck 0.012).
-    const COMPETITIVE_MARGIN_REL = 0.06; // fence must beat distractor by >=6%
-    const COMPETITIVE_MARGIN_ABS = 0.0005; // + floor so exact noise-ties don't pass
-    const fenceSet = new Set(_FENCE_QUERIES);
-    const distractorSet = new Set(_FENCE_DISTRACTOR_QUERIES);
-
-    const computeAreaFrac = (box) => {
-      const bw = (box.xmax ?? 0) - (box.xmin ?? 0);
-      const bh = (box.ymax ?? 0) - (box.ymin ?? 0);
-      let af = bw * bh;
-      if (af > 1.5) {
-        const iw = input.width || 1;
-        const ih = input.height || 1;
-        af = (bw * bh) / Math.max(1, iw * ih);
-      }
-      return af;
-    };
-
-    let bestFence = null;
-    let bestDistractor = null;
-    for (const det of detections) {
-      if (det.score < SCORE_THRESHOLD) continue;
-      const areaFrac = computeAreaFrac(det.box || {});
-      if (areaFrac < AREA_THRESHOLD) continue;
-      const dec = { ...det, areaFrac };
-      if (fenceSet.has(det.label)) {
-        if (!bestFence || det.score > bestFence.score) {
-          bestFence = dec;
-        }
-      } else if (distractorSet.has(det.label)) {
-        /* Distractors get a stricter area requirement to drop
-         * spurious tiny matches that wrongly beat real fences. */
-        if (areaFrac < DISTRACTOR_AREA_MIN) continue;
-        if (!bestDistractor || det.score > bestDistractor.score) {
-          bestDistractor = dec;
-        }
-      }
-    }
-
-    const distractorScore = bestDistractor?.score ?? 0;
-    const isFence =
-      !!bestFence &&
-      bestFence.score >
-        distractorScore * (1 + COMPETITIVE_MARGIN_REL) + COMPETITIVE_MARGIN_ABS;
-
-    const verdict = {
-      isFence,
-      confidence: bestFence?.score || 0,
-      reason: isFence ? "fence-detected" : "no-fence-detected",
-      detections: detections.length,
-      bestFence,
-      bestDistractor,
-      inferenceMs,
-    };
-    _FENCE_GATE.lastResult = verdict;
-    return verdict;
-  } catch (e) {
-    console.warn("[fence-gate] inference failed, letting through:", e);
-    return FAIL_OPEN("inference-error");
-  }
-}
-
 async function previewStain() {
   if (!originalImage) return;
   if (!maskData) {
-    /* Pre-filter: skip the server pipeline for obvious non-fence uploads. */
-    showLoading("Checking image…");
-    updateStatus("Checking image…", "loading");
-    const verdict = await _checkIsWoodenFence(originalImage, {
-      onProgress: (p) => {
-        if (
-          p &&
-          p.status === "progress" &&
-          typeof p.progress === "number"
-        ) {
-          const pct = Math.max(0, Math.min(100, p.progress)).toFixed(0);
-          const msg = `Preparing fence detector… ${pct}%`;
-          /* Route to both the visible in-canvas overlay and the hidden
-           * a11y status node so screen readers and visual users both
-           * see progress. */
-          showLoading(msg);
-          updateStatus(msg, "loading");
-        }
-      },
-    });
-    if (!verdict.isFence) {
-      hideLoading();
-      updateStatus(
-        "No fence detected in this photo. Please upload a clear photo of a wooden fence.",
-        "error",
-      );
-      return;
-    }
+    /* The client-side OWL-ViT fence gate was removed: it cost a ~80MB model download and
+     * 4-5s before the pipeline could even start. The server's own segmentation is the fence
+     * check now — /detect returns 422 "no fence detected" when the mask covers under 1% of
+     * the photo, and detectFence() surfaces that to the user. Slower to reject a non-fence
+     * photo (one round trip instead of a local verdict), much faster for every real one. */
     await detectFence();
     if (!maskData) return;
   }
@@ -1306,7 +717,10 @@ async function renovateFence({
     const ic = document.createElement("canvas");
     ic.width = dw; ic.height = dh;
     ic.getContext("2d").drawImage(originalImage, 0, 0, dw, dh);
-    const imgBlob = await new Promise((res) => ic.toBlob(res, "image/jpeg", 0.92));
+    // 0.92 -> 0.85: this is only the SOURCE photo the model looks at, and the wood
+    // is regenerated anyway, so the saving is close to free. Cuts upload ~40% and,
+    // unlike RENDER_MAX_DIM, costs no output resolution.
+    const imgBlob = await new Promise((res) => ic.toBlob(res, "image/jpeg", 0.85));
 
     // FINAL mask (Float32 [0,1] at native res) -> grayscale PNG, scaled to the send resolution.
     const nc = document.createElement("canvas");
@@ -1546,13 +960,6 @@ function handleImageFile(file) {
       setDownloadEnabled(false);
 
       originalImage = img;
-      /* Kick off the SigLIP fence-gate model download in the
-       * background. By the time the user clicks Apply Stain,
-       * the model is usually ready and the gate adds only
-       * ~200-300 ms instead of the ~10-20 s cold download.
-       * Fire-and-forget — any error is swallowed inside
-       * _initFenceGate. */
-      _initFenceGate().catch(() => {});
       drawOriginalImage();
       drawOriginalToResult();
       canvasStack.classList.add("has-image");
@@ -4083,6 +3490,13 @@ async function postprocessMask(
   origPixelData = null,
   opts = {},
 ) {
+  /* Per-pass timing. Each filter below logs WHAT it changed but not how long it took,
+   * leaving the gap between /detect and /render invisible. Marks sit inside each
+   * pass's own `if`, so a skipped pass never records. */
+  const _ppMarks = [];
+  const _ppMark = (label) => _ppMarks.push([label, performance.now()]);
+  _ppMark("(setup)");
+
   const probData = output.data;
   const ms = CONFIG.INPUT_SIZE;
 
@@ -4112,6 +3526,7 @@ async function postprocessMask(
     // cap). Output is bit-identical to the JS branch below.
     if (_WASM.status === "ready") {
       try {
+        _ppMark("_wasmSoftMaskThreshold");
         mask = _wasmSoftMaskThreshold(maskOrig, softLow, softHigh);
       } catch (e) {
         console.warn("[fsv] WASM soft mask threshold failed, fallback:", e);
@@ -4156,6 +3571,7 @@ async function postprocessMask(
         : CONFIG.RECOVERY_DILATE_PX != null
           ? CONFIG.RECOVERY_DILATE_PX
           : 35;
+    _ppMark("spatiallyGuidedRecovery");
     mask = await spatiallyGuidedRecovery(
       mask,
       maskOrig,
@@ -4198,6 +3614,7 @@ async function postprocessMask(
       CONFIG.VEGETATION_GREEN_DOMINANCE != null
         ? CONFIG.VEGETATION_GREEN_DOMINANCE
         : 25;
+    _ppMark("filterVegetation");
     mask = filterVegetation(mask, origPixelData, width, height, greenThr);
   }
 
@@ -4208,6 +3625,7 @@ async function postprocessMask(
       CONFIG.SKY_MIN_LUMINANCE != null ? CONFIG.SKY_MIN_LUMINANCE : 175;
     const maxSat =
       CONFIG.SKY_MAX_SATURATION != null ? CONFIG.SKY_MAX_SATURATION : 0.1;
+    _ppMark("filterSky");
     mask = filterSky(
       mask,
       origPixelData,
@@ -4223,6 +3641,7 @@ async function postprocessMask(
     const satGap = CONFIG.BARK_SAT_GAP != null ? CONFIG.BARK_SAT_GAP : 0.1;
     const brightDelta =
       CONFIG.BARK_BRIGHT_DELTA != null ? CONFIG.BARK_BRIGHT_DELTA : 40;
+    _ppMark("filterBark");
     mask = filterBark(mask, origPixelData, width, height, satGap, brightDelta);
   }
 
@@ -4233,6 +3652,7 @@ async function postprocessMask(
       CONFIG.TRUNK_COLOR_DIST_SOFT != null ? CONFIG.TRUNK_COLOR_DIST_SOFT : 55;
     const desatDelta =
       CONFIG.TRUNK_DESAT_DELTA != null ? CONFIG.TRUNK_DESAT_DELTA : 0.1;
+    _ppMark("filterTrunks");
     mask = filterTrunks(
       mask,
       origPixelData,
@@ -4245,6 +3665,7 @@ async function postprocessMask(
   }
 
   if (origPixelData && !opts.skipBrick) {
+    _ppMark("filterBrick");
     mask = filterBrick(mask, origPixelData, width, height);
   }
 
@@ -4263,6 +3684,7 @@ async function postprocessMask(
         : CONFIG.CC_OUTLIER_MIN_PX != null
           ? CONFIG.CC_OUTLIER_MIN_PX
           : 300;
+    _ppMark("filterCCColorOutliers");
     mask = filterCCColorOutliers(
       mask,
       origPixelData,
@@ -4290,6 +3712,7 @@ async function postprocessMask(
         : CONFIG.RECOVERY2_DILATE_PX != null
           ? CONFIG.RECOVERY2_DILATE_PX
           : 25;
+    _ppMark("recoverAdjacentToSurvivors");
     mask = await recoverAdjacentToSurvivors(
       mask,
       maskOrig,
@@ -4311,6 +3734,7 @@ async function postprocessMask(
         : CONFIG.ORIENTATION_MIN_COUNT != null
           ? CONFIG.ORIENTATION_MIN_COUNT
           : 500;
+    _ppMark("filterByOrientation");
     mask = filterByOrientation(mask, width, height, ratio, minCt);
   }
 
@@ -4329,6 +3753,7 @@ async function postprocessMask(
       CONFIG.CC_AXIS_MIN_ASPECT_RATIO != null
         ? CONFIG.CC_AXIS_MIN_ASPECT_RATIO
         : 2.0;
+    _ppMark("filterByCCPrincipalAxis");
     mask = filterByCCPrincipalAxis(
       mask,
       width,
@@ -4346,6 +3771,7 @@ async function postprocessMask(
         : 0.6;
     const minAspect =
       CONFIG.JUNK_BLOB_MIN_ASPECT != null ? CONFIG.JUNK_BLOB_MIN_ASPECT : 1.8;
+    _ppMark("filterSmallNonElongatedBlobs");
     mask = filterSmallNonElongatedBlobs(mask, width, height, maxPct, minAspect);
   }
 
@@ -4370,6 +3796,7 @@ async function postprocessMask(
       CONFIG.BUILDING_BLOCKY_CONF_BOOST != null
         ? CONFIG.BUILDING_BLOCKY_CONF_BOOST
         : 0.12;
+    _ppMark("filterBuildings");
     mask = filterBuildings(
       mask,
       width,
@@ -4403,6 +3830,7 @@ async function postprocessMask(
       CONFIG.BUILDING_WALL_MAX_SAT_STDDEV != null
         ? CONFIG.BUILDING_WALL_MAX_SAT_STDDEV
         : 0.12;
+    _ppMark("filterBuildingWalls");
     mask = filterBuildingWalls(
       mask,
       origPixelData,
@@ -4422,6 +3850,7 @@ async function postprocessMask(
       CONFIG.HOLE_FILL_VALUE_SCALE != null
         ? CONFIG.HOLE_FILL_VALUE_SCALE
         : 0.95;
+    _ppMark("fillHoles");
     mask = fillHoles(mask, width, height, maxPct, valScl);
   }
 
@@ -4437,6 +3866,7 @@ async function postprocessMask(
       CONFIG.BOTTOM_EXTEND_CHROMA_MAX != null
         ? CONFIG.BOTTOM_EXTEND_CHROMA_MAX
         : 10;
+    _ppMark("extendFenceDown");
     mask = extendFenceDown(
       mask,
       origPixelData,
@@ -4447,6 +3877,22 @@ async function postprocessMask(
     );
   }
 
+  _ppMark("(done)");
+  if (_ppMarks.length > 1) {
+      const _ppTot = _ppMarks[_ppMarks.length - 1][1] - _ppMarks[0][1];
+      const _ppSpans = [];
+      for (let i = 0; i < _ppMarks.length - 1; i++) {
+          _ppSpans.push([_ppMarks[i][0], _ppMarks[i + 1][1] - _ppMarks[i][1]]);
+      }
+      _ppSpans.sort((a, b) => b[1] - a[1]);
+      const _ppPath = _WASM.status === "ready" ? (_WASM.simd ? "wasm-simd" : "wasm-scalar") : "js-fallback";
+      console.log(`[postprocess] TOTAL ${_ppTot.toFixed(0)} ms across ${_ppSpans.length} passes (${_ppPath})`);
+      for (const [_ppName, _ppMs] of _ppSpans) {
+          if (_ppMs >= 0.5) {
+              console.log(`[postprocess]   ${_ppMs.toFixed(1).padStart(7)} ms  ${(100 * _ppMs / _ppTot).toFixed(1).padStart(5)}%  ${_ppName}`);
+          }
+      }
+  }
   return mask;
 }
 
@@ -4752,6 +4198,7 @@ function _fpClear() {
 
 const _WASM = {
     status: "uninit",  // "uninit" | "loading" | "ready" | "unavailable"
+    simd: false,   // set by the loader; reported in the [postprocess] summary
     module: null,
     memory: null,
     exports: null,
@@ -4763,8 +4210,13 @@ const _WASM = {
         0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
         0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7b,
         0x03, 0x02, 0x01, 0x00,
-        0x0a, 0x0a, 0x01, 0x08, 0x00, 0xfd, 0x0c,
-        0x00, 0x00, 0x00, 0x00, 0x0b,
+        /* v128.const takes a SIXTEEN byte immediate. This probe previously supplied four
+         * and declared the body as 8 bytes, so validate() returned false on every browser
+         * and the SIMD build was never loaded. 0x16 = code-section payload, 0x14 = body. */
+        0x0a, 0x16, 0x01, 0x14, 0x00, 0xfd, 0x0c,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x0b,
     ]),
 };
 
@@ -4810,6 +4262,7 @@ async function _wasmInit() {
     try {
         const useSimd = _wasmSupportsSimd();
         const filename = useSimd ? "fsv_postprocess_simd.wasm" : "fsv_postprocess.wasm";
+        _WASM.simd = useSimd;
         const url = _wasmUrl(filename);
         /* Fetch then compile, so we can inspect required imports BEFORE
          * instantiating. emcc -O3 minifies import module names (e.g.
@@ -5957,34 +5410,11 @@ function _maskedBoxBlurJS(values, mask, w, h, radius) {
 async function cleanFence() {
   if (!originalImage) return;
   if (!maskData) {
-    /* Pre-filter: skip the server pipeline for obvious non-fence uploads. */
-    showLoading("Checking image…");
-    updateStatus("Checking image…", "loading");
-    const verdict = await _checkIsWoodenFence(originalImage, {
-      onProgress: (p) => {
-        if (
-          p &&
-          p.status === "progress" &&
-          typeof p.progress === "number"
-        ) {
-          const pct = Math.max(0, Math.min(100, p.progress)).toFixed(0);
-          const msg = `Preparing fence detector… ${pct}%`;
-          /* Route to both the visible in-canvas overlay and the hidden
-           * a11y status node so screen readers and visual users both
-           * see progress. */
-          showLoading(msg);
-          updateStatus(msg, "loading");
-        }
-      },
-    });
-    if (!verdict.isFence) {
-      hideLoading();
-      updateStatus(
-        "No fence detected in this photo. Please upload a clear photo of a wooden fence.",
-        "error",
-      );
-      return;
-    }
+    /* The client-side OWL-ViT fence gate was removed: it cost a ~80MB model download and
+     * 4-5s before the pipeline could even start. The server's own segmentation is the fence
+     * check now — /detect returns 422 "no fence detected" when the mask covers under 1% of
+     * the photo, and detectFence() surfaces that to the user. Slower to reject a non-fence
+     * photo (one round trip instead of a local verdict), much faster for every real one. */
     await detectFence();
     if (!maskData) return;
   }

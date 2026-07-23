@@ -61,13 +61,17 @@ if ($LASTEXITCODE -ne 0) { Write-Error "Cloud Build failed"; exit 1 }
 
 Write-Host ""
 Write-Host "==> Deploying to Cloud Run (scale-to-zero, no-zonal-redundancy L4)"
+# NOTE: --set-env-vars REPLACES the entire env set, so every value the live service is running must
+# be repeated below or it silently reverts on the next deploy. Keep this in sync with what is live.
+# To change ONLY an env var, do NOT run this script. Patch the live service in ~30s with no rebuild:
+#   gcloud run services update $SERVICE --update-env-vars FSV_WORKING_RES=720 --region $REGION --project $PROJECT
 gcloud run deploy $SERVICE `
     --image $IMAGE `
     --gpu 1 --gpu-type nvidia-l4 `
     --no-gpu-zonal-redundancy `
     --memory 32Gi --cpu 8 `
     --concurrency 1 `
-    --set-env-vars="QWEN_QUANT=nunchaku,FSV_WORKING_RES=1024,QWEN_STEPS=20,QWEN_RESIDENCY=resident" `
+    --set-env-vars="QWEN_QUANT=nunchaku,FSV_WORKING_RES=720,QWEN_STEPS=20,QWEN_RESIDENCY=resident" `
     --clear-volumes --clear-volume-mounts `
     --cpu-boost `
     --min-instances 0 --max-instances 1 `

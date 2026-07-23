@@ -1,0 +1,225 @@
+===============================================================================
+NINJA FENCE STAINING VISUALIZER
+Workflow Report — Three Versions of the Tool
+===============================================================================
+Prepared for client review.
+Covers what each version does, the exact steps it follows, the AI models it
+uses, and where each one is hosted.
+
+Three versions were built, in this order:
+
+  1. Demo          — runs entirely in the visitor's browser. No server.
+  2. Segmentation  — browser gate + AI fence tracing on our server.
+  3. Flagship      — adds an AI image-editing model that repaints the wood.
+
+One page for each follows.
+
+
+
+===============================================================================
+PAGE 1 of 3 — VERSION 1: THE DEMO
+File: index.html   |   Status: live public demo
+===============================================================================
+
+WHAT IT IS
+The first working proof of the idea. A visitor uploads a fence photo, the tool
+finds the fence, and paints it a new colour. Everything happens inside the web
+browser on the visitor's own phone or laptop. Nothing is sent to a server.
+
+WORKFLOW
+  Step 1  Visitor uploads a photo (JPG or PNG, up to 10 MB).
+  Step 2  The photo is resized to 512 x 512 pixels and normalised.
+  Step 3  The UNet++ model runs in the browser and returns a fence mask -
+          a black-and-white map marking which pixels are fence.
+  Step 4  The mask is scaled back up to the photo's real size, then smoothed
+          and cleaned (threshold and feather controls).
+  Step 5  The chosen colour is blended onto the masked area using a photo
+          blend mode. "Multiply" is the default because it keeps the wood's
+          shading and looks the most natural. Opacity defaults to 80%.
+  Step 6  The result is shown on screen and can be downloaded.
+
+  Changing the colour is instant - it is only a blend, so it re-runs in
+  a fraction of a second without touching the model again.
+
+MODEL USED
+  Name        UNet++ image segmentation model (compact build)
+  Size        35.2 MB
+  Parameters  8.63 million
+  Precision   32-bit float
+  Input       512 x 512 photo   ->   Output: 512 x 512 fence mask
+  Runs on     The visitor's own device (CPU), via ONNX Runtime Web (WASM)
+
+HOSTING AND SPECIFICATION
+  Hosted on   GitHub Pages - a free static web host
+  Live at     https://technotaau.github.io/fence-staining-visualizer/
+  Servers     None. No GPU, no cloud cost, nothing to keep running.
+  Requires    About 50 MB of memory on the visitor's device.
+
+HONEST ASSESSMENT
+  Strength    Free to run, instant colour changes, works offline once loaded,
+              and scales to any number of visitors at no cost.
+  Limit       The small model traces the fence roughly. It is a colour tint
+              over the existing wood, so old grey weathering, stains and
+              peeling paint still show through the new colour.
+
+
+
+===============================================================================
+PAGE 2 of 3 — VERSION 2: SEGMENTATION ON THE SERVER
+File: index4_dinov3_nodiffusion.html   |   Status: working build
+===============================================================================
+
+WHAT IT IS
+A large step up in accuracy. The fence is traced by a much bigger AI model
+running on a cloud GPU, so the outline is far more precise - it follows every
+board, gap, rail and post. The colouring is still done in the browser.
+
+WORKFLOW
+  Step 1  Visitor uploads a photo.
+  Step 2  FENCE CHECK (in the browser). A small detector model looks at the
+          photo on the visitor's device and confirms a wooden fence is
+          actually present. Selfies, food, walls and interiors are rejected
+          here, before any server work is paid for. It runs in a background
+          thread so the page never freezes.
+  Step 3  The photo is sent to our server.
+  Step 4  FENCE TRACING (on the server GPU). The DINOv3 segmentation model
+          produces a precise fence mask.
+  Step 5  The mask is returned to the browser and cleaned up there through
+          several checks: colour analysis in LAB colour space, removal of
+          green vegetation, removal of deck and floor areas that look like
+          fence, edge expansion, and removal of stray disconnected patches.
+  Step 6  The chosen colour is blended onto the cleaned mask in the browser
+          and shown to the visitor.
+
+  Changing the colour is instant - the mask is already known, so only the
+  blend re-runs. No server call.
+
+MODELS USED
+  1. Fence check     OWL-ViT zero-shot object detector
+     Size            About 80 MB (compressed for the web)
+     Parameters      About 150 million
+     Runs on         The visitor's browser
+
+  2. Fence tracing   DINOv3 (Large) segmentation model
+     Size            2.4 GB
+     Parameters      612.8 million
+     Precision       32-bit float
+     Input           512 x 512 photo  ->  Output: 512 x 512 fence mask
+     Runs on         Our cloud server GPU
+
+HOSTING AND SPECIFICATION
+  Hosted on   Modal (modal.com) - app "f-stain-dinov3-inference"
+  GPU         1 x NVIDIA T4 (16 GB graphics memory)
+  Memory      4 GB system RAM
+  Processor   2 vCPU
+  Scaling     Up to 4 requests at once per container, up to 4 containers.
+              Stays warm for 10 minutes after the last request, then scales
+              down to zero, so there is no cost when nobody is using it.
+  Verified    Live check confirmed the model is running on the GPU
+              (CUDA provider active) and returning a valid fence mask.
+
+HONEST ASSESSMENT
+  Strength    Very accurate fence outline. Instant colour changes. Cheap to
+              run because the server only does the tracing step.
+  Limit       Still a colour tint. The wood underneath is unchanged, so grey
+              weathering and stains remain visible through the new colour.
+
+
+
+===============================================================================
+PAGE 3 of 3 — VERSION 3: THE FLAGSHIP (WITH AI RE-STAINING)
+File: index4_dinov3.html   |   Status: live, current production version
+===============================================================================
+
+WHAT IT IS
+The current version. It keeps the accurate tracing from Version 2, then adds a
+large AI image-editing model that genuinely repaints the fence as freshly
+re-stained wood - new grain, depth, and natural light and shadow - instead of
+tinting the old wood. Weathering and stains are removed, not covered up.
+
+WORKFLOW
+  Step 1  Visitor uploads a photo.
+  Step 2  FENCE CHECK (in the browser). Same detector as Version 2 confirms
+          a real wooden fence before any server work begins.
+  Step 3  FENCE TRACING (on the server GPU). Same DINOv3 model produces the
+          fence mask, then the browser cleans it with the same colour and
+          vegetation checks as Version 2.
+  Step 4  WOOD RE-STAINING (on the server GPU). The browser sends the
+          original photo, the finished mask and the chosen colour. The server
+          crops to the fence area so it only works on what matters, then the
+          Qwen image-editing model repaints the wood over 20 refinement
+          passes. This is the heavy step and takes the most time.
+  Step 5  EXACT COLOUR AND FINAL PHOTO (on the server CPU). The new wood is
+          locked to the exact swatch colour by a colour-matching calculation,
+          then placed back into the original photo so the background,
+          plants and sky stay untouched. The finished photo is returned.
+  Step 6  The finished result is shown and can be downloaded.
+
+  Changing the colour afterwards is instant. The freshly stained wood is kept
+  in the browser, so a new colour is re-applied on screen with no server call
+  and no second wait.
+
+MODELS USED
+  1. Fence check     OWL-ViT zero-shot object detector
+     Size / params   About 80 MB / about 150 million - runs in the browser
+
+  2. Fence tracing   DINOv3 (Large) segmentation model
+     Size / params   2.4 GB / 612.8 million - runs on the server GPU
+
+  3. Wood re-staining  Qwen-Image-Edit-2509 image-editing model
+     Parameters      20 billion (the editor)
+     Size in use     12.7 GB - a compressed version, so it fits the GPU
+     Full size       About 40 GB uncompressed
+     Paired with     Qwen2.5-VL reader model, 7 billion parameters, also
+                     compressed, which reads the photo and the instruction
+     Settings        20 refinement passes, output about 1 megapixel
+     Runs on         The server GPU
+
+  4. Exact colour    A colour-matching calculation, not an AI model.
+     Runs on         The server CPU
+
+HOSTING AND SPECIFICATION
+  Hosted on   Google Cloud Run - service "fsv-dinov3-v2", region us-central1
+  GPU         1 x NVIDIA L4 (24 GB graphics memory)
+  Memory      32 GB system RAM
+  Processor   8 vCPU
+  Scaling     Handles one request at a time; scales down to zero when idle.
+              The server begins loading the AI model as soon as a visitor
+              opens the page, so the model is usually ready by the time they
+              press the button.
+
+HONEST ASSESSMENT
+  Strength    The best quality by a wide margin. Real re-stained wood, exact
+              colour match, untouched background, and instant colour changes
+              after the first result.
+  Limit       A result currently takes about 2 to 3 minutes, because the
+              image-editing model is very large and the L4 is an entry-level
+              GPU. This is a hardware limit, not a software fault - the same
+              software on a faster graphics card produces the same result in
+              a fraction of the time.
+
+
+
+===============================================================================
+SUMMARY
+===============================================================================
+
+  VERSION 1 - DEMO
+    Tracing quality   Basic          Colouring   Tint over old wood
+    Speed             Instant        Hosting     Browser only, no server
+    Cost to run       None
+
+  VERSION 2 - SEGMENTATION
+    Tracing quality   Excellent      Colouring   Tint over old wood
+    Speed             Fast           Hosting     Modal, 1 x NVIDIA T4
+    Cost to run       Low
+
+  VERSION 3 - FLAGSHIP
+    Tracing quality   Excellent      Colouring   Real re-stained wood
+    Speed             2-3 minutes    Hosting     Cloud Run, 1 x NVIDIA L4
+    Cost to run       Moderate
+
+  All three share the same idea and the same look. The difference is how much
+  work is done on our servers, and how real the final wood looks.
+
+===============================================================================
