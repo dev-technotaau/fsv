@@ -474,9 +474,9 @@
         /* Col 2 RIGHT-stack (loaded state) — placed in rows 2-5 so the
            1fr rows at top (row 1) and bottom (row 5+) absorb canvas-
            extra slack equally, centering the stack vertically:
-             row 2 = Action Bar 1   (Change Image + Clean Fence)
+             row 2 = Action Bar 1   (Apply Stain + Change Image)
              row 3 = Color picker card
-             row 4 = Action Bar 2   (Apply Stain + Download Result)
+             row 4 = Action Bar 2   (Download Result, full width)
              row 5 = Mobile-DL wrap (display:none on desktop, kept for DOM resilience) */
         .workspace.is-loaded #action-bar-1 {
             grid-column: 2;
@@ -489,6 +489,12 @@
         .workspace.is-loaded #action-bar-2 {
             grid-column: 2;
             grid-row: 4;
+        }
+        /* Download Result is the ONLY visible control in bar 2 now that Apply Stain
+           moved to bar 1. Override the shared .action-btn `flex: 1 1 180px` so it
+           spans the whole bar instead of sitting at its basis with dead space beside it. */
+        .workspace.is-loaded #action-bar-2 > #download-btn {
+            flex: 1 1 100%;
         }
         .workspace.is-loaded .download-mobile-wrap {
             grid-column: 2;
@@ -2334,13 +2340,16 @@
             .workspace.is-loaded #action-bar-2                                     { order: 4; }
             .workspace.is-loaded .download-mobile-wrap                             { order: 5; }
             /* Mobile splits the bottom row even further:
-                 Bar 1 = Clean Fence only (Change Image moves down)
-                 Bar 2 = Apply Stain only (Download moves down)
+                 Bar 1 = Apply Stain only (Change Image moves down)
+                 Bar 2 = hidden (empty — Download moves down)
                  Bar 3 = mobile-DL wrap, now hosting Change Image +
                          Download Result side-by-side at the bottom. */
             .download-mobile-wrap { display: flex; }
             #action-bar-1 > #change-image-btn { display: none; }
-            #action-bar-2 > #download-btn     { display: none; }
+            /* Bar 2 is EMPTY on mobile now — Download moves to the mobile-DL wrap and
+               Apply Stain moved up to bar 1 — so hide the whole bar rather than render
+               an empty dark panel between the colour bar and the download row. */
+            #action-bar-2 { display: none; }
         }
         @media (max-width: 560px) {
             .app-shell { padding: 12px 10px 40px; }
@@ -2640,11 +2649,17 @@
                     </span>
                     <i class="bi bi-chevron-down btn-color-chevron" aria-hidden="true"></i>
                 </button>
-                <!-- Clean Fence — visualizes a fresh, restored-wood version of
-                     the fence without applying any stain. Output replaces the
-                     in-canvas preview and is used as the BASE for any
-                     subsequent Apply Stain click (chained: Clean → Stain). -->
-                <button class="action-btn btn-clean" id="clean-btn" type="button" disabled>
+                <!-- Apply Stain — MOVED here from action-bar-2 so it occupies the
+                     primary slot Clean Fence used to hold. Same #detect-btn id, so every
+                     JS reference (detectBtn.disabled, the click handler) is unaffected. -->
+                <button class="action-btn btn-detect" id="detect-btn" type="button" disabled>
+                    <i class="bi bi-magic"></i> Apply Stain
+                </button>
+                <!-- Clean Fence — HIDDEN. Kept in the DOM rather than deleted because
+                     detectFence() sets cleanBtn.disabled in its try/finally; removing the
+                     element would throw on null. Same pattern as #reset-btn below. -->
+                <button class="action-btn btn-clean" id="clean-btn" type="button" disabled
+                        style="display: none;">
                     <i class="bi bi-droplet-half"></i> Clean Fence
                 </button>
                 <!-- Change Image — opens the native file picker (same
@@ -2664,13 +2679,8 @@
                  color picker card in loaded state). -->
             <div class="btn-group" role="toolbar" aria-label="Stain actions" id="action-bar-2"
                  hidden style="display: none;">
-                <!-- Combined Detect + Recolor — one click runs both behind the
-                     scenes. The old #recolor-btn is kept in the DOM (display:none)
-                     so existing JS references (recolorBtn.disabled, etc.) keep
-                     working without changes. -->
-                <button class="action-btn btn-detect" id="detect-btn" type="button" disabled>
-                    <i class="bi bi-magic"></i> Apply Stain
-                </button>
+                <!-- #detect-btn (Apply Stain) now lives in action-bar-1. #recolor-btn
+                     stays here, hidden, purely so recolorBtn.* JS references resolve. -->
                 <button class="action-btn btn-recolor" id="recolor-btn" type="button" disabled style="display: none;">
                     <i class="bi bi-magic"></i> Recolor Fence
                 </button>

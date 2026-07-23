@@ -112,9 +112,8 @@ TUNABLES = {
     # roughly 1.3x faster, at a small sharpness cost. Set back to "1024" to
     # match the Cloud Run production setting exactly.
     "FSV_WORKING_RES": "720",
-    # 16 steps for the speed demo. Set to "20" to match Cloud Run exactly and
-    # make the comparison a pure hardware difference.
-    "QWEN_STEPS": "16",
+    # NOTE: QWEN_STEPS / QWEN_CFG / NUNCHAKU_TRANSFORMER are NOT set here — they come from the
+    # SAMPLING profile below, so the step count can never disagree with the checkpoint.
     # "gpu" (not "resident"): NOTHING is offloaded — the INT4 DiT, the 4-bit text encoder and the
     # VAE all stay in VRAM, so a render moves no weights across PCIe. "resident" only pins the DiT
     # and still shuttles the ~5GB text encoder CPU->GPU->CPU on every single call; fitting render
@@ -140,12 +139,84 @@ TUNABLES = {
     # (5.3GB) and Qwen (15.7GB load peak) coexist under the L4's 21.96GB. Here there is no such
     # pressure: measured peak is 25.6GB of 45.5GB, so ~20GB is spare. "1" gives ORT its default
     # arena growth plus cuDNN max-workspace and an EXHAUSTIVE conv-algorithm search instead of a
-    # heuristic guess. Costs ~1GB VRAM and a one-off benchmark on the first inference, which
-    # _warm_segmentation() now absorbs at startup. Honest expectation: tens of milliseconds off a
-    # ~335ms /detect, not a step change — the ONNX run is only part of that number.
-    # NEVER set this on the L4; it would reintroduce the OOM this cap was added to fix.
-    "FSV_ORT_FAST": "1",
+    # heuristic guess.
+    #
+    # TURNED BACK OFF after measuring it. EXHAUSTIVE benchmarks every conv algorithm on the first
+    # inference, and _warm_segmentation() logged "segmentation warmed in 15.9s" against ~0.3-1s on
+    # the heuristic path. Paying ~15s on EVERY cold start to save tens of ms per /detect is a bad
+    # trade on a scale-to-zero container — the ONNX run is only a fraction of the ~335ms /detect,
+    # and this service cold-starts far more often than it serves a latency-critical detect.
+    # Worth revisiting ONLY with min_containers>=1, where the startup cost is paid once.
+    # NEVER set this on the L4 either; there it would reintroduce the OOM the cap exists to fix.
+    "FSV_ORT_FAST": "0",
 }
+
+# ── Sampling profile — the single biggest speed lever, and the only one that touches QUALITY ──
+# Change this ONE word and redeploy. quality and lightning8 are a ~30s redeploy (both checkpoints
+# are baked); lightning4 needs its checkpoint uncommented in BAKED_TRANSFORMERS first.
+#
+#   profile      checkpoint            steps  CFG   forwards/image   measured/est. denoise
+#   ---------    ------------------    -----  ----  --------------   ---------------------
+#   quality      base                   16    4.0        32          6.6s / 12.1s  (MEASURED)
+#   lightning8   lightning-8steps       8     1.0         8          ~2.0-2.4s / ~3.5-4.0s (est.)
+#   lightning4   lightning-4steps       4     1.0         4          ~1.2-1.5s / ~2.0-2.5s (NOT BAKED)
+#
+# (the two numbers are a crop-frac 0.39 photo and a crop-frac 0.72 photo)
+#
+# Forwards is what actually costs: true CFG > 1.0 runs the transformer TWICE per step, the
+# distilled checkpoints are guidance-distilled so they run it once. 16x2 -> 8x1 is 4x fewer.
+#
+# QUALITY IS THE OPEN QUESTION, and X-DeltaE will NOT answer it — the LAB colour-lock pins dE near
+# 1.0 whatever the sampler does. Judge on plank-edge crispness and wood grain at 100% zoom, on the
+# same photo and seed. Step distillation trades high-frequency detail, and grain is exactly that,
+# so expect lightning4 to be visibly softer. lightning8 is the one with a real chance of being
+# indistinguishable. An earlier in-house verdict that "Lightning is soft" was measuring a
+# quantization mismatch (a bf16 LoRA on an INT4 transformer, which nunchaku cannot apply at all)
+# and should not be treated as evidence about the distillation itself.
+SAMPLING = "lightning8"
+
+_LIGHTNING_DIR = "/model/nunchaku-qwen/lightning-251115"
+
+# Transformer checkpoints baked into the image. THIS LIST IS THE COLD-START COST: each file is
+# 12.65GB and has to be pulled before a container can serve, so every entry slows the first request
+# after a scale-to-zero. Baking more than one is what makes switching SAMPLING a ~30s redeploy
+# instead of a ~13GB rebuild — that convenience is not free.
+#
+# The 4-step checkpoint is deliberately NOT baked. It is used by exactly one profile, and 4-step
+# distillation is expected to be visibly soft on wood grain, which is the detail this product is
+# judged on. To try it: uncomment the line, redeploy (~13GB, slow, once), then set SAMPLING.
+BAKED_TRANSFORMERS = [
+    "svdq-int4_r128-qwen-image-edit-2509.safetensors",
+    "lightning-251115/svdq-int4_r128-qwen-image-edit-2509-lightning-8steps-251115.safetensors",
+    # "lightning-251115/svdq-int4_r128-qwen-image-edit-2509-lightning-4steps-251115.safetensors",
+]
+
+_SAMPLING_PROFILES = {
+    # Base checkpoint: NUNCHAKU_TRANSFORMER unset, so qwen_engine builds the default path.
+    "quality": {"QWEN_STEPS": "16", "QWEN_CFG": "4.0"},
+    # Distilled: steps and CFG are deliberately NOT set. qwen_engine reads "8steps"/"4steps" out of
+    # the filename and derives steps + CFG 1.0 + the shift=3 scheduler from that, so the sampler
+    # cannot silently disagree with the weights.
+    "lightning8": {"NUNCHAKU_TRANSFORMER":
+                   f"{_LIGHTNING_DIR}/svdq-int4_r128-qwen-image-edit-2509-lightning-8steps-251115.safetensors"},
+    "lightning4": {"NUNCHAKU_TRANSFORMER":
+                   f"{_LIGHTNING_DIR}/svdq-int4_r128-qwen-image-edit-2509-lightning-4steps-251115.safetensors"},
+}
+if SAMPLING not in _SAMPLING_PROFILES:
+    raise ValueError(f"SAMPLING must be one of {sorted(_SAMPLING_PROFILES)}, got {SAMPLING!r}")
+
+# Fail at DEPLOY time, not at container start. Selecting a profile whose checkpoint was never baked
+# would otherwise surface as a FileNotFoundError inside the background warm thread, minutes later,
+# in the logs of a container that appears to boot fine — exactly the "it won't start" symptom that
+# is hardest to diagnose.
+_selected = _SAMPLING_PROFILES[SAMPLING].get("NUNCHAKU_TRANSFORMER")
+if _selected and not any(_selected.endswith(p.rsplit("/", 1)[-1]) for p in BAKED_TRANSFORMERS):
+    raise ValueError(
+        f"SAMPLING={SAMPLING!r} needs {_selected!r}, which is NOT in BAKED_TRANSFORMERS.\n"
+        f"Uncomment it there and redeploy (~13GB rebuild, once), or choose a profile whose "
+        f"checkpoint is baked: {[p.rsplit('/', 1)[-1] for p in BAKED_TRANSFORMERS]}")
+
+TUNABLES.update(_SAMPLING_PROFILES[SAMPLING])
 
 CLOUDRUN_DIR = Path(__file__).parent.parent / "cloudrun_inference"
 MODELS_DIR = Path(__file__).parent.parent / "models"
@@ -170,10 +241,18 @@ def _bake_weights():
     """
     from huggingface_hub import snapshot_download
 
-    # Nunchaku SVDQuant INT4 transformer (12.7GB, r128 = max sharpness).
+    # Nunchaku SVDQuant INT4 transformers, r128 = max sharpness.
+    #   base                 12.7GB  20/16-step, true CFG 4.0  -> 32 forwards
+    #   lightning 8-step     12.7GB  guidance-distilled, CFG 1.0 ->  8 forwards
+    #   lightning 4-step     12.7GB  ditto                       ->  4 forwards
+    # All three are baked so SAMPLING can be switched with a ~30s redeploy and no rebuild. They are
+    # ~38GB of image layer, downloaded once. IMPORTANT: the "lightning-251115" folder is fused with
+    # the Qwen-Image-EDIT-2509 Lightning LoRA; the older top-level "lightningv2.0" files are fused
+    # with the LoRA for the base text-to-image Qwen-Image and are the wrong distillation for an
+    # editing pipeline. Only the 251115 ones are fetched here, deliberately.
     snapshot_download(
         "nunchaku-tech/nunchaku-qwen-image-edit-2509",
-        allow_patterns=["svdq-int4_r128-qwen-image-edit-2509.safetensors"],
+        allow_patterns=BAKED_TRANSFORMERS,
         local_dir="/model/nunchaku-qwen",
     )
     # ovedrive 4-bit snapshot MINUS its transformer — reused only for the 4-bit

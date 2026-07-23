@@ -10,13 +10,15 @@ Env: QWEN_MODEL (baked path), QWEN_QUANT (prequant|4bit|none), QWEN_LIGHTNING_LO
 """
 from __future__ import annotations
 import os
+import re
 import logging
 import threading
 
 log = logging.getLogger("qwen-engine")
 _pipe = None
 _load_lock = threading.Lock()   # load() is hit by the startup warm thread AND request threads
-_lightning_active = False   # set True only if the Lightning LoRA actually loaded
+_lightning_active = False   # True if Lightning is in play: LoRA loaded OR fused into the checkpoint
+_lightning_steps = 8        # the step count the active distillation was trained for
 
 RENOVATE_PROMPT = (
     "Restain this wooden privacy fence so it looks freshly and evenly re-stained with fresh, "
@@ -43,12 +45,53 @@ QWEN_LORA_WEIGHT = os.environ.get(
 
 def _default_steps() -> int:
     v = os.environ.get("QWEN_STEPS")
-    return int(v) if v else (8 if _lightning_active else 20)   # 8 w/ Lightning, else 20-step base
+    return int(v) if v else (_lightning_steps if _lightning_active else 20)
 
 
 def _default_cfg() -> float:
+    # Lightning is guidance-distilled: CFG 1.0 means ONE transformer forward per step instead of
+    # two, which is half the reason it is fast. Forcing CFG>1 on a distilled checkpoint both
+    # doubles the cost and degrades the result.
     v = os.environ.get("QWEN_CFG")
     return float(v) if v else (1.0 if _lightning_active else 4.0)
+
+
+def _fused_lightning_steps(ckpt_path: str) -> int | None:
+    """Step count if this checkpoint has a Lightning LoRA FUSED IN, else None.
+
+    Nunchaku publishes pre-fused SVDQuant builds (the LoRA is merged BEFORE quantization), e.g.
+    `lightning-251115/svdq-int4_r128-qwen-image-edit-2509-lightning-8steps-251115.safetensors`.
+    They matter because nunchaku 1.2.1 has NO runtime LoRA support for Qwen at all — nunchaku/lora/
+    contains only flux/ — so load_lora_weights() cannot work on the INT4 transformer. Pre-fused is
+    the only way to run a distilled Qwen on this backend.
+
+    The step count is read from the FILENAME rather than configured separately, so the sampler can
+    never silently disagree with the weights (an 8-step checkpoint sampled at 16 steps, or vice
+    versa, produces a bad image with no error)."""
+    name = os.path.basename(ckpt_path).lower()
+    if "lightning" not in name:
+        return None
+    m = re.search(r"(\d+)steps?", name)
+    return int(m.group(1)) if m else 8
+
+
+def _apply_lightning_scheduler(pipe) -> None:
+    """Install the scheduler the Lightning distillation was trained against.
+
+    REQUIRED, and easy to miss: this is a property of the DISTILLATION, not of how the weights got
+    there, so it applies to pre-fused checkpoints exactly as much as to a runtime LoRA. lightx2v's
+    own README pairs the Lightning weights with shift=3 (base_shift = max_shift = log(3)) and
+    shift_terminal=None. Run distilled weights under the stock sampler instead and the output
+    degrades in a way that looks exactly like "the distillation is soft" — which is the wrong
+    conclusion, and the reason a previous Lightning evaluation here was thrown out."""
+    import math
+    from diffusers import FlowMatchEulerDiscreteScheduler
+    pipe.scheduler = FlowMatchEulerDiscreteScheduler.from_config({
+        "base_image_seq_len": 256, "base_shift": math.log(3), "invert_sigmas": False,
+        "max_image_seq_len": 8192, "max_shift": math.log(3), "num_train_timesteps": 1000,
+        "shift": 1.0, "shift_terminal": None, "stochastic_sampling": False,
+        "time_shift_type": "exponential", "use_beta_sigmas": False,
+        "use_dynamic_shifting": True, "use_exponential_sigmas": False, "use_karras_sigmas": False})
 
 
 def _place_all_on_gpu(pipe) -> list[str]:
@@ -97,7 +140,7 @@ def load():
 
 
 def _load_locked():
-    global _pipe, _lightning_active
+    global _pipe, _lightning_active, _lightning_steps
     import torch
     import transformers
     if int(transformers.__version__.split(".")[0]) >= 5:
@@ -136,6 +179,21 @@ def _load_locked():
             log.warning("[qwen] device='cuda' load failed (%s); falling back to host load (OOM risk)", e)
             transformer = NunchakuQwenImageTransformer2DModel.from_pretrained(tf)
         pipe = QPipe.from_pretrained(model, transformer=transformer, torch_dtype=torch.bfloat16)
+
+        # Pre-fused Lightning: the LoRA is already merged into these weights, so nothing is loaded
+        # at runtime (nunchaku 1.2.1 cannot do that for Qwen anyway) — but the distillation still
+        # needs its own scheduler and its own step/CFG defaults, and BOTH are silent failures if
+        # missed. Driven off the filename so the sampler cannot disagree with the weights.
+        _fused = _fused_lightning_steps(tf)
+        if _fused:
+            _lightning_active = True
+            _lightning_steps = _fused
+            _apply_lightning_scheduler(pipe)
+            log.info("[qwen] pre-fused Lightning detected in checkpoint: %d-step distillation, "
+                     "shift=3 scheduler applied, defaults now steps=%d cfg=%.1f (%d forwards/image "
+                     "vs 32 for 16-step base at CFG 4.0)",
+                     _fused, _default_steps(), _default_cfg(),
+                     _default_steps() * (2 if _default_cfg() > 1.0 else 1))
     else:
         kw = dict(torch_dtype=torch.bfloat16, low_cpu_mem_usage=True)
         if quant == "4bit":
@@ -154,29 +212,30 @@ def _load_locked():
         log.info("[qwen] loading %s (quant=%s)", model, quant)
         pipe = QPipe.from_pretrained(model, **kw)
 
-    # Lightning is the FAST 8-step path but softer than full base sampling. OFF by default so the
-    # engine uses sharp, high-quality 20-step base (what produced the loved output). Opt in with
-    # QWEN_LIGHTNING=1 only when speed matters more than sharpness.
+    # RUNTIME Lightning LoRA. Only meaningful for the NON-nunchaku backends: nunchaku 1.2.1 ships
+    # LoRA support for FLUX only (nunchaku/lora/ has no qwen module), so load_lora_weights() cannot
+    # apply to an INT4 Qwen transformer — an earlier evaluation that did exactly that measured a
+    # quantization mismatch and wrongly concluded "Lightning is soft". On nunchaku, use a PRE-FUSED
+    # checkpoint via NUNCHAKU_TRANSFORMER instead (handled above). Left in place for quant=prequant
+    # /4bit/none, and a no-op unless QWEN_LIGHTNING=1.
     if QWEN_LORA_REPO and os.environ.get("QWEN_LIGHTNING", "0") == "1":
-        try:
-            import math
-            from diffusers import FlowMatchEulerDiscreteScheduler
-            # Live adapter, NOT fused (fusing into 4-bit is lossy — PEFT #2321).
-            pipe.load_lora_weights(QWEN_LORA_REPO, weight_name=QWEN_LORA_WEIGHT, adapter_name="lightning")
-            pipe.set_adapters(["lightning"], adapter_weights=[1.0])
-            _lightning_active = True
-            # Lightning = shift=3 distillation -> base_shift/max_shift = log(3); scalar 'shift' stays 1.0.
-            pipe.scheduler = FlowMatchEulerDiscreteScheduler.from_config({
-                "base_image_seq_len": 256, "base_shift": math.log(3), "invert_sigmas": False,
-                "max_image_seq_len": 8192, "max_shift": math.log(3), "num_train_timesteps": 1000,
-                "shift": 1.0, "shift_terminal": None, "stochastic_sampling": False,
-                "time_shift_type": "exponential", "use_beta_sigmas": False,
-                "use_dynamic_shifting": True, "use_exponential_sigmas": False, "use_karras_sigmas": False})
-            log.info("[qwen] Lightning adapter active (no fuse): %s/%s steps=%s cfg=%s",
-                     QWEN_LORA_REPO, QWEN_LORA_WEIGHT, _default_steps(), _default_cfg())
-        except Exception as e:  # LoRA optional — fall back to more steps (auto via _lightning_active)
-            log.warning("[qwen] Lightning LoRA not applied (%s); falling back to %s-step base",
-                        e, _default_steps())
+        if quant == "nunchaku":
+            log.warning("[qwen] QWEN_LIGHTNING=1 ignored: nunchaku has no Qwen LoRA support. Point "
+                        "NUNCHAKU_TRANSFORMER at a pre-fused '...-lightning-Nsteps-...' checkpoint.")
+        else:
+            try:
+                # Live adapter, NOT fused (fusing into 4-bit is lossy — PEFT #2321).
+                pipe.load_lora_weights(QWEN_LORA_REPO, weight_name=QWEN_LORA_WEIGHT, adapter_name="lightning")
+                pipe.set_adapters(["lightning"], adapter_weights=[1.0])
+                _lightning_active = True
+                _lightning_steps = _fused_lightning_steps(QWEN_LORA_WEIGHT) or 8
+                _apply_lightning_scheduler(pipe)
+                log.info("[qwen] Lightning adapter active (no fuse): %s/%s steps=%s cfg=%s",
+                         QWEN_LORA_REPO, QWEN_LORA_WEIGHT, _default_steps(), _default_cfg())
+            except Exception as e:  # LoRA optional — fall back to more steps (auto via _lightning_active)
+                _lightning_active = False
+                log.warning("[qwen] Lightning LoRA not applied (%s); falling back to %s-step base",
+                            e, _default_steps())
 
     # Placement: 4-bit (prequant/4bit) uses enable_model_cpu_offload() — pipe.to('cuda') raises on a
     # bnb model. Only bf16 (quant=none) may use .to('cuda').

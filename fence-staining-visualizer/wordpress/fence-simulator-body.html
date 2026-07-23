@@ -304,11 +304,27 @@
               ></i>
             </button>
 
+            <!-- Apply Stain — MOVED here from action-bar-2 so it occupies the
+                 primary slot Clean Fence used to hold. Same #detect-btn id, so every
+                 JS reference (detectBtn.disabled, the click handler) is unaffected. -->
+            <button
+              class="action-btn btn-detect"
+              id="detect-btn"
+              type="button"
+              disabled
+            >
+              <i class="bi bi-magic"></i> Apply Stain
+            </button>
+
+            <!-- Clean Fence — HIDDEN. Kept in the DOM rather than deleted because
+                 detectFence() sets cleanBtn.disabled in its try/finally; removing
+                 the element would throw on null. Same pattern as #reset-btn. -->
             <button
               class="action-btn btn-clean"
               id="clean-btn"
               type="button"
               disabled
+              style="display: none"
             >
               <i class="bi bi-droplet-half"></i> Clean Fence
             </button>
@@ -340,14 +356,8 @@
             hidden
             style="display: none"
           >
-            <button
-              class="action-btn btn-detect"
-              id="detect-btn"
-              type="button"
-              disabled
-            >
-              <i class="bi bi-magic"></i> Apply Stain
-            </button>
+            <!-- #detect-btn (Apply Stain) now lives in action-bar-1. #recolor-btn
+                 stays here, hidden, purely so recolorBtn.* JS references resolve. -->
             <button
               class="action-btn btn-recolor"
               id="recolor-btn"

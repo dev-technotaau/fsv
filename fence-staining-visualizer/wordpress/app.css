@@ -363,6 +363,12 @@ section.card[aria-labelledby="canvas-card-title"] {
   grid-column: 2;
   grid-row: 4;
 }
+/* Download Result is the ONLY visible control in bar 2 now that Apply Stain moved to
+   bar 1. Override the shared .action-btn `flex: 1 1 180px` so it spans the whole bar
+   instead of sitting at its basis with dead space beside it. */
+.workspace.is-loaded #action-bar-2 > #download-btn {
+  flex: 1 1 100%;
+}
 .workspace.is-loaded .download-mobile-wrap {
   grid-column: 2;
   grid-row: 5;
@@ -2492,7 +2498,10 @@ canvas {
   #action-bar-1 > #change-image-btn {
     display: none;
   }
-  #action-bar-2 > #download-btn {
+  /* Bar 2 is EMPTY on mobile now — Download moves to the mobile-DL wrap and Apply
+     Stain moved up to bar 1 — so hide the whole bar rather than render an empty
+     dark panel between the colour bar and the download row. */
+  #action-bar-2 {
     display: none;
   }
 }
